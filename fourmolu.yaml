@@ -1,0 +1,7 @@
+indentation: 4
+comma-style: leading
+import-export-style: diff-friendly
+record-brace-space: true
+newlines-between-decls: 1
+haddock-style: single-line
+respectful: true
