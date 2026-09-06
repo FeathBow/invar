@@ -1,0 +1,67 @@
+# Request semantics
+
+Status: Request-LTS v0. This is a token-only executable specification, not a machine-checked proof or a numerical-executor certification.
+
+## Contract
+
+A finite request pool is fixed before execution. Each request has immutable inputs: a nonempty prompt, a positive token limit, and an opaque payload that can carry request-owned inputs such as a seed. A pure, total decoder maps the request core and its full token context to the next token. A pure frontier function maps the core and current cache position to a strictly greater position; chunking clips that position to the current context length. The stopping predicate is fixed for the run.
+
+Scheduling history includes admission order, interleaving, preemption, resumption, cancellation, chunk timing, and other requests' states. None of these is an argument to the decoder. The claim assumes the supplied decoder and frontier are total and obey their declared domains; Haskell does not prove their termination.
+
+The observations are generated token prefixes and completed token sequences. Completion, timing, rejection diagnostics, and forward progress are separate observations, not covered by token noninterference. GPU execution, log-probability bits, physical cache layout, process restarts, and learning are outside this model.
+
+## State and transitions
+
+For each request, let `p` be the prompt, `n` the token limit, `g` the generated prefix, and `k` the cached context length. Status is Pool, Active, Paused, Done, or Cancelled. Initially it is Pool with `k = 0` and empty `g`. A request is stopped exactly when `length g = n` or its final generated token satisfies the stopping predicate. Prompt tokens do not trigger stopping.
+
+| Event | Guard | Effect |
+|---|---|---|
+| Admit | Pool | Active; reset cache to zero and generated prefix to empty. |
+| Chunk | Active and `k < length p + length g` | Set `k` to the smaller of the frontier result and context length; reject a non-advancing frontier. |
+| Decode | Active, `k = length p + length g`, and not stopped | Append `decoder(core, p ++ g)`; increment `k`. |
+| Preempt j | Active and `j <= k` | Paused; set `k = j`; preserve `g`. |
+| Resume | Paused | Active; preserve `k` and `g`. |
+| Cancel | Active or Paused | Cancelled; preserve `k` and `g`. |
+| Complete | Active and stopped | Done; preserve `k` and `g`. |
+
+Unknown request IDs, status mismatches, and failed guards have distinct rejection results. A rejected transition does not produce a successor configuration. State records describe the mathematical state space; arbitrary constructed records are not claimed to be reachable. Invariants apply to configurations obtained from initialization by accepted transitions.
+
+## Reference and arguments
+
+Define `unroll(core)` by repeatedly applying the decoder to `p ++ g` and stopping at the first stopped prefix. Its length is at most `n`. Every proper prefix of this reference is not stopped.
+
+Prefix invariance follows by induction on accepted transitions. Initialization has an empty prefix. Non-decode transitions preserve it. At decode, the unstopped guard makes the current reference prefix proper, so the decoder appends precisely the reference's next token. Completion requires a stopped prefix, which must therefore be the whole reference. Two histories completing the same request have equal token sequences; unequal-length intermediate prefixes need not be equal to one another.
+
+At each decode call, the generated suffix of the argument is a proper reference prefix. Every such suffix is exercised by a completion schedule without interference. These are the decoder-argument bounds; they do not certify an external implementation of the decoder.
+
+## Validation domain
+
+Campaigns fix the request pool, decoder, frontier, stopping predicate, target request, and token observation before changing scheduling history. No scheduling choices are promoted into recorded semantic inputs. The executable campaign uses Boolean tokens, bounded nonempty prompts and token limits, a finite decoder table family, two requests, and bounded preemption scripts. Exact bounds are named in the generator. It is a search domain, not a claim of exhaustive coverage over all request cores, decoders, or histories.
+
+The paired-history generator constructs a completing target schedule and perturbs it with independent-request actions and cache-preserving or cache-lowering preemption. It must preserve valid transitions and target completion. Separate properties check these obligations, and coverage checks require genuinely different histories and exercised transition classes. Cancellation of the target is checked through prefix invariance, not by pretending that cancelled requests completed.
+
+An independent fixed trace checks complete successor configurations against the transition table, including request-owned frontier advancement, clipping, and nonzero cache retention and lowering. Its expected states are not generated by the transition implementation. Cache-preservation coverage counts only nonempty caches.
+
+The generator's preservation argument is local: inserted preemption retains the generated prefix, and refilling restores the original cache frontier before decode. Interleaving preserves each request's event order; transitions modify only that request, and its decoder reads only its fixed core and context. Thus the inserted actions and reordered scripts preserve legality and target completion. Both histories use the same initialized pool and semantics, while their first admissions differ. This argument is checked by properties, not by a proof assistant.
+
+Mutations live only in the test adapter. Removing the stopped guard and reading active-request count in decode must violate token noninterference. Truncating a generated prefix during preemption preserves prefix invariance but can leave the cache ahead of the shortened context. In that state, no Chunk, Decode, or Complete advances the unfinished request. Preempt and Cancel remain possible, and lowering the cache can repair it: this is forward-progress blockage, not a global deadlock or a proof about scheduler fairness.
+
+A separate deterministic search enumerates legal histories of at most five events drawn from Admit, Chunk, Decode, and Complete for each of the two counterexample models. It must find differing completed observations for both mutants and none for their unmodified baselines within that search domain. It replays each discovered witness before accepting it; failure to find a witness fails the check. This finite search does not establish universal invariance of the baseline.
+
+Counterexamples retain the two histories, first unequal token position, changed source, and violated obligation. Deterministic small fixtures are independent of random shrinking. A failing test remains a failure; a mutant is successfully detected only when both histories are valid and the intended observation differs.
+
+## Correspondence ledger
+
+| Written obligation | Executable check |
+|---|---|
+| Transition table and rejection distinctions | Transition fixtures, invalid-event fixtures, and history legality. |
+| Prefix induction, including cancellation | Every visited request prefix is a reference prefix. |
+| Completed output equality | Paired completing histories equal the reference. |
+| Proper-prefix decoder arguments | Instrumented decoder arguments match the request core and proper reference prefixes. |
+| Decode readiness and stopping | Status, cache equality, cap/EOS guards, and generated-prefix ancestry checks. |
+| Generator legality and equivalence | Same initialized pool and semantics; both histories accepted; target completes; histories differ. |
+| Removed stopped guard | One-token alphabet and one-request deterministic witness. |
+| Active-count dependency | Two-request deterministic witness. |
+| Truncating preemption | Token invariance plus cache-ahead blockage and explicit repair. |
+
+The correspondence is a reviewed mapping between this specification and its implementation, not a mechanically proved refinement. Property checks and finite fixtures supply experimental evidence. Loop composition and numerical refinement require additional specifications and evidence.

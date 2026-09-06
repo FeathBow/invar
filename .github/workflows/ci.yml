@@ -49,3 +49,35 @@ jobs:
           echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $RUNNER_TEMP/actionlint.tar.gz" | sha256sum --check
           tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
           "$RUNNER_TEMP/actionlint" -color
+
+  haskell:
+    name: Haskell
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: haskell-actions/setup@cd0d9bdd65b20557f41bea4dbe43d0b5fbbfe553 # v2.11.0
+        with:
+          ghc-version: '9.14.1'
+          cabal-version: '3.18.1.0'
+      - name: Build
+        run: |
+          cabal update
+          cabal build all --enable-tests
+      - name: Test
+        run: timeout 60s cabal test all --test-show-details=direct
+      - name: Format
+        shell: bash
+        run: |
+          curl --fail --silent --show-error --location --output "$RUNNER_TEMP/fourmolu.zip" https://github.com/fourmolu/fourmolu/releases/download/v0.20.1.0/fourmolu-0.20.1.0-linux-x86_64.zip
+          echo "bdd97063b445145b39191259c428bca489fa30578b82d9066fc7377db390f1d0  $RUNNER_TEMP/fourmolu.zip" | sha256sum --check
+          unzip -q "$RUNNER_TEMP/fourmolu.zip" -d "$RUNNER_TEMP"
+          git ls-files -z '*.hs' | xargs -0 "$RUNNER_TEMP/fourmolu-0.20.1.0-linux-x86_64/fourmolu" --mode check --record-brace-space true
+      - name: HLint
+        shell: bash
+        run: |
+          curl --fail --silent --show-error --location --output "$RUNNER_TEMP/hlint.tar.gz" https://github.com/ndmitchell/hlint/releases/download/v3.10/hlint-3.10-x86_64-linux.tar.gz
+          echo "ccabc8802a58154699a3583b8dddc5ea2e6d65753a62c45c0e80088ebb16b42b  $RUNNER_TEMP/hlint.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/hlint.tar.gz" -C "$RUNNER_TEMP"
+          "$RUNNER_TEMP/hlint-3.10/hlint" src test

@@ -1,0 +1,40 @@
+cabal-version: 3.0
+name: invar
+version: 0.1.0.0
+synopsis: Executable request semantics for inference and reinforcement learning
+description: A token-level request transition model and its counterexample campaign.
+license: Apache-2.0
+license-file: LICENSE
+author: Invar contributors
+maintainer: https://github.com/FeathBow/invar/issues
+category: AI
+build-type: Simple
+tested-with: GHC == 9.14.1
+extra-doc-files: README.md, docs/spec.md
+
+common defaults
+  default-language: GHC2021
+  ghc-options: -Wall -Wcompat
+  build-depends:
+    base >= 4.22 && < 4.23,
+    containers >= 0.8 && < 0.9
+
+library
+  import: defaults
+  default-extensions: NoGeneralizedNewtypeDeriving
+  hs-source-dirs: src
+  exposed-modules: Invar.Spec.Request
+
+test-suite request
+  import: defaults
+  type: exitcode-stdio-1.0
+  hs-source-dirs: test
+  main-is: Main.hs
+  other-modules: Model, History, Properties, Fixtures, Arguments
+  build-depends:
+    invar,
+    hedgehog >= 1.7 && < 1.8
+
+source-repository head
+  type: git
+  location: https://github.com/FeathBow/invar.git
