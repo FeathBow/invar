@@ -50,6 +50,27 @@ jobs:
           tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
           "$RUNNER_TEMP/actionlint" -color
 
+  worker:
+    name: Worker
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Install the pinned numerical dependencies
+        run: python -m pip install --no-cache-dir --requirement worker/requirements.txt
+      - name: Test
+        env:
+          HF_HUB_OFFLINE: '1'
+          TRANSFORMERS_OFFLINE: '1'
+          CUDA_VISIBLE_DEVICES: ''
+          OMP_NUM_THREADS: '2'
+          MKL_NUM_THREADS: '2'
+        run: timeout 60s python -B -m unittest discover -s worker/tests -t worker -p '*.py'
+
   haskell:
     name: Haskell
     runs-on: ubuntu-24.04

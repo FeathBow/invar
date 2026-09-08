@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module BatchCalls (batchCalls) where
+module BatchCalls (batchCalls, prepared, exchange, quote) where
 
 import Calls qualified as Fixture
 import Control.Monad (forM_)
@@ -11,6 +11,7 @@ import Invar.Infer qualified as I
 import Invar.Infer.Invocation qualified as C
 import Invar.Spec.Invocation qualified as V
 import Invar.Worker qualified as W
+import Numeric.Natural (Natural)
 import Store (workspace)
 import System.Exit (ExitCode (ExitFailure))
 import System.FilePath ((</>))
@@ -31,19 +32,19 @@ setup :: PropertyT IO [(C.Call, [Value])]
 setup = do
     (_, events) <- Fixture.setup
     planned <- evalEither (I.prepare Fixture.request)
-    traverse (prepare planned events) [0 .. 2]
-  where
-    prepare planned events index = do
-        let bound = V.Binding (V.CallId index) (V.AttemptId index) (V.Instance index)
-        call <- evalEither (C.prepare bound planned)
-        envelope <- evalEither (eitherDecodeStrict (C.batchInput call))
-        let binding = Fixture.field "binding" envelope
-            loading = Fixture.field "load" envelope
-            rebound = map (Fixture.change "binding" binding) events
-            updated = map (Fixture.change "load" loading) (take 2 rebound) ++ drop 2 rebound
-            previous = Fixture.change "binding" (object ["call" .= (index - 1), "attempt" .= (index - 1), "instance" .= (index - 1)]) loading
-            unload = [Fixture.change "stage" (String "unloaded_adapter") previous | index > 0]
-        pure (call, unload ++ updated)
+    traverse (\index -> prepared planned events index (if index > 0 then Just (index - 1) else Nothing)) [0 .. 2]
+
+prepared :: I.Plan -> [Value] -> Natural -> Maybe Natural -> PropertyT IO (C.Call, [Value])
+prepared planned events index previous = do
+    let bound = V.Binding (V.CallId index) (V.AttemptId index) (V.Instance index)
+    call <- evalEither (C.prepare bound planned)
+    envelope <- evalEither (eitherDecodeStrict (C.batchInput call))
+    let binding = Fixture.field "binding" envelope
+        loading = Fixture.field "load" envelope
+        rebound = map (Fixture.change "binding" binding) events
+        updated = map (Fixture.change "load" loading) (take 2 rebound) ++ drop 2 rebound
+        unloaded earlier = Fixture.change "stage" (String "unloaded_adapter") (Fixture.change "binding" (object ["call" .= earlier, "attempt" .= earlier, "instance" .= earlier]) loading)
+    pure (call, maybe [] (pure . unloaded) previous ++ updated)
 
 quote :: String -> String
 quote text = "'" ++ concatMap (\character -> if character == '\'' then "'\\''" else [character]) text ++ "'"
@@ -69,7 +70,7 @@ run requests ending = do
     let script = root </> "batch.sh"
         body = "printf '%s\\n' launched >> " ++ quote (root </> "launched") ++ "\n" ++ concatMap (exchange root) requests ++ ending
     evalIO (writeFile script body)
-    returned <- evalIO (W.runBatch (W.Worker "/bin/sh" script root "unused") (map fst requests))
+    returned <- evalIO (W.runBatch (W.Worker "/bin/sh" script root "unused" []) (map fst requests))
     launches <- evalIO (readFile (root </> "launched"))
     launches === "launched\n"
     received <- evalIO (readFile (root </> "received"))

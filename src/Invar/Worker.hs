@@ -1,8 +1,9 @@
-module Invar.Worker (Worker (..), Failure (..), Execution, report, completion, loaded, run, runBatch) where
+module Invar.Worker (Worker (..), Failure (..), Execution, report, completion, loaded, run, runBatch, runSession) where
 
 import Control.Exception (bracket, mask_)
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
+import Data.ByteString.Char8 qualified as Bytes
 import Data.Functor (void)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Text qualified as Text
@@ -13,12 +14,14 @@ import Invar.Process qualified as Process
 import Invar.Spec.Invocation qualified as V
 import Invar.Spec.Load qualified as L
 import System.Exit (ExitCode)
+import System.IO (hFlush, stdout)
 
 data Worker = Worker
     { executable :: FilePath
     , script :: FilePath
     , cache :: FilePath
     , adapter :: FilePath
+    , environment :: [(String, String)]
     }
 
 data Failure = WorkerExit ExitCode | InvalidOutput I.Error | ProtocolFailure String
@@ -41,18 +44,22 @@ run :: Worker -> I.Call -> IO (Either Failure Execution)
 run worker call = withRegistry $ \registry -> do
     pending <- Pending call <$> newIORef Nothing
     let inputs = [script worker, "--cache=" ++ cache worker, "--adapter=" ++ adapter worker] ++ I.arguments call
-        command = Process.Command (executable worker) inputs (encodeUtf8 (Text.pack (I.input call)))
+        command = Process.Command (executable worker) inputs (environment worker) (encodeUtf8 (Text.pack (I.input call)))
     returned <- Process.run command (authorize registry pending)
     case first failure returned of
         Right output -> first InvalidOutput <$> observe pending output
         Left problem -> pure (Left problem)
 
 runBatch :: Worker -> [I.Call] -> IO (Either Failure [Execution])
-runBatch worker calls = withRegistry $ \registry -> do
+runBatch worker = runSession worker (\line -> Bytes.hPutStrLn stdout line >> hFlush stdout)
+
+runSession :: Worker -> (ByteString -> IO ()) -> [I.Call] -> IO (Either Failure [Execution])
+runSession worker echo calls = withRegistry $ \registry -> do
     pending <- traverse (\call -> Pending call <$> newIORef Nothing) calls
     let inputs = [script worker, "--cache=" ++ cache worker, "--adapter=" ++ adapter worker]
+        launch = Process.Launch (executable worker) inputs (environment worker) echo
         exchange value@(Pending call _) = Process.Exchange (I.batchInput call) (authorize registry value) (fmap void . observe value)
-    returned <- Process.batch (executable worker, inputs) (map exchange pending)
+    returned <- Process.batch launch (map exchange pending)
     case first failure returned of
         Right outputs -> fmap (first InvalidOutput . sequence) (traverse (uncurry observe) (zip pending outputs))
         Left problem -> pure (Left problem)

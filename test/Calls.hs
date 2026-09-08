@@ -178,7 +178,7 @@ handshake = do
             marker = root </> "approved"
             body = unlines ["IFS= read -r invocation || exit 21", "printf '%s\\n' " ++ unwords (map (quote . Bytes.unpack) (Bytes.lines (wire reported))), "IFS= read -r permission || exit 22", "test \"$permission\" = " ++ quote (Bytes.unpack (permissionInput call)) ++ " || exit 23", "printf '%s' \"$permission\" > " ++ quote marker, "exit 7"]
         evalIO (writeFile script body)
-        outcome <- evalIO (W.run (W.Worker "/bin/sh" script root root) call)
+        outcome <- evalIO (W.run (W.Worker "/bin/sh" script root root []) call)
         case (valid, outcome) of
             (True, Left (W.WorkerExit (ExitFailure 7))) -> success
             (False, Left (W.InvalidOutput _)) -> success

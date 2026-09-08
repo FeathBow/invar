@@ -1,0 +1,7 @@
+torch @ https://download-r2.pytorch.org/whl/cu128/torch-2.11.0%2Bcu128-cp312-cp312-manylinux_2_28_x86_64.whl#sha256=d252cf975fb18c94a85336323ad425f473df56dab35a44b00399bd70c7a3b997
+transformers==5.16.1
+peft==0.20.0
+bitsandbytes==0.50.2
+accelerate==1.14.0
+huggingface-hub==1.30.0
+safetensors==0.8.0

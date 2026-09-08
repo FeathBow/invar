@@ -1,0 +1,148 @@
+{-# LANGUAGE OverloadedStrings #-}
+
+module Learning (learning, world) where
+
+import Control.Monad (forM_)
+import Data.Aeson qualified as J
+import Data.Char (ord)
+import Data.Map.Strict qualified as Map
+import Hedgehog
+import Hedgehog.Gen qualified as Gen
+import Hedgehog.Range qualified as Range
+import Invar.Learn.Program qualified as P
+import Invar.Learn.Wire qualified as W
+import Invar.Spec.Artifact qualified as A
+import Invar.Spec.Evaluate qualified as E
+import Invar.Spec.Program qualified as S
+import Invar.Spec.Value (Scalar (..), Value (..))
+import Numeric.Natural (Natural)
+import Properties (campaign)
+
+learning :: Group
+learning = Group "Keyed learning emissions" [("lowering preserves the declared update request", once request), ("joint key renaming preserves the numerical payload", campaign renaming), ("one-source relabeling changes sample reward association", once association), ("groups order and probability roles cannot be substituted", once membership), ("interleaved samples retain their declared groups", once groups), ("source types reject non-bit behavior and operational inputs", once types), ("behavior bit patterns are not converted to numeric floats", once bits), ("load image must agree with each materialized input identity", once materialized)]
+  where
+    once = withTests 1 . property
+
+record :: [(String, Value Natural)] -> Value Natural
+record = Record . Map.fromList
+
+text :: String -> Value Natural
+text = Sequence . map (Atom . Token . fromIntegral . ord)
+
+number :: Rational -> Value Natural
+number = Atom . Number
+
+selector :: [Natural] -> Value Natural
+selector keys = Mapping (Map.fromList [(key, Atom (Boolean True)) | key <- keys])
+
+world :: E.World
+world = Map.fromList [(S.Semantic "policy", image), (S.Semantic "learner", learner), (S.Semantic "reference", text (replicate 64 'c')), (S.Semantic "algorithm", record [("epsilon", number (1 / 5)), ("penalty", number (1 / 25)), ("delta", number (1 / 10000))]), (S.Semantic "trajectories", Mapping (Map.fromList [(2, trajectory 17 12), (9, trajectory 18 13)])), (S.Semantic "behavior", Mapping (Map.fromList [(2, Sequence [Atom (Bits32 0xbf800000)]), (9, Sequence [Atom (Bits32 0xbf000000)])])), (S.Semantic "rewards", Mapping (Map.fromList [(2, number 1), (9, number 0)])), (S.Semantic "groups", Sequence [selector [2, 9]]), (S.Semantic "order", Sequence [selector [9], selector [2]])]
+  where
+    image = record [("artifact", text "22f6619dc862f0f4c9bec5d1a1a6f11958b2299d02f18d1f04aa5e0e0b94d3d6"), ("profile", text (replicate 64 'f'))]
+    learner = record [("policy", text (replicate 64 'a')), ("learner", text (replicate 64 'b')), ("tokenizer", text (replicate 64 'd')), ("base", text (replicate 64 'e')), ("assembly", text (replicate 64 'f')), ("optimizer", record [("learning_rate", number (1 / 500)), ("betas", Sequence [number (4 / 5), number (19 / 20)]), ("epsilon", number (1 / 10000000)), ("weight_decay", number (1 / 100))])]
+    trajectory seed token = record [("prompt", text "Compute the answer."), ("seed", number seed), ("limit", Atom (Token 1)), ("temperature", number (4 / 5)), ("tokens", Sequence [Atom (Token 11), Atom (Token token)]), ("prompt_length", Atom (Token 1)), ("text", text "#### 12"), ("truncated", Atom (Boolean False))]
+
+expected :: J.Value
+expected = J.object ["specification" J..= ("grpo-token-mean/v1" :: String), "policy" J..= replicate 64 'a', "learner" J..= replicate 64 'b', "tokenizer" J..= replicate 64 'd', "base" J..= replicate 64 'e', "assembly" J..= replicate 64 'f', "reference" J..= replicate 64 'c', "epsilon" J..= (0.2 :: Double), "penalty" J..= (0.04 :: Double), "delta" J..= (0.0001 :: Double), "optimizer" J..= optimizer, "order" J..= (["s0", "s1"] :: [String]), "samples" J..= [sample "s0" (18, 13, 0xbf000000, 0), sample "s1" (17, 12, 0xbf800000, 1)]]
+  where
+    optimizer = J.object ["learning_rate" J..= (0.002 :: Double), "betas" J..= ([0.8, 0.95] :: [Double]), "epsilon" J..= (0.0000001 :: Double), "weight_decay" J..= (0.01 :: Double)]
+    sample name (seed, token, word, reward) = J.object ["sample" J..= (name :: String), "group" J..= ("g0" :: String), "prompt" J..= ("Compute the answer." :: String), "seed" J..= (seed :: Integer), "limit" J..= (1 :: Int), "temperature" J..= (0.8 :: Double), "tokens" J..= [11, token :: Int], "prompt_length" J..= (1 :: Int), "behavior_bits" J..= [word :: Integer], "text" J..= ("#### 12" :: String), "truncated" J..= False, "reward" J..= (reward :: Double)]
+
+emission :: E.World -> PropertyT IO E.Emission
+emission inputs = do
+    checked <- evalEither P.checked
+    commands <- evalEither (A.run checked inputs)
+    case commands of
+        [command] -> pure command
+        _ -> failure
+
+lower :: E.World -> PropertyT IO J.Value
+lower inputs = emission inputs >>= evalEither . W.lower
+
+request :: PropertyT IO ()
+request = lower world >>= (=== expected)
+
+rename :: (Natural -> Natural) -> Value Natural -> Value Natural
+rename names value = case value of
+    Mapping entries -> Mapping (Map.fromList [(names key, rename names payload) | (key, payload) <- Map.toList entries])
+    Record fields -> Record (fmap (rename names) fields)
+    Sequence values -> Sequence (map (rename names) values)
+    Atom _ -> value
+
+renaming :: PropertyT IO ()
+renaming = do
+    base <- forAll (Gen.integral (Range.linear 0 keyRange))
+    reverseKeys <- forAll Gen.bool
+    let names key = base + if (key == 2) == reverseKeys then 3 else 1
+    cover 20 "key order reversed" reverseKeys
+    cover 20 "key order preserved" (not reverseKeys)
+    lower (fmap (rename names) world) >>= (=== expected)
+  where
+    keyRange = 10000
+
+association :: PropertyT IO ()
+association = do
+    let changed = Map.adjust (rename (\key -> if key == 2 then 9 else 2)) (S.Semantic "rewards") world
+    result <- lower changed
+    assert (result /= expected)
+
+groups :: PropertyT IO ()
+groups = do
+    let expanded = Map.mapWithKey expand world
+        grouped = Map.insert (S.Semantic "groups") (Sequence [selector [2, 9], selector [12, 19]]) expanded
+        ordered = Map.insert (S.Semantic "order") (Sequence (map (selector . pure) [19, 2, 12, 9])) grouped
+    result <- lower ordered >>= json @(Map.Map String J.Value)
+    entries <- evalMaybe (Map.lookup "samples" result) >>= json @[Map.Map String J.Value]
+    map (Map.lookup "group") entries === map (Just . J.String) ["g1", "g0", "g1", "g0"]
+  where
+    expand source (Mapping values)
+        | source `elem` map S.Semantic ["trajectories", "behavior", "rewards"] = Mapping (Map.union values (Map.mapKeys (+ offset) values))
+    expand _ value = value
+    offset = 10
+
+json :: (J.FromJSON value) => J.Value -> PropertyT IO value
+json value = case J.fromJSON value of
+    J.Success result -> pure result
+    J.Error problem -> annotate problem >> failure
+
+membership :: PropertyT IO ()
+membership = forM_ cases $ \(source, value) -> do
+    command <- emission (Map.insert (S.Semantic source) value world)
+    case W.lower command of
+        Left (W.Membership _) -> success
+        unexpected -> annotateShow unexpected >> failure
+  where
+    cases = [("order", Sequence [selector [2], selector [2]]), ("order", Sequence [selector [2, 9]]), ("order", Sequence []), ("groups", Sequence [selector [2], selector [9]]), ("groups", Sequence [selector [2, 9], selector [2, 9]]), ("groups", Sequence []), ("groups", Sequence [Mapping (Map.fromList [(2, Atom (Boolean False)), (9, Atom (Boolean True))])]), ("rewards", Mapping (Map.singleton 2 (number 1))), ("behavior", Mapping (Map.singleton 9 (Sequence [Atom (Bits32 0xbf000000)])))]
+
+types :: PropertyT IO ()
+types = do
+    checked <- evalEither P.checked
+    let source = S.Semantic "behavior"
+        kind = S.MapType (S.SequenceType S.BitsType)
+        replaced = Mapping (Map.fromList [(2, Sequence [number (-1)]), (9, Sequence [number (-(1 / 2))])])
+    A.run checked (Map.insert source replaced world) === Left (E.InvalidInput source kind)
+    case A.run checked (Map.insert (S.Operational "history") (number 1) world) of
+        Left (E.ExtraInputs _) -> success
+        unexpected -> annotateShow unexpected >> failure
+
+bits :: PropertyT IO ()
+bits = do
+    let changed bit = Map.insert (S.Semantic "behavior") (Mapping (Map.fromList [(2, Sequence [Atom (Bits32 bit)]), (9, Sequence [Atom (Bits32 0xbf000000)])])) world
+    negative <- lower (changed 0x80000000)
+    positive <- lower (changed 0)
+    assert (negative /= positive)
+
+materialized :: PropertyT IO ()
+materialized = forM_ changed $ \inputs -> do
+    command <- emission inputs
+    case W.lower command of
+        Left (W.Shape _) -> success
+        unexpected -> annotateShow unexpected >> failure
+  where
+    changed =
+        Map.insert (S.Semantic "reference") other world
+            : [Map.adjust (replace name) (S.Semantic source) world | (source, name) <- fields]
+    fields = [("policy", "artifact"), ("policy", "profile")] ++ [("learner", name) | name <- ["policy", "learner", "tokenizer", "base", "assembly"]]
+    replace name (Record values) = Record (Map.insert name other values)
+    replace _ value = value
+    other = text (replicate 64 '0')

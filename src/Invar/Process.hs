@@ -1,16 +1,19 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Process (Command (..), Exchange (..), Failure (..), run, batch) where
+module Invar.Process (Command (..), Launch (..), Exchange (..), Failure (..), run, batch) where
 
 import Data.Aeson (eitherDecodeStrict, (.:))
 import Data.Aeson.Types (parseEither)
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as Bytes
+import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..))
 import System.IO (Handle, hClose, hFlush, hIsEOF, stdout)
 import System.Process
 
-data Command = Command {executable :: FilePath, arguments :: [String], input :: ByteString}
+data Command = Command {executable :: FilePath, arguments :: [String], environment :: [(String, String)], input :: ByteString}
+
+data Launch = Launch {program :: FilePath, launchArguments :: [String], overlay :: [(String, String)], echo :: ByteString -> IO ()}
 
 data Failure problem = Exit ExitCode | Rejected problem | Protocol String
     deriving (Eq, Show)
@@ -18,6 +21,7 @@ data Failure problem = Exit ExitCode | Rejected problem | Protocol String
 data Session problem = Session
     { pipes :: (Handle, Handle, ProcessHandle)
     , review :: ByteString -> IO (Either problem ByteString)
+    , emit :: ByteString -> IO ()
     }
 
 data Exchange problem = Exchange
@@ -26,16 +30,23 @@ data Exchange problem = Exchange
     , completion :: ByteString -> IO (Either problem ())
     }
 
-batch :: (FilePath, [String]) -> [Exchange problem] -> IO (Either (Failure problem) [ByteString])
+batch :: Launch -> [Exchange problem] -> IO (Either (Failure problem) [ByteString])
 batch _ [] = pure (Right [])
-batch (program, launchArguments) exchanges = withCreateProcess configured $ \incoming outgoing _ child -> case (incoming, outgoing) of
-    (Just writer, Just reader) -> exchangeAll (writer, reader, child) exchanges []
-    _ -> ioError (userError "Worker batch pipes were not created")
-  where
-    configured = (proc program launchArguments) {std_in = CreatePipe, std_out = CreatePipe, std_err = Inherit}
+batch launch exchanges = do
+    prepared <- environmentFor (overlay launch)
+    let configured = (proc (program launch) (launchArguments launch)) {std_in = CreatePipe, std_out = CreatePipe, std_err = Inherit, env = prepared}
+    withCreateProcess configured $ \incoming outgoing _ child -> case (incoming, outgoing) of
+        (Just writer, Just reader) -> exchangeAll (echo launch) (writer, reader, child) exchanges []
+        _ -> ioError (userError "Worker batch pipes were not created")
 
-exchangeAll :: (Handle, Handle, ProcessHandle) -> [Exchange problem] -> [ByteString] -> IO (Either (Failure problem) [ByteString])
-exchangeAll handles@(writer, reader, child) [] collected = do
+environmentFor :: [(String, String)] -> IO (Maybe [(String, String)])
+environmentFor [] = pure Nothing
+environmentFor added = do
+    inherited <- getEnvironment
+    pure (Just ([entry | entry@(name, _) <- inherited, name `notElem` map fst added] ++ added))
+
+exchangeAll :: (ByteString -> IO ()) -> (Handle, Handle, ProcessHandle) -> [Exchange problem] -> [ByteString] -> IO (Either (Failure problem) [ByteString])
+exchangeAll _ handles@(writer, reader, child) [] collected = do
     hClose writer
     ended <- hIsEOF reader
     if ended
@@ -44,15 +55,15 @@ exchangeAll handles@(writer, reader, child) [] collected = do
             pure $ case status of
                 ExitSuccess -> Right (reverse collected)
                 _ -> Left (Exit status)
-        else reject (Session handles (const (pure (Right "")))) (Protocol "Output follows the final batch response")
-exchangeAll handles@(writer, _, _) (exchange : remaining) collected = do
+        else reject (Session handles (const (pure (Right ""))) (const (pure ()))) (Protocol "Output follows the final batch response")
+exchangeAll report handles@(writer, _, _) (exchange : remaining) collected = do
     Bytes.hPutStrLn writer (message exchange)
     hFlush writer
-    let session = Session handles (permission exchange)
+    let session = Session handles (permission exchange) report
     received <- response session exchange ([], False)
     case received of
         Left problem -> pure (Left problem)
-        Right output -> exchangeAll handles remaining (output : collected)
+        Right output -> exchangeAll report handles remaining (output : collected)
 
 response :: Session problem -> Exchange problem -> ([ByteString], Bool) -> IO (Either (Failure problem) ByteString)
 response session exchange state = do
@@ -68,8 +79,7 @@ response session exchange state = do
 
 responseLine :: Session problem -> (Exchange problem, ([ByteString], Bool)) -> ByteString -> IO (Either (Failure problem) ByteString)
 responseLine session (exchange, (collected, granted)) line = do
-    Bytes.hPutStrLn stdout line
-    hFlush stdout
+    emit session line
     let observed = line : collected
         output = Bytes.unlines (reverse observed)
     case stage line of
@@ -96,14 +106,18 @@ permitResponse session (exchange, observed) output = do
             response session exchange (observed, True)
 
 run :: Command -> (ByteString -> IO (Either problem ByteString)) -> IO (Either (Failure problem) ByteString)
-run command approve = withCreateProcess configured $ \incoming outgoing _ child -> case (incoming, outgoing) of
-    (Just writer, Just reader) -> do
-        Bytes.hPutStrLn writer (input command)
-        hFlush writer
-        consume (Session (writer, reader, child) approve) [] False
-    _ -> ioError (userError "Worker protocol pipes were not created")
-  where
-    configured = (proc (executable command) (arguments command)) {std_in = CreatePipe, std_out = CreatePipe, std_err = Inherit}
+run command approve = do
+    prepared <- environmentFor (environment command)
+    let configured = (proc (executable command) (arguments command)) {std_in = CreatePipe, std_out = CreatePipe, std_err = Inherit, env = prepared}
+    withCreateProcess configured $ \incoming outgoing _ child -> case (incoming, outgoing) of
+        (Just writer, Just reader) -> do
+            Bytes.hPutStrLn writer (input command)
+            hFlush writer
+            consume (Session (writer, reader, child) approve live) [] False
+        _ -> ioError (userError "Worker protocol pipes were not created")
+
+live :: ByteString -> IO ()
+live line = Bytes.hPutStrLn stdout line >> hFlush stdout
 
 consume :: Session problem -> [ByteString] -> Bool -> IO (Either (Failure problem) ByteString)
 consume session collected granted = do
@@ -115,8 +129,7 @@ consume session collected granted = do
 
 receive :: Session problem -> ([ByteString], Bool) -> ByteString -> IO (Either (Failure problem) ByteString)
 receive session (collected, granted) line = do
-    Bytes.hPutStrLn stdout line
-    hFlush stdout
+    emit session line
     let observed = line : collected
     case stage line of
         Left problem -> reject session (Protocol problem)
