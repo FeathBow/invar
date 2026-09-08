@@ -81,3 +81,5 @@ jobs:
           echo "ccabc8802a58154699a3583b8dddc5ea2e6d65753a62c45c0e80088ebb16b42b  $RUNNER_TEMP/hlint.tar.gz" | sha256sum --check
           tar -xzf "$RUNNER_TEMP/hlint.tar.gz" -C "$RUNNER_TEMP"
           "$RUNNER_TEMP/hlint-3.10/hlint" src test
+      - name: Type fixtures
+        run: cabal exec -- sh test/types.sh ghc

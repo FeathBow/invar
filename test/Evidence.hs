@@ -1,0 +1,163 @@
+{-# LANGUAGE OverloadedStrings #-}
+
+module Evidence (evidence) where
+
+import Control.Monad (forM_)
+import Data.ByteString (ByteString)
+import Data.Map.Strict qualified as Map
+import Data.Set qualified as Set
+import Hedgehog
+import Invar.Spec.Artifact qualified as A
+import Invar.Spec.Evaluate qualified as E
+import Invar.Spec.Evidence qualified as C
+import Invar.Spec.Invocation qualified as I
+import Invar.Spec.Program
+import Invar.Spec.Value (Scalar (..), Value (..))
+
+evidence :: Group
+evidence =
+    Group
+        "Evidence judgements"
+        [ ("report equality produces only its exact claim", once comparison)
+        , ("unequal report bytes retain a concrete witness", once counterexample)
+        , ("external claims remain explicit hypotheses", once hypotheses)
+        , ("discharge removes only the proved hypothesis", once discharge)
+        , ("self-support cannot erase an assumption", once selfSupport)
+        , ("every obligation dimension participates in matching", once dimensions)
+        , ("missing and cyclic evidence remain unknown", once invalidGraphs)
+        , ("local refutation lifts only to the declared conjunction", once lifting)
+        , ("shared proof nodes preserve assumptions", once shared)
+        ]
+  where
+    once = withTests 1 . property
+
+first, second, third, fourth :: C.EvidenceId
+first = C.EvidenceId 0
+second = C.EvidenceId 1
+third = C.EvidenceId 2
+fourth = C.EvidenceId 3
+
+obligation :: C.Obligation
+obligation = C.Obligation "refines" "reference-v1" "token-bits" "one-case" "load-1"
+
+external :: C.Claim
+external = C.External obligation
+
+completed :: ByteString -> PropertyT IO I.Completion
+completed output = do
+    let value = Atom (Number 3)
+        schema = Schema Map.empty Map.empty (Map.singleton "out" (Sink "reference" NumberType Set.empty Set.empty))
+    checked <- evalEither (A.load (A.encode (E.Semantics schema Map.empty) [Emit "out" "reference" (Constant NumberType value)]))
+    let bound = I.Binding (I.CallId 0) (I.AttemptId 0) (I.Instance 0)
+    prepared <- evalEither (I.prepare (I.Selection (I.CallId 0) Map.empty) (I.start checked 0))
+    sent <- evalEither (I.issue bound prepared)
+    used <- evalEither (I.consume (I.Consumption bound (A.bytes checked) (E.Emission "out" "reference" value)) sent)
+    done <- evalEither (I.finish bound output used)
+    evalEither (I.completion done (I.AttemptId 0)) >>= evalMaybe
+
+accepted :: C.Verdict -> PropertyT IO C.Certificate
+accepted (C.Accept certificate) = pure certificate
+accepted other = annotateShow other >> failure
+
+refuted :: C.Verdict -> PropertyT IO C.Counterexample
+refuted (C.Refute result) = pure result
+refuted other = annotateShow other >> failure
+
+comparison :: PropertyT IO ()
+comparison = do
+    report <- completed "actual"
+    let goal = C.OutputEqual report "actual"
+    result <- accepted (C.check (Map.singleton first (C.Node goal C.Compare)) first)
+    C.conclusion result === goal
+    C.assumptions result === []
+    C.methods result === [C.ReportComparison]
+    C.check (Map.singleton first (C.Node external C.Compare)) first === C.Unknown (C.UnsupportedComparison external)
+
+counterexample :: PropertyT IO ()
+counterexample = do
+    report <- completed "actual"
+    let goal = C.OutputEqual report "expected"
+    result <- refuted (C.check (Map.singleton first (C.Node goal C.Compare)) first)
+    C.refuted result === goal
+    C.witness result === (report, "expected")
+    assert (I.completedOutput report /= snd (C.witness result))
+
+hypotheses :: PropertyT IO ()
+hypotheses = do
+    result <- accepted (C.check (Map.singleton first (C.Node external C.Assume)) first)
+    C.conclusion result === external
+    C.assumptions result === [external]
+    C.methods result === [C.Hypothesis]
+
+discharge :: PropertyT IO ()
+discharge = do
+    report <- completed "actual"
+    let equality = C.OutputEqual report "actual"
+        composite = C.All [external, equality]
+        graph =
+            Map.fromList
+                [ (first, C.Node external C.Assume)
+                , (second, C.Node equality C.Assume)
+                , (third, C.Node composite (C.Conjoin [first, second]))
+                , (fourth, C.Node equality C.Compare)
+                , (C.EvidenceId 4, C.Node composite (C.Discharge third [fourth]))
+                ]
+    result <- accepted (C.check graph (C.EvidenceId 4))
+    C.conclusion result === composite
+    C.assumptions result === [external]
+    assert (C.ReportComparison `elem` C.methods result)
+    assert (C.AssumptionDischarge `elem` C.methods result)
+
+selfSupport :: PropertyT IO ()
+selfSupport = do
+    let graph = Map.fromList [(first, C.Node external C.Assume), (second, C.Node external (C.Discharge first [first]))]
+    result <- accepted (C.check graph second)
+    C.assumptions result === [external]
+
+dimensions :: PropertyT IO ()
+dimensions = forM_ changed $ \different -> do
+    let other = C.External different
+        graph = Map.fromList [(first, C.Node external C.Assume), (second, C.Node other C.Assume), (third, C.Node external (C.Discharge first [second]))]
+    C.check graph third === C.Unknown (C.UnmatchedDischarge other)
+  where
+    changed =
+        [ obligation {C.predicate = "preserves"}
+        , obligation {C.specification = "reference-v2"}
+        , obligation {C.observation = "logprob-bits"}
+        , obligation {C.domain = "all-cases"}
+        , obligation {C.binding = "load-2"}
+        ]
+
+invalidGraphs :: PropertyT IO ()
+invalidGraphs = do
+    C.check Map.empty first === C.Unknown (C.MissingEvidence first)
+    let cycleGraph = Map.fromList [(first, C.Node external (C.Discharge second [])), (second, C.Node external (C.Discharge first []))]
+    C.check cycleGraph first === C.Unknown (C.Cycle first)
+    let missing = Map.singleton first (C.Node external (C.Discharge second []))
+    C.check missing first === C.Unknown (C.MissingEvidence second)
+    report <- completed "actual"
+    let falseClaim = C.OutputEqual report "other"
+        withFalse = Map.insert third (C.Node falseClaim C.Compare) cycleGraph
+        whole = C.All [external, falseClaim]
+    C.check (Map.insert fourth (C.Node whole (C.Conjoin [first, third])) withFalse) fourth === C.Unknown (C.Cycle first)
+
+lifting :: PropertyT IO ()
+lifting = do
+    report <- completed "actual"
+    let falseClaim = C.OutputEqual report "other"
+        base = Map.singleton first (C.Node falseClaim C.Compare)
+        conjunction = C.All [falseClaim]
+    C.check (Map.insert second (C.Node external (C.Conjoin [first])) base) second === C.Unknown (C.WrongConclusion conjunction external)
+    result <- refuted (C.check (Map.insert second (C.Node conjunction (C.Conjoin [first])) base) second)
+    C.refuted result === conjunction
+    C.witness result === (report, "other")
+
+shared :: PropertyT IO ()
+shared = do
+    let pair = C.All [external, external]
+        graph = Map.fromList [(first, C.Node external C.Assume), (second, C.Node pair (C.Conjoin [first, first])), (third, C.Node (C.All [pair, pair]) (C.Conjoin [second, second]))]
+    result <- accepted (C.check graph third)
+    C.assumptions result === [external]
+    empty <- accepted (C.check (Map.singleton first (C.Node (C.All []) (C.Conjoin []))) first)
+    C.conclusion empty === C.All []
+    C.assumptions empty === []
