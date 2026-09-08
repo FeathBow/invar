@@ -22,21 +22,24 @@ common defaults
 
 library
   import: defaults
-  build-depends: deepseq >= 1.5 && < 1.6
+  build-depends: aeson >= 2.3.1 && < 2.4, cryptohash-sha256 >= 0.11.102.1 && < 0.12, deepseq >= 1.5 && < 1.6, filepath >= 1.5 && < 1.6, process >= 1.6.26 && < 1.7, text >= 2.1 && < 2.2, unix >= 2.8 && < 2.9
+  c-sources: cbits/store.c
+  cc-options: -Wall -Wextra -Werror
   default-extensions: NoGeneralizedNewtypeDeriving
   hs-source-dirs: src
-  exposed-modules: Invar.Spec.Request, Invar.Spec.Value, Invar.Spec.Program, Invar.Spec.Dependency, Invar.Spec.Operator, Invar.Spec.Evaluate, Invar.Spec.Artifact, Invar.Spec.Invocation, Invar.Spec.Evidence, Invar.Spec.Load, Invar.Construct, Invar.Literal
-  other-modules: Invar.Spec.Syntax, Invar.Spec.Decode, Invar.Spec.Encode, Invar.Construct.Types
+  exposed-modules: Invar.Spec.Request, Invar.Spec.Value, Invar.Spec.Program, Invar.Spec.Dependency, Invar.Spec.Operator, Invar.Spec.Evaluate, Invar.Spec.Artifact, Invar.Spec.Invocation, Invar.Spec.Evidence, Invar.Spec.Load, Invar.Construct, Invar.Literal, Invar.Store, Invar.Infer, Invar.Infer.Result, Invar.Infer.Invocation, Invar.Worker, Invar.Policy, Invar.Artifact
+  other-modules: Invar.Spec.Syntax, Invar.Spec.Decode, Invar.Spec.Encode, Invar.Construct.Types, Invar.Materialization, Invar.Load, Invar.Infer.Load, Invar.Infer.Wire, Invar.Process, Invar.Policy.Header, Invar.Policy.Encoding, Invar.Json
 
 test-suite request
   import: defaults
   type: exitcode-stdio-1.0
   hs-source-dirs: test
   main-is: Main.hs
-  other-modules: Model, History, Properties, Fixtures, Arguments, Values, Dependencies, Evaluation, Artifacts, Construction, Collections, Records, Literals, Invocations, Evidence, Loads
+  other-modules: Model, History, Properties, Fixtures, Arguments, Values, Dependencies, Evaluation, Artifacts, Construction, Collections, Records, Literals, Invocations, Evidence, Loads, Store, Checkpoints, Inference, Results, Calls, BatchCalls
   build-depends:
     invar,
-    hedgehog >= 1.7 && < 1.8
+    hedgehog >= 1.7 && < 1.8,
+    aeson >= 2.3.1 && < 2.4, directory >= 1.3 && < 1.4, filepath >= 1.5 && < 1.6, text >= 2.1 && < 2.2, unix >= 2.8 && < 2.9
 
 source-repository head
   type: git

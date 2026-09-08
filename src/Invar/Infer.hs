@@ -1,0 +1,140 @@
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE Safe #-}
+
+module Invar.Infer (Request (..), Plan, Error (..), prepare, emission, invocation, arguments, requested, image) where
+
+import Control.Monad (unless, when)
+import Data.ByteString (ByteString)
+import Data.Char (chr, ord)
+import Data.Map.Strict qualified as Map
+import Data.Ratio (denominator, numerator)
+import Data.Set qualified as Set
+import Invar.Construct qualified as C
+import Invar.Materialization qualified as Materialization
+import Invar.Spec.Artifact qualified as A
+import Invar.Spec.Evaluate qualified as E
+import Invar.Spec.Invocation qualified as V
+import Invar.Spec.Load qualified as Load
+import Invar.Spec.Program qualified as P
+import Invar.Spec.Value (Scalar (..), Value (..))
+import Numeric.Natural (Natural)
+
+data Request = Request
+    { artifact :: String
+    , tokenizer :: String
+    , base :: String
+    , assembly :: String
+    , prompt :: String
+    , tokens :: Natural
+    , temperature :: Double
+    , seed :: Integer
+    }
+    deriving (Eq, Show)
+
+newtype Plan = Plan Request
+    deriving (Eq, Show)
+
+data Error
+    = InvalidRequest String
+    | ConstructionError C.BuildError
+    | EvaluationError E.Error
+    | InvalidEmission String
+    | InvocationError V.Error
+    deriving (Eq, Show)
+
+type Inputs = C.Record '[ '("artifact", [Natural]), '("tokenizer", [Natural]), '("base", [Natural]), '("assembly", [Natural]), '("prompt", [Natural]), '("tokens", Natural), '("temperature", Rational)]
+
+prepare :: Request -> Either Error Plan
+prepare request = Plan <$> (emission request >>= lower . E.payload)
+
+emission :: Request -> Either Error E.Emission
+emission request = do
+    validate request
+    checked <- either (Left . ConstructionError) Right program
+    emissions <- either (Left . EvaluationError) Right (A.run checked (world request))
+    case emissions of
+        [result@(E.Emission "infer" "categorical-inference/v1" _)] -> Right result
+        _ -> Left (InvalidEmission "Expected one inference command")
+
+invocation :: V.Binding -> Plan -> Either Error (ByteString, V.Runtime)
+invocation bound planned = do
+    checked <- either (Left . ConstructionError) Right program
+    ready <- convert (V.prepare (V.Selection (V.boundCall bound) (world (requested planned))) (V.start checked 0))
+    pure (A.bytes checked, ready)
+  where
+    convert = either (Left . InvocationError) Right
+
+program :: Either C.BuildError A.Checked
+program = C.compile meaning [C.emit @"infer" @"categorical-inference/v1" @'[ 'C.Semantic "request", 'C.Semantic "policy", 'C.LogicalRandom "sample"] expression]
+  where
+    expression = C.record (C.field @"policy" (C.source @('C.Semantic "policy") @(C.Record '[ '("artifact", [Natural]), '("profile", [Natural])])) (C.field @"request" (C.source @('C.Semantic "request") @Inputs) (C.field @"seed" (C.numberSource @('C.LogicalRandom "sample")) C.emptyFields)))
+    inputs = P.RecordType (Map.fromList [("artifact", P.SequenceType P.TokenType), ("tokenizer", P.SequenceType P.TokenType), ("base", P.SequenceType P.TokenType), ("assembly", P.SequenceType P.TokenType), ("prompt", P.SequenceType P.TokenType), ("tokens", P.TokenType), ("temperature", P.NumberType)])
+    policy = P.RecordType (Map.fromList [("artifact", P.SequenceType P.TokenType), ("profile", P.SequenceType P.TokenType)])
+    output = P.RecordType (Map.fromList [("policy", policy), ("request", inputs), ("seed", P.NumberType)])
+    sources = Map.fromList [(P.Semantic "request", inputs), (P.Semantic "policy", policy), (P.LogicalRandom "sample", P.NumberType)]
+    sink = P.Sink "categorical-inference/v1" output (Map.keysSet sources) Set.empty
+    meaning = E.Semantics (P.Schema sources Map.empty (Map.singleton "infer" sink)) Map.empty
+
+world :: Request -> E.World
+world request = Map.fromList [(P.Semantic "request", inputs), (P.Semantic "policy", Load.imageValue (image request)), (P.LogicalRandom "sample", Atom (Number (fromInteger (seed request))))]
+  where
+    inputs = Record (Map.fromList [("artifact", characters (artifact request)), ("tokenizer", characters (tokenizer request)), ("base", characters (base request)), ("assembly", characters (assembly request)), ("prompt", characters (prompt request)), ("tokens", Atom (Token (tokens request))), ("temperature", Atom (Number (toRational (temperature request))))])
+    characters = Sequence . map (Atom . Token . fromIntegral . ord)
+
+image :: Request -> Load.Image
+image request = Materialization.image (artifact request, tokenizer request, base request, assembly request)
+
+validate :: Request -> Either Error ()
+validate request = do
+    mapM_ identity [("adapter", artifact request), ("tokenizer", tokenizer request), ("frozen base", base request), ("model assembly", assembly request)]
+    unless (tokens request > 0) (Left (InvalidRequest "Token limit must be positive"))
+    let value = temperature request
+    unless (not (isNaN value || isInfinite value) && value > 0) (Left (InvalidRequest "Temperature must be finite and positive"))
+    when ('\0' `elem` prompt request) (Left (InvalidRequest "A process argument cannot contain NUL"))
+  where
+    digestLength = 64
+    hexadecimal character = character `elem` ['0' .. '9'] || character `elem` ['a' .. 'f']
+    identity (label, value) = unless (length value == digestLength && all hexadecimal value) (Left (InvalidRequest ("Expected a lowercase SHA-256 " ++ label ++ " identity")))
+
+lower :: Value Natural -> Either Error Request
+lower payload = do
+    inputs <- field "request" payload
+    identity <- field "artifact" inputs >>= text
+    encoding <- field "tokenizer" inputs >>= text
+    frozen <- field "base" inputs >>= text
+    configuration <- field "assembly" inputs >>= text
+    input <- field "prompt" inputs >>= text
+    cap <- field "tokens" inputs >>= natural
+    thermal <- field "temperature" inputs >>= rational
+    random <- field "seed" payload >>= rational
+    unless (denominator random == 1) (Left (InvalidEmission "Sample seed must be integral"))
+    let request = Request {artifact = identity, tokenizer = encoding, base = frozen, assembly = configuration, prompt = input, tokens = cap, temperature = fromRational thermal, seed = numerator random}
+    supplied <- field "policy" payload
+    unless (supplied == Load.imageValue (image request)) (Left (InvalidEmission "Policy materialization differs from the inference inputs"))
+    pure request
+
+field :: String -> Value Natural -> Either Error (Value Natural)
+field name (Record fields) = maybe (Left (InvalidEmission ("Missing field: " ++ name))) Right (Map.lookup name fields)
+field _ _ = Left (InvalidEmission "Expected a record")
+
+text :: Value Natural -> Either Error String
+text (Sequence values) = traverse character values
+  where
+    character (Atom (Token value))
+        | value <= fromIntegral (ord (maxBound :: Char)) = Right (chr (fromIntegral value))
+    character _ = Left (InvalidEmission "Expected a character code point")
+text _ = Left (InvalidEmission "Expected a text sequence")
+
+natural :: Value Natural -> Either Error Natural
+natural (Atom (Token value)) = Right value
+natural _ = Left (InvalidEmission "Expected a natural number")
+
+rational :: Value Natural -> Either Error Rational
+rational (Atom (Number value)) = Right value
+rational _ = Left (InvalidEmission "Expected a rational number")
+
+arguments :: Plan -> [String]
+arguments (Plan request) = ["--digest=" ++ artifact request, "--tokenizer-digest=" ++ tokenizer request, "--base-digest=" ++ base request, "--assembly-digest=" ++ assembly request, "--prompt=" ++ prompt request, "--tokens=" ++ show (tokens request), "--temperature=" ++ show (temperature request), "--seed=" ++ show (seed request)]
+
+requested :: Plan -> Request
+requested (Plan request) = request
