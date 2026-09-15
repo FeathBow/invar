@@ -17,8 +17,6 @@ from dataclasses import replace
 from pathlib import Path
 
 from worker import direct
-from worker import evidence
-from worker import performance
 from worker.tests.hf import direct as replay
 from worker.tests.hf import directbatch as batch
 from worker.tests.hf import performance as fixture
@@ -74,12 +72,12 @@ class BatchMeasurementChecks(unittest.TestCase):
     def report(self, runs):
         path = self.root / "manifest.json"
         path.write_text(json.dumps({"reference_log": str(self.options.reference_log), "reference_exit_code": 0, "runs": runs}))
-        return performance.report(path, self.options.tasks, self.options.policy)
+        return fixture.summarize(path, self.options.tasks, self.options.policy)
 
     def test_finite_execution_duration_is_counted_once_with_all_logical_tokens(self):
         report = self.report(self.runs)
         self.assertTrue(report["comparison"]["all_results_equal_to_reference"])
-        measured = evidence.measurements(self.options.reference_log, self.options.tasks, self.options.policy, exit_code=0)
+        measured = fixture.measured(self.options.reference_log, self.options.tasks, self.options.policy, exit_code=0)
         self.assertEqual([row["requests_per_execution"] for row in measured["loads"]], [[2], [4]])
         self.assertEqual(len(measured["measurements"]), 2)
         self.assertEqual([len(row["calls"]) for row in measured["measurements"]], [2, 4])

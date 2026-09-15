@@ -19,7 +19,7 @@ import unittest
 from dataclasses import replace
 
 from worker import direct
-from worker import performance
+from worker.tests.hf.performance import summarize
 from worker.tests.fixtures import resident as fixture
 
 OWNER_COUNTS = (1, 2, 3)
@@ -88,7 +88,7 @@ class ResidentDirectChecks(unittest.TestCase):
 
     def report(self, count):
         options = self.paths[count][0]
-        return performance.report(manifest(options, self.paths[count]), options.tasks, options.policy)
+        return summarize(manifest(options, self.paths[count]), options.tasks, options.policy)
 
     def test_physical_owners_keep_original_groups_profiles_and_final_close(self):
         for count in OWNER_COUNTS:
@@ -204,7 +204,7 @@ class ResidentDirectChecks(unittest.TestCase):
         options, observed = self.changed_output("numerical")
         self.assertEqual((observed["calls"], observed["equal_results"], observed["response_tokens"]), (6, 0, 12))
         paths = [options, self.paths[1][1]]
-        report = performance.report(manifest(options, paths), options.tasks, options.policy)
+        report = summarize(manifest(options, paths), options.tasks, options.policy)
         self.assertFalse(report["comparison"]["all_results_equal_to_reference"])
 
     def test_changed_physical_profile_cannot_pass_matched_measurement_admission(self):
@@ -212,7 +212,7 @@ class ResidentDirectChecks(unittest.TestCase):
         self.assertEqual(observed["equal_results"], 6)
         paths = [options, self.paths[1][1]]
         with self.assertRaisesRegex(ValueError, "profile"):
-            performance.report(manifest(options, paths), options.tasks, options.policy)
+            summarize(manifest(options, paths), options.tasks, options.policy)
 
     def changed_output(self, fault):
         options = self.paths[1][0]

@@ -6,6 +6,7 @@ except ImportError as missing:
     raise unittest.SkipTest(f"{missing.name} is not installed") from missing
 
 import copy
+import hashlib
 import json
 import shutil
 import struct
@@ -19,8 +20,7 @@ from itertools import product
 from pathlib import Path
 
 from worker import direct
-from worker import evaluation
-from worker.tests import quality as fixture
+from worker.tests.fixtures import evaluation as fixture
 
 FAILURE_STATUS = 19
 PREFIX = (11, 13)
@@ -112,8 +112,8 @@ class DirectChecks(unittest.TestCase):
 
     def test_complete_inventory_and_exact_arguments(self):
         digest, tasks_digest, calls = direct.calls(self.options)
-        self.assertEqual(digest, evaluation.snapshot(self.options.reference_log)[0])
-        self.assertEqual(tasks_digest, evaluation.snapshot(self.options.tasks)[0])
+        self.assertEqual(digest, hashlib.sha256(self.options.reference_log.read_bytes()).hexdigest())
+        self.assertEqual(tasks_digest, hashlib.sha256(self.options.tasks.read_bytes()).hexdigest())
         self.assertEqual(len(calls), sum(len(row["tasks"]) for row in fixture.declarations()))
         self.assertEqual([value.consumed["binding"]["call"] for value in calls], list(range(len(calls))))
         for bound in calls:

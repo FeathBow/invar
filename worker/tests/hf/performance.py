@@ -18,9 +18,7 @@ from pathlib import Path
 
 from worker import direct
 from worker.tests.hf import direct as fixture
-from worker import evaluation
-from worker import performance
-from worker import evidence
+from worker import core
 
 LOAD_SECONDS = 0.001
 INFERENCE_SECONDS = 0.002
@@ -28,11 +26,20 @@ INVAR_DURATIONS = (30, 40)
 DIRECT_DURATIONS = (20, 24)
 
 
+def summarize(manifest, tasks, policy, *, core_executable="invar"):
+    return core.invoke(["performance", "--manifest", manifest, "--tasks", tasks, "--policy", policy], executable=core_executable)
+
+
+def measured(log, tasks, policy, *, exit_code, core_executable="invar"):
+    return core.invoke(["inspect", "measurements", "--log", log, "--tasks", tasks, "--policy", policy, "--exit-code", exit_code],
+                       executable=core_executable)
+
+
 def worker_rows(bound):
     loaded = {"stage": "loaded_adapter", "binding": bound.consumed["binding"],
               "requested": fixture.fixture.INITIAL_POLICY, "consumed": fixture.fixture.INITIAL_POLICY,
               "model": "protocol-fixture", "revision": "fixed-fixture", "scope": "fixture only",
-              **evaluation.model_binding(bound.consumed)}
+              **{name: bound.consumed[name] for name in ("tokenizer", "base", "assembly") if name in bound.consumed}}
     raw = fixture.output(bound)
     raw[0]["seconds"] = LOAD_SECONDS
     raw[-2]["seconds"] = INFERENCE_SECONDS
@@ -141,12 +148,12 @@ class PerformanceChecks(unittest.TestCase):
         path = self.root / "manifest.json"
         path.write_text(json.dumps({"reference_log": str(self.options.reference_log), "reference_exit_code": 0,
                                     "runs": self.runs if runs is None else runs}))
-        return performance.report(path, self.options.tasks, self.options.policy, core_executable=core_executable)
+        return summarize(path, self.options.tasks, self.options.policy, core_executable=core_executable)
 
     def measurements(self, rows, name="measured-reference.jsonl"):
         path = self.root / name
         fixture.fixture.write(path, rows)
-        return evidence.measurements(path, self.options.tasks, self.options.policy, exit_code=0)
+        return measured(path, self.options.tasks, self.options.policy, exit_code=0)
 
     def test_selected_core_is_required_for_the_complete_report(self):
         selected = shutil.which("invar")
@@ -269,8 +276,8 @@ class MaterializedPerformanceChecks(PerformanceChecks):
         manifest = self.root / "partitioned-manifest.json"
         manifest.write_text(json.dumps({"reference_log": str(reference_log), "reference_exit_code": 0, "runs": [*runs, *serial]}))
         with self.assertRaisesRegex(ValueError, "same number of model loads per cohort"):
-            performance.report(manifest, self.options.tasks, self.options.policy)
-        observed = evidence.measurements(runs[0]["path"], source.tasks, source.policy, exit_code=0)
+            summarize(manifest, self.options.tasks, self.options.policy)
+        observed = measured(runs[0]["path"], source.tasks, source.policy, exit_code=0)
         self.assertTrue(observed["concurrent"])
         self.assertEqual(observed["sessions_per_cohort"], [2, 2])
         longest = sum(max(row["seconds"] + row["inference_seconds"] for row in observed["loads"] if row["cohort"] == index)
@@ -310,7 +317,7 @@ class MaterializedPerformanceChecks(PerformanceChecks):
             runs.append({"name": f"session-{index}", "route": "direct", "path": str(path), "exit_code": 0, "elapsed_seconds": elapsed})
         manifest = self.root / "batch-manifest.json"
         manifest.write_text(json.dumps({"reference_log": str(reference_log), "reference_exit_code": 0, "runs": runs}))
-        result = performance.report(manifest, self.options.tasks, self.options.policy)
+        result = summarize(manifest, self.options.tasks, self.options.policy)
         self.assertEqual((result["comparison"]["cohorts"], result["comparison"]["sessions_per_cohort"]), (2, [1, 1]))
         self.assertTrue(result["comparison"]["all_results_equal_to_reference"])
         self.assertEqual(result["comparison"]["invar_minus_direct_elapsed_seconds"], 13)
@@ -323,7 +330,7 @@ class MaterializedPerformanceChecks(PerformanceChecks):
         for change in ({"concurrent": True}, {"cohorts": 1}, {"loads": 1}):
             completion.write_bytes(json.dumps({**json.loads(original), **change}).encode())
             with self.subTest(change=change), self.assertRaises(ValueError):
-                performance.report(manifest, self.options.tasks, self.options.policy)
+                summarize(manifest, self.options.tasks, self.options.policy)
         completion.write_bytes(original)
         process = replace(session, worker=self.root / "batchprocess.py", mode="process")
         payload = {bound.consumed["binding"]["call"]: worker_rows(bound) for bound in calls}
@@ -339,7 +346,7 @@ class MaterializedPerformanceChecks(PerformanceChecks):
             mixed.append({"name": f"batchprocess-{index}", "route": "direct", "path": str(path), "exit_code": 0, "elapsed_seconds": elapsed})
         manifest.write_text(json.dumps({"reference_log": str(reference_log), "reference_exit_code": 0, "runs": mixed}))
         with self.assertRaisesRegex(ValueError, "same number of model loads per cohort"):
-            performance.report(manifest, self.options.tasks, self.options.policy)
+            summarize(manifest, self.options.tasks, self.options.policy)
 
 
 if __name__ == "__main__":

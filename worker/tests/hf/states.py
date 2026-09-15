@@ -1,4 +1,3 @@
-import os
 import unittest
 
 try:
@@ -15,26 +14,49 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from dataclasses import dataclass
 from pathlib import Path
 
 import torch
 from safetensors.torch import load_file, save_file
 
 from worker.tests.hf.cohort import request
-from worker.tests.hf.compare import replace_requests
 from worker.hf import codec
 from worker import core
-from worker.compare import inputs
 from worker.hf.learning import update
 from worker.tests.hf.learning import batch, make_learner
 from worker.hf.objective import Reward
 from worker.tests.hf.tokenization import make_tokenizer
 from worker.hf.operation import digest as tokenizer_digest
 from worker.hf.probe import adapter_state, checkpoint, digest, restore
-from worker.states import Input, compare
 from worker.update import observation
 
 SEED = 17
+
+
+@dataclass(frozen=True, kw_only=True)
+class Input:
+    checkpoint: Path
+    log: Path
+    call: int
+
+
+def inputs(left, right, kind):
+    result = []
+    for side, value in (("left", left), ("right", right)):
+        result.extend((f"--{side}-log", value.log, f"--{side}-call", value.call, f"--{side}-{kind}", getattr(value, kind)))
+    return result
+
+
+def compare(left, right, policy, *, core_executable="invar"):
+    return through_codec(left, right, policy, codec.Session().handle, core_executable=core_executable)
+
+
+def replace_requests(observation, change, *, stages=("consumed", "result")):
+    events = [json.loads(line) for line in observation.log.read_text().splitlines()]
+    changed = [{**event, "request": change(event["request"])} if event["stage"] in stages else event
+               for event in events]
+    observation.log.write_text("\n".join(json.dumps(event) for event in changed) + "\n")
 
 
 def sha(path):
@@ -117,10 +139,10 @@ def tensor_descriptions(value):
     return []
 
 
-def through_codec(left, right, policy, handler):
+def through_codec(left, right, policy, handler, *, core_executable="invar"):
     arguments = ["compare", "states", "--codec-mode", "stdio", "--policy", policy,
                  *inputs(left, right, "checkpoint")]
-    return core.exchange(arguments, executable="invar", handler=handler)
+    return core.exchange(arguments, executable=core_executable, handler=handler)
 
 
 def renumber(state, indices):
@@ -391,17 +413,6 @@ class StateTests(unittest.TestCase):
         replace_requests(right, lambda value: {**value, "order": value["order"][::-1]})
         with self.assertRaisesRegex(ValueError, "same program and consumed numerical input"):
             compare(self.left, right, self.policy)
-
-    def test_cli_reports_an_actual_optimizer_byte_difference(self):
-        right = self.changed_moment("cli")
-        command = [sys.executable, "-B", "-m", "worker.states", "--policy", str(self.policy)]
-        for name, value in (("left", self.left), ("right", right)):
-            command += [f"--{name}-checkpoint", str(value.checkpoint), f"--{name}-log", str(value.log),
-                        f"--{name}-call", str(value.call)]
-        result = subprocess.run(command, capture_output=True, text=True, check=False, cwd=Path(__file__).resolve().parents[3], timeout=20)
-        self.assertEqual(result.returncode, 1, result.stderr)
-        self.assertTrue(result.stdout, result.stderr)
-        self.assertFalse(json.loads(result.stdout)["learner_equal"])
 
 
 if __name__ == "__main__":
