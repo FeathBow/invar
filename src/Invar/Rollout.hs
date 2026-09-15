@@ -1,11 +1,11 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE RoleAnnotations #-}
 
-module Invar.Rollout (Driver, Options (..), Batch, Sample, Error (..), withDriver, run, samples, delivered, name, group, observation, reward, scored, completion, loaded) where
+module Invar.Rollout (Driver, Mode (..), Options (..), Batch, Sample, Error (..), withDriver, withConfiguredDriver, run, samples, delivered, name, group, observation, reward, scored, completion, loaded, qualified) where
 
 import Control.Concurrent (forkIOWithUnmask, killThread)
 import Control.Concurrent.MVar (newEmptyMVar, newMVar, putMVar, takeMVar, withMVar)
-import Control.Exception (SomeException, mask, onException, throwIO, try, uninterruptibleMask_)
+import Control.Exception (SomeException, finally, mask, onException, throwIO, try, uninterruptibleMask_)
 import Data.Bifunctor (first)
 import Data.ByteString.Char8 qualified as Bytes
 import Data.IORef (modifyIORef', newIORef, readIORef)
@@ -15,19 +15,24 @@ import Invar.Infer.Invocation qualified as I
 import Invar.Infer.Result qualified as R
 import Invar.Reward qualified as Reward
 import Invar.Rollout.Internal (Driver (..), reserve)
+import Invar.Rollout.Observation qualified as Observed
+import Invar.Rollout.Resident qualified as Resident
 import Invar.Schedule qualified as S
 import Invar.Spec.Invocation qualified as V
 import Invar.Spec.Load qualified as Load
+import Invar.Spec.Qualification qualified as Qualification
 import Invar.Worker qualified as W
 import Numeric.Natural (Natural)
 import System.IO (hFlush, stdout)
 
-data Options = Options {worker :: W.Worker, sessions :: [[(String, String)]], definition :: C.Definition, order :: [Natural], delivery :: [Natural]}
+data Mode = Serial | Batched | Resident | Shared deriving (Eq, Show)
+
+data Options = Options {worker :: W.Worker, mode :: Mode, sessions :: [[(String, String)]], definition :: C.Definition, order :: [Natural], delivery :: [Natural]}
 
 type role Batch nominal
 data Batch scope = Batch [Sample] [V.Binding]
 
-data Sample = Sample C.Task W.Execution Reward.Scored
+data Sample = Sample C.Task Observed.Observation Reward.Scored
 
 data Error = Declaration C.Error | Scheduling S.Error | Dispatch String | Preparation I.Error | Execution W.Failure | Admission C.Error
     deriving (Eq, Show)
@@ -36,7 +41,14 @@ withDriver :: (forall scope. Driver scope -> IO result) -> IO result
 withDriver action = do
     lock <- newMVar ()
     counter <- newIORef 0
-    action (Driver lock counter)
+    action (Driver lock counter Nothing)
+
+withConfiguredDriver :: Mode -> (W.Worker, [[(String, String)]]) -> (forall scope. Driver scope -> IO value) -> IO (Either Error value)
+withConfiguredDriver Resident configuration@(_, overlays) action
+    | null overlays = pure (Left (Dispatch "At least one session is required"))
+    | otherwise = first Execution <$> Resident.withPool configuration echo (\pool -> withDriver (\(Driver lock counter _) -> action (Driver lock counter (Just pool))))
+withConfiguredDriver Shared _ _ = pure (Left (Dispatch "Shared inference requires a joint inference and learning owner"))
+withConfiguredDriver _ _ action = Right <$> withDriver action
 
 run :: Driver scope -> Options -> IO (Either Error (Batch scope))
 run driver options = case C.withCohort (definition options) (collect driver options) of
@@ -44,12 +56,12 @@ run driver options = case C.withCohort (definition options) (collect driver opti
     Right action -> action
 
 collect :: Driver scope -> Options -> C.Cohort cohort -> IO (Either Error (Batch scope))
-collect driver@(Driver lock _) options cohort = case planning of
+collect driver@(Driver lock _ _) options cohort = case planning of
     Left problem -> pure (Left problem)
     Right (plan, selected) -> withMVar lock $ \() -> do
         let count = fromIntegral (length selected)
         base <- reserve driver count
-        completed <- execute (worker options) (sessions options) base selected
+        completed <- execute driver options (base, selected)
         pure $ do
             values <- completed
             supplied <- first Scheduling (S.deliver plan [(index, (observed, executed)) | (index, observed, executed) <- values])
@@ -61,31 +73,46 @@ collect driver@(Driver lock _) options cohort = case planning of
         selected <- first Scheduling (S.execute plan members)
         pure (plan, selected)
 
-execute :: W.Worker -> [[(String, String)]] -> Natural -> [(Natural, C.Member scope)] -> IO (Either Error [(Natural, C.Observation scope, W.Execution)])
-execute _ [] _ _ = pure (Left (Dispatch "At least one session is required"))
-execute worker [single] base selected = case traverse prepare selected of
+execute :: Driver driver -> Options -> (Natural, [(Natural, C.Member scope)]) -> IO (Either Error [(Natural, C.Observation scope, Observed.Observation)])
+execute driver@(Driver _ _ pool) options (base, selected) = case prepared of
     Left problem -> pure (Left problem)
-    Right calls -> do
-        returned <- W.runBatch worker {W.environment = single} calls
-        pure (finishSession selected returned)
+    Right (calls, workers) -> dispatch calls workers `finally` mapM_ Resident.flush pool
   where
-    prepare (index, member) = prepareCall base (index, member)
-execute worker overlays base selected = case traverse (prepareCall base) selected of
-    Left problem -> pure (Left problem)
-    Right calls -> do
-        let assigned = partition (length overlays) (zip selected calls)
-        outcomes <- concurrently [session overlay members | (overlay, members) <- zip overlays assigned]
+    prepared = (,) <$> traverse (prepareCall base) selected <*> runners driver options
+    dispatch _ [] = pure (Left (Dispatch "At least one session is required"))
+    dispatch calls [single] = finishSession selected <$> single echo calls
+    dispatch calls workers = do
+        let assigned = partition (length workers) (zip selected calls)
+        outcomes <- concurrently [session launch members | (launch, members) <- zip workers assigned]
         mapM_ (mapM_ echo . fst) outcomes
         pure $ do
             completed <- traverse (\(_, (members, returned)) -> finishSession members returned) outcomes
             pure (sortOn (\(index, _, _) -> index) (concat completed))
-  where
-    session overlay members = do
+    session launch members = do
         buffer <- newIORef []
-        returned <- W.runSession worker {W.environment = overlay} (\line -> modifyIORef' buffer (line :)) (map snd members)
+        returned <- launch (\line -> modifyIORef' buffer (line :)) (map snd members)
         emitted <- reverse <$> readIORef buffer
         pure (emitted, (map fst members, returned))
-    echo line = Bytes.hPutStrLn stdout line >> hFlush stdout
+
+type Runner = (Bytes.ByteString -> IO ()) -> [I.Call] -> IO (Either W.Failure [Observed.Observation])
+
+runners :: Driver scope -> Options -> Either Error [Runner]
+runners (Driver _ _ pool) options = case (mode options, pool) of
+    (selected, Just owned)
+        | selected `elem` [Resident, Shared] ->
+            if Resident.matches owned (worker options, sessions options)
+                then Right [\_ calls -> fmap (map Observed.Acknowledged) <$> launch (W.adapter (worker options)) calls | launch <- Resident.sessions owned]
+                else Left (Dispatch "Resident launch configuration differs from its owning driver")
+    (Resident, Nothing) -> Left (Dispatch "Resident execution requires a configured owning driver")
+    (Shared, Nothing) -> Left (Dispatch "Shared execution requires a joint inference and learning owner")
+    (_, Just _) -> Left (Dispatch "Resident owning driver cannot switch execution mode")
+    (Serial, Nothing) -> Right [finite (W.runSession, overlay) | overlay <- sessions options]
+    (Batched, Nothing) -> Right [finite (W.runBatchedSession, overlay) | overlay <- sessions options]
+  where
+    finite (launch, overlay) emit calls = fmap (map Observed.Terminated) <$> launch ((worker options) {W.environment = overlay}) emit calls
+
+echo :: Bytes.ByteString -> IO ()
+echo line = Bytes.hPutStrLn stdout line >> hFlush stdout
 
 prepareCall :: Natural -> (Natural, C.Member scope) -> Either Error I.Call
 prepareCall base (index, member) =
@@ -93,7 +120,7 @@ prepareCall base (index, member) =
         bound = V.Binding (V.CallId identity) (V.AttemptId identity) (V.Instance identity)
      in first Preparation (I.prepare bound (C.planned member))
 
-finishSession :: [(Natural, C.Member scope)] -> Either W.Failure [W.Execution] -> Either Error [(Natural, C.Observation scope, W.Execution)]
+finishSession :: [(Natural, C.Member scope)] -> Either W.Failure [Observed.Observation] -> Either Error [(Natural, C.Observation scope, Observed.Observation)]
 finishSession selected returned = do
     completed <- first Execution returned
     if length completed == length selected
@@ -101,7 +128,7 @@ finishSession selected returned = do
         else Left (Execution (W.ProtocolFailure "Batch response count differs from selected requests"))
   where
     record ((index, member), completed) = do
-        observed <- first Admission (C.record member (W.report completed))
+        observed <- first Admission (C.record member (Observed.report completed))
         pure (index, observed, completed)
 
 partition :: Int -> [value] -> [[value]]
@@ -121,11 +148,11 @@ concurrently actions = mask $ \restore -> do
     attempt = try
     recall launched = uninterruptibleMask_ (mapM_ (killThread . fst) launched >> mapM_ (takeMVar . snd) launched)
 
-finish :: C.Definition -> C.Cohort cohort -> [(Natural, C.Observation cohort, W.Execution)] -> Either Error (Batch scope)
+finish :: C.Definition -> C.Cohort cohort -> [(Natural, C.Observation cohort, Observed.Observation)] -> Either Error (Batch scope)
 finish definition cohort completed = do
     _ <- first Admission (C.admit cohort [observed | (_, observed, _) <- completed])
     let logical = zipWith sample (C.tasks definition) (sortOn (\(index, _, _) -> index) completed)
-        arrival = [V.completedBinding (W.completion executed) | (_, _, executed) <- completed]
+        arrival = [V.completedBinding (Observed.completion executed) | (_, _, executed) <- completed]
     pure (Batch logical arrival)
   where
     sample task (_, observed, executed) = Sample task executed (C.scored observed)
@@ -143,7 +170,7 @@ group :: Sample -> String
 group (Sample task _ _) = C.group task
 
 observation :: Sample -> R.Result
-observation (Sample _ executed _) = W.report executed
+observation (Sample _ executed _) = Observed.report executed
 
 reward :: Sample -> Rational
 reward = Reward.value . scored
@@ -152,7 +179,10 @@ scored :: Sample -> Reward.Scored
 scored (Sample _ _ evaluated) = evaluated
 
 completion :: Sample -> V.Completion
-completion (Sample _ executed _) = W.completion executed
+completion (Sample _ executed _) = Observed.completion executed
 
 loaded :: Sample -> Load.Fact
-loaded (Sample _ executed _) = W.loaded executed
+loaded (Sample _ executed _) = Observed.loaded executed
+
+qualified :: Sample -> Maybe Qualification.QualifiedResult
+qualified (Sample _ executed _) = Observed.qualified executed

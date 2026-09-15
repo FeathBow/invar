@@ -1,6 +1,7 @@
-module Options (Fields, descriptions, parse, required, optional, numeric) where
+module Options (Fields, descriptions, prefixed, parse, required, optional, numeric) where
 
 import Control.Monad (unless)
+import Data.Bifunctor (first)
 import Data.Map.Strict qualified as Map
 import System.Console.GetOpt (ArgDescr (ReqArg), ArgOrder (Permute), OptDescr (Option), getOpt)
 import Text.Read (readMaybe)
@@ -9,6 +10,11 @@ type Fields = Map.Map String String
 
 descriptions :: [(String, String)] -> [OptDescr (String, String)]
 descriptions = map (\(name, description) -> Option [] [name] (ReqArg (name,) "VALUE") description)
+
+prefixed :: String -> [OptDescr (String, String)] -> [OptDescr (String, String)]
+prefixed prefix = map rename
+  where
+    rename (Option _ names argument description) = Option [] (map (prefix ++) names) (fmap (first (prefix ++)) argument) description
 
 parse :: [OptDescr (String, String)] -> [String] -> Either String Fields
 parse options supplied = do
