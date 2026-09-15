@@ -21,6 +21,9 @@ dependencies =
         , ("cross-traversal joins retain both sources", once joins)
         , ("key values cannot escape or survive lexical shadowing", once opacity)
         , ("map and sequence folds retain initial and body dependencies", once folds)
+        , ("fold closure retains captured sources through nesting and shadowing", once foldClosure)
+        , ("folds preserve the first range seed binder and body error", once foldErrors)
+        , ("deep empty folds retain statically required body sources", once deepFolds)
         , ("map construction preserves source provenance", once mapping)
         , ("primitive signatures exclude all key-carrying types", once signatures)
         , ("sinks check specification types and allowed dependencies", once emissions)
@@ -151,6 +154,59 @@ folds = do
     D.analyze schema (foldMapExpr (readInput samples) (MapBody "key" "value" (readInput rewards)) (boolean False))
         === Left (D.TypeMismatch BooleanType (MapType BooleanType))
     D.analyze schema (Collect (FoldSequence traversal {sequenceInput = readInput low})) === Left (D.ExpectedSequence BooleanType)
+
+sequenceExpr :: Expr -> Expr -> Expr -> Expr
+sequenceExpr input expression seed =
+    Collect (FoldSequence (SequenceFold input "item" "acc" expression seed))
+
+emptySequence :: Expr
+emptySequence = Constant (SequenceType BooleanType) (Sequence [])
+
+foldClosure :: PropertyT IO ()
+foldClosure = do
+    let ignored = Let "unused" (readInput high) (Variable "acc")
+        shadow = Let "acc" (readInput high) (Variable "acc")
+        captured = sequenceExpr emptySequence (If (Variable "outer") (Variable "acc") (readInput high)) (boolean False)
+        outer = sequenceExpr emptySequence (Let "outer" (Variable "acc") captured) (readInput low)
+        dropping = sequenceExpr emptySequence (readInput high) (readInput low)
+    D.analyze schema (foldMapExpr (readInput samples) (MapBody "key" "value" ignored) (readInput low))
+        === summary BooleanType [samples, low]
+    D.analyze schema (foldMapExpr (readInput samples) (MapBody "key" "value" shadow) (readInput low))
+        === summary BooleanType [samples, low, high]
+    D.analyze schema outer === summary BooleanType [low, high]
+    D.analyze schema dropping === summary BooleanType [low, high]
+    D.checkCommands schema [Emit "decode" "boolean-reference" dropping]
+        === Left (D.ForbiddenSources (Set.singleton high))
+
+foldErrors :: PropertyT IO ()
+foldErrors = do
+    let missing = Variable "missing"
+        badSeed = Variable "seed"
+        duplicate = MapBody "acc" "value" missing
+        mapWith input = foldMapExpr input duplicate
+        sequenceWith input seed = Collect (FoldSequence (SequenceFold input "acc" "acc" missing seed))
+    forM_ [mapWith, sequenceWith] $ \fold -> do
+        D.analyze schema (fold (Variable "range") badSeed) === Left (D.MissingVariable "range")
+        D.analyze schema (fold (boolean False) badSeed) === Left (D.MissingVariable "seed")
+    D.analyze schema (mapWith (boolean False) (boolean False)) === Left (D.ExpectedMap BooleanType)
+    D.analyze schema (sequenceWith (boolean False) (boolean False)) === Left (D.ExpectedSequence BooleanType)
+    D.analyze schema (mapWith (readInput samples) (boolean False)) === Left (D.DuplicateBinder "acc")
+    D.analyze schema (sequenceWith emptySequence (boolean False)) === Left (D.DuplicateBinder "acc")
+    D.analyze schema (sequenceExpr emptySequence missing (boolean False)) === Left (D.MissingVariable "missing")
+    D.analyze schema (sequenceExpr emptySequence (readInput rewards) (boolean False))
+        === Left (D.TypeMismatch BooleanType (MapType BooleanType))
+    D.analyze schema (sequenceExpr emptySequence (Let "acc" (boolean True) (KeyEqual "acc" "acc")) (boolean False))
+        === Left (D.NotKey "acc")
+
+nestedFoldDepth :: Int
+nestedFoldDepth = 64
+
+deepFolds :: PropertyT IO ()
+deepFolds = do
+    let expression = foldr (\_ body -> sequenceExpr emptySequence body (boolean False)) (readInput high) [1 .. nestedFoldDepth]
+    D.analyze schema expression === summary BooleanType [high]
+    D.checkCommands schema [Emit "decode" "boolean-reference" expression]
+        === Left (D.ForbiddenSources (Set.singleton high))
 
 mapping :: PropertyT IO ()
 mapping = do

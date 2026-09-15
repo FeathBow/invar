@@ -25,8 +25,12 @@ evidence =
         , ("self-support cannot erase an assumption", once selfSupport)
         , ("every obligation dimension participates in matching", once dimensions)
         , ("missing and cyclic evidence remain unknown", once invalidGraphs)
+        , ("unreachable invalid nodes do not change the root judgement", once localGraphs)
         , ("local refutation lifts only to the declared conjunction", once lifting)
         , ("shared proof nodes preserve assumptions", once shared)
+        , ("implication application retains its exact carried premises", once application)
+        , ("application requires the declared antecedent and consequent", once applicationBindings)
+        , ("a false premise does not refute an implication's conclusion", once falsePremise)
         ]
   where
     once = withTests 1 . property
@@ -141,6 +145,19 @@ invalidGraphs = do
         whole = C.All [external, falseClaim]
     C.check (Map.insert fourth (C.Node whole (C.Conjoin [first, third])) withFalse) fourth === C.Unknown (C.Cycle first)
 
+localGraphs :: PropertyT IO ()
+localGraphs = do
+    let root = Map.singleton first (C.Node external C.Assume)
+        graph = Map.insert second (C.Node external (C.Discharge second [])) (Map.insert third (C.Node external (C.Discharge fourth [])) root)
+    C.check graph first === C.check root first
+    result <- accepted (C.check graph first)
+    C.assumptions result === [external]
+    C.check graph second === C.Unknown (C.Cycle second)
+    C.check graph third === C.Unknown (C.MissingEvidence fourth)
+    report <- completed "actual"
+    let refutation = C.Node (C.OutputEqual report "other") C.Compare
+    C.check (Map.insert first refutation graph) first === C.check (Map.singleton first refutation) first
+
 lifting :: PropertyT IO ()
 lifting = do
     report <- completed "actual"
@@ -161,3 +178,43 @@ shared = do
     empty <- accepted (C.check (Map.singleton first (C.Node (C.All []) (C.Conjoin []))) first)
     C.conclusion empty === C.All []
     C.assumptions empty === []
+
+application :: PropertyT IO ()
+application = do
+    report <- completed "actual"
+    let equal = C.OutputEqual report "actual"
+        implication = C.Implies equal external
+        graph =
+            Map.fromList
+                [ (first, C.Node equal C.Compare)
+                , (second, C.Node implication C.Assume)
+                , (third, C.Node external (C.Apply second first))
+                ]
+    result <- accepted (C.check graph third)
+    C.conclusion result === external
+    C.assumptions result === [implication]
+    assert (C.ImplicationElimination `elem` C.methods result)
+    assert (C.ReportComparison `elem` C.methods result)
+
+applicationBindings :: PropertyT IO ()
+applicationBindings = do
+    let different = C.External obligation {C.observation = "different-observation"}
+        implication = C.Implies external different
+        base = Map.fromList [(first, C.Node external C.Assume), (second, C.Node implication C.Assume)]
+    C.check (Map.insert third (C.Node external (C.Apply second first)) base) third === C.Unknown (C.WrongConclusion different external)
+    let mismatch = Map.insert first (C.Node different C.Assume) base
+    C.check (Map.insert third (C.Node different (C.Apply second first)) mismatch) third === C.Unknown (C.WrongConclusion external different)
+    C.check (Map.insert third (C.Node different (C.Apply first first)) base) third === C.Unknown (C.UnsupportedApplication external)
+
+falsePremise :: PropertyT IO ()
+falsePremise = do
+    report <- completed "actual"
+    let unequal = C.OutputEqual report "different"
+        implication = C.Implies unequal external
+        graph =
+            Map.fromList
+                [ (first, C.Node unequal C.Compare)
+                , (second, C.Node implication C.Assume)
+                , (third, C.Node external (C.Apply second first))
+                ]
+    C.check graph third === C.Unknown (C.RefutedPremise unequal)

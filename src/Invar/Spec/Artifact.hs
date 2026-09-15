@@ -16,7 +16,7 @@ import Invar.Spec.Operator qualified as O
 import Invar.Spec.Program
 import Invar.Spec.Syntax qualified as Syntax
 
-data Checked = Checked ByteString E.Semantics [Command]
+data Checked = Checked ByteString (E.World -> Either E.Error [E.Emission])
 
 data LoadError
     = SyntaxError String
@@ -38,8 +38,8 @@ load encoded = do
         meaning = E.Semantics schema operations
     finite `seq` checkMeanings meaning
     either (Left . ValidationError) Right (D.checkSchema schema)
-    _ <- either (Left . ValidationError) Right (D.checkCommands schema program)
-    pure (Checked encoded meaning program)
+    execute <- either (Left . ValidationError) Right (E.prepareCommands meaning program)
+    pure (Checked encoded execute)
 
 checkMeanings :: E.Semantics -> Either LoadError ()
 checkMeanings meaning = do
@@ -53,7 +53,7 @@ checkMeanings meaning = do
         unless (actual == declared) (Left (MeaningMismatch name declared actual))
 
 bytes :: Checked -> ByteString
-bytes (Checked encoded _ _) = encoded
+bytes (Checked encoded _) = encoded
 
 run :: Checked -> E.World -> Either E.Error [E.Emission]
-run (Checked _ meaning program) inputs = E.runCommands meaning inputs program
+run (Checked _ execute) = execute

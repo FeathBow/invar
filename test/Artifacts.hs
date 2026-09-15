@@ -25,11 +25,13 @@ artifacts =
         [ ("independent text executes the bound program", once independent)
         , ("all input bytes belong to the program", once framing)
         , ("duplicate declarations and malformed values are rejected", once malformed)
+        , ("rational syntax decodes to its canonical value", once rationalSyntax)
         , ("unused declarations and primitive meanings are checked", once declarations)
         , ("serialized input cannot bypass key opacity", once opacity)
         , ("primitive substitution changes the fixed artifact", once binding)
         , ("all value forms retain their interpretation", once literals)
         , ("key-carrying input expressions survive serialization", once collections)
+        , ("reused handles check every world and preserve emission order", once reuse)
         , ("serialized programs preserve validation and evaluation", campaign correspondence)
         ]
   where
@@ -93,6 +95,11 @@ malformed = do
     syntaxFailure (replace "(allowed (semantic \"x\"))" "(allowed (semantic \"x\") (semantic \"x\"))" example)
     syntaxFailure (replace "(\"add\" add)" "(\"add\" callback)" example)
 
+rationalSyntax :: PropertyT IO ()
+rationalSyntax = do
+    checked <- evalEither (A.load (replace "(number 2 1)" "(number 2 2)" example))
+    A.run checked world === Right [E.Emission "out" "sum" (number 4)]
+
 declarations :: PropertyT IO ()
 declarations = do
     let noCommands = replace "(commands (emit \"out\" \"sum\" (primitive \"add\" (input (semantic \"x\")) (literal number (number 2 1)))))" "(commands)" example
@@ -153,6 +160,33 @@ collections = do
         , Collect (MapValues (Read (Input (Semantic "samples"))) (MapBody "key" "value" (Variable "value")))
         , Project (Fields (Map.singleton "map" (Read (Input (Semantic "samples"))))) "map"
         ]
+
+reuse :: PropertyT IO ()
+reuse = do
+    let source = Semantic "x"
+        unused = Semantic "unused"
+        extra = Semantic "extra"
+        base = singleSink NumberType
+        declared = (E.schema base) {sources = Map.fromList [(source, NumberType), (unused, BooleanType)], sinks = Map.singleton "out" (Sink "value" NumberType (Set.singleton source) Set.empty)}
+        meaning = base {E.schema = declared}
+        program = [Emit "out" "value" (Read (Input source)), Emit "out" "value" (Constant NumberType (number 2))]
+        valid = Map.insert unused (Atom (Boolean False)) world
+        emissions value = Right [E.Emission "out" "value" (number value), E.Emission "out" "value" (number 2)]
+        cases =
+            [ (valid, emissions 3)
+            , (Map.insert source (number 8) valid, emissions 8)
+            , (Map.delete unused valid, Left (E.MissingInput unused))
+            , (Map.insert source (Atom (Boolean True)) valid, Left (E.InvalidInput source NumberType))
+            , (Map.singleton extra (number 0), Left (E.ExtraInputs (Set.singleton extra)))
+            , (valid, emissions 3)
+            ]
+    checked <- evalEither (A.load (A.encode meaning program))
+    forM_ cases $ \(assignments, expected) -> do
+        A.run checked assignments === expected
+        A.run checked assignments === E.runCommands meaning assignments program
+    empty <- evalEither (A.load (A.encode meaning []))
+    A.run empty Map.empty === Left (E.MissingInput unused)
+    A.run empty valid === Right []
 
 correspondence :: PropertyT IO ()
 correspondence = do

@@ -11,12 +11,17 @@ module Invar.Spec.Invocation (
     Phase (..),
     Error (..),
     Completion,
+    Intention,
     completedBinding,
     completedProgram,
     completedCommand,
     completedInputs,
     completedEmission,
     completedOutput,
+    intendedProgram,
+    intendedCommand,
+    intendedInputs,
+    intendedEmission,
     start,
     prepare,
     issue,
@@ -24,6 +29,7 @@ module Invar.Spec.Invocation (
     finish,
     cancel,
     intent,
+    intention,
     phase,
     completion,
 ) where
@@ -78,6 +84,9 @@ data Completion = Completion
     , reportEmission :: E.Emission
     , reportOutput :: ByteString
     }
+    deriving (Eq, Show)
+
+data Intention = Intention ByteString Natural E.World E.Emission
     deriving (Eq, Show)
 
 data Call = Call E.World E.Emission (Maybe AttemptId)
@@ -141,9 +150,24 @@ cancel bound runtime@(Runtime checked position calls _) = do
     pure (Runtime checked position (Map.insert (boundCall bound) (Call assignments selected Nothing) calls) updated)
 
 intent :: Runtime -> CallId -> Either Error E.Emission
-intent runtime name = do
-    Call _ selected _ <- lookupCall runtime name
-    pure selected
+intent runtime name = intendedEmission <$> intention runtime name
+
+intention :: Runtime -> CallId -> Either Error Intention
+intention runtime@(Runtime checked position _ _) name = do
+    Call assignments selected _ <- lookupCall runtime name
+    pure (Intention (A.bytes checked) position assignments selected)
+
+intendedProgram :: Intention -> ByteString
+intendedProgram (Intention encoded _ _ _) = encoded
+
+intendedCommand :: Intention -> Natural
+intendedCommand (Intention _ position _ _) = position
+
+intendedInputs :: Intention -> E.World
+intendedInputs (Intention _ _ assignments _) = assignments
+
+intendedEmission :: Intention -> E.Emission
+intendedEmission (Intention _ _ _ selected) = selected
 
 phase :: Runtime -> AttemptId -> Either Error Phase
 phase runtime name = do

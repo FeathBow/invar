@@ -9,6 +9,7 @@ module Invar.Store (
     method,
     Phase (..),
     Failure (..),
+    validateLocation,
     publish,
     publishCheckpoint,
 ) where
@@ -67,7 +68,7 @@ publishCheckpoint chosen target = withParent target $ \parent ->
 
 withParent :: Location -> (Parent -> IO value) -> IO value
 withParent target operation = mask_ $ do
-    at Validate (validate target)
+    validateLocation target
     let containing = directory target
         ancestor = takeDirectory (dropTrailingPathSeparator containing)
     withDescriptor (Posix.openFd containing Posix.ReadOnly directoryFlags) $ \parent ->
@@ -92,10 +93,11 @@ commit target parent file = do
     pure (Receipt RenameExclusive target)
 
 commitCheckpoint :: Method -> Location -> (Parent, Fd) -> IO Receipt
-commitCheckpoint chosen target (parent, staged) = withCheckpoint staged $ \(adapter, learner) -> do
+commitCheckpoint chosen target (parent, staged) = withCheckpoint staged $ \(adapter, learner, policy) -> do
     at Prepare $ do
         prepareFile adapter
         prepareFile learner
+        prepareFile policy
         synchronizeDirectory staged learner
     case chosen of
         RenameExclusive -> at Rename (renameExclusive (entries parent) target)
@@ -103,11 +105,12 @@ commitCheckpoint chosen target (parent, staged) = withCheckpoint staged $ \(adap
     at Synchronize (synchronizeParents parent learner)
     pure (Receipt chosen target)
 
-withCheckpoint :: Fd -> ((Fd, Fd) -> IO value) -> IO value
+withCheckpoint :: Fd -> ((Fd, Fd, Fd) -> IO value) -> IO value
 withCheckpoint staged operation =
     withDescriptor (openEntry staged "adapter.safetensors" fileFlags) $ \adapter ->
         withDescriptor (openEntry staged "learner.pt" fileFlags) $ \learner ->
-            operation (adapter, learner)
+            withDescriptor (openEntry staged "policy.json" fileFlags) $ \policy ->
+                operation (adapter, learner, policy)
 
 prepareFile :: Fd -> IO ()
 prepareFile file = do
@@ -115,8 +118,8 @@ prepareFile file = do
     unless (isRegularFile status) (ioError (userError "Staged artifact is not a regular file"))
     synchronizeFile file
 
-validate :: Location -> IO ()
-validate target = do
+validateLocation :: Location -> IO ()
+validateLocation target = at Validate $ do
     when ('\0' `elem` directory target) (ioError (userError "Directory contains NUL"))
     unless (validName (staging target) && validName (destination target)) $
         ioError (userError "Artifact names must be single nonempty path components")

@@ -6,6 +6,7 @@ module Invar.Spec.Evaluate (
     Emission (..),
     Error (..),
     evaluate,
+    prepareCommands,
     runCommands,
 ) where
 
@@ -56,10 +57,18 @@ evaluate meaning inputs expression = do
 
 runCommands :: Semantics -> World -> [Command] -> Either Error [Emission]
 runCommands meaning inputs commands = do
-    _ <- either (Left . InvalidProgram) Right (D.checkCommands (schema meaning) commands)
-    context <- prepare meaning inputs
-    traverse (emit context) commands
+    execute <- either (Left . InvalidProgram) Right (prepareCommands meaning commands)
+    execute inputs
+
+-- The returned function binds this checked program; every call still checks its world.
+prepareCommands :: Semantics -> [Command] -> Either D.Error (World -> Either Error [Emission])
+prepareCommands meaning commands = do
+    _ <- D.checkCommands (schema meaning) commands
+    pure execute
   where
+    execute inputs = do
+        context <- prepare meaning inputs
+        traverse (emit context) commands
     emit context (Emit name spec expression) = Emission name spec <$> eval context expression
 
 prepare :: Semantics -> World -> Either Error Context

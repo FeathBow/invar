@@ -195,20 +195,16 @@ sequenceFold scope fold = do
             }
 
 foldResult :: FoldCheck -> Either Error Analysis
-foldResult checked = loop base
-  where
-    scope = foldScope checked
-    seed = initial checked
-    base = dependencies seed <> dependencies (range checked)
-    loop deps = do
-        let acc = Payload seed {dependencies = deps}
-            local = scope {bindings = Map.insert (accumulator checked) acc (bindings scope)}
-        value <- infer local (body checked)
-        expect (valueType seed) value
-        let updated = base <> dependencies value
-        if updated == deps
-            then Right seed {dependencies = updated}
-            else loop updated
+foldResult checked = do
+    let scope = foldScope checked
+        seed = initial checked
+        base = dependencies seed <> dependencies (range checked)
+        acc = Payload seed {dependencies = base}
+        local = scope {bindings = Map.insert (accumulator checked) acc (bindings scope)}
+    value <- infer local (body checked)
+    expect (valueType seed) value
+    -- With union-only support rules, body(T) is C or C <> T, so this is the fixed point.
+    pure seed {dependencies = base <> dependencies value}
 
 checkSchema :: Schema -> Either Error ()
 checkSchema schema = do

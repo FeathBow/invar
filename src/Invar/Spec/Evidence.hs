@@ -40,10 +40,10 @@ data Obligation = Obligation
     }
     deriving (Eq, Show)
 
-data Claim = External Obligation | OutputEqual I.Completion ByteString | All [Claim]
+data Claim = External Obligation | OutputEqual I.Completion ByteString | All [Claim] | Implies Claim Claim
     deriving (Eq, Show)
 
-data Rule = Assume | Compare | Conjoin [EvidenceId] | Discharge EvidenceId [EvidenceId]
+data Rule = Assume | Compare | Conjoin [EvidenceId] | Discharge EvidenceId [EvidenceId] | Apply EvidenceId EvidenceId
     deriving (Eq, Show)
 
 data Node = Node {claim :: Claim, rule :: Rule}
@@ -51,7 +51,7 @@ data Node = Node {claim :: Claim, rule :: Rule}
 
 type Graph = Map EvidenceId Node
 
-data Method = Hypothesis | ReportComparison | Conjunction | AssumptionDischarge
+data Method = Hypothesis | ReportComparison | Conjunction | AssumptionDischarge | ImplicationElimination
     deriving (Eq, Show)
 
 data Problem
@@ -60,6 +60,8 @@ data Problem
     | WrongConclusion Claim Claim
     | UnsupportedComparison Claim
     | UnmatchedDischarge Claim
+    | UnsupportedApplication Claim
+    | RefutedPremise Claim
     deriving (Eq, Show)
 
 data Certificate = Certificate Claim [Claim] [Method]
@@ -107,12 +109,20 @@ check graph root = fst (visit Set.empty Map.empty root)
 references :: Rule -> [EvidenceId]
 references (Conjoin names) = names
 references (Discharge premise names) = premise : names
+references (Apply implication premise) = [implication, premise]
 references _ = []
 
 validateConclusion :: Graph -> Node -> Either Problem ()
 validateConclusion graph node = case rule node of
     Conjoin names -> traverse target names >>= matches . All
     Discharge premise _ -> target premise >>= matches
+    Apply implication premise -> do
+        declared <- target implication
+        case declared of
+            Implies antecedent consequent -> do
+                actual <- target premise
+                if actual == antecedent then matches consequent else Left (WrongConclusion antecedent actual)
+            other -> Left (UnsupportedApplication other)
     _ -> Right ()
   where
     target name = maybe (Left (MissingEvidence name)) (Right . claim) (Map.lookup name graph)
@@ -128,6 +138,7 @@ evaluate node children () = case firstProblem children of
         Compare -> compareOutput (claim node)
         Conjoin _ -> conjunction (claim node) children
         Discharge _ _ -> discharge (claim node) children
+        Apply _ _ -> application (claim node) children
 
 firstProblem :: [Verdict] -> Maybe Problem
 firstProblem [] = Nothing
@@ -159,6 +170,13 @@ certificates = traverse accepted
     accepted (Accept certificate) = Right certificate
     accepted (Unknown problem) = Left problem
     accepted (Refute counterexample) = Left (UnmatchedDischarge (refuted counterexample))
+
+application :: Claim -> [Verdict] -> Verdict
+application target children = case firstRefutation children of
+    Just counterexample -> Unknown (RefutedPremise (refuted counterexample))
+    Nothing -> case certificates children of
+        Left problem -> Unknown problem
+        Right accepted -> Accept (Certificate target (nub (concatMap assumptions accepted)) (nub (ImplicationElimination : concatMap methods accepted)))
 
 discharge :: Claim -> [Verdict] -> Verdict
 discharge _ (Refute counterexample : _) = Refute counterexample
