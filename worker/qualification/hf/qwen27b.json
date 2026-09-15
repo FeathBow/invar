@@ -1,0 +1,151 @@
+{
+  "format": "invar-numerical-qualification/v1",
+  "profiles": [
+    {
+      "role": "inference",
+      "tokenizer": "4dffa8484534ec4445bbc87cb330e2d326e18972c01bc3bd8b0126ae91e46c78",
+      "base": "e1f544aef42fe294303fa9dfb78f2454de9df1640b51a298a4a965defcee3f23",
+      "assembly": "241cb934c91d547493254989de3ba5dba82db6a220c2c5bbc0dd0a7c0dd2bc43",
+      "target": {
+        "predicate": "categorical-inference-refinement/v1",
+        "reference": {
+          "name": "cuda native inference effective assembly",
+          "artifact": "241cb934c91d547493254989de3ba5dba82db6a220c2c5bbc0dd0a7c0dd2bc43",
+          "entry": "vllm_resident.run -> vllm_runtime.execute_batch -> vllm_execution.generate"
+        },
+        "observation": "Whole-operation refinement for this exact prepared invocation, conditional on the declared region and composition premises; no universal numerical claim."
+      },
+      "regions": [
+        {
+          "predicate": "materialization-correspondence/v1",
+          "reference": {
+            "name": "cuda native inference effective assembly",
+            "artifact": "241cb934c91d547493254989de3ba5dba82db6a220c2c5bbc0dd0a7c0dd2bc43",
+            "entry": "vllm_runtime.materialize; vllm_worker.prepare_checkpoint; vllm_worker.consumed"
+          },
+          "observation": "The actual loaded tensors, quantization, adapter and state implement the named materialization on this exact invocation. Dependency kernels and physical installation correspondence remain external premises.",
+          "method": "external-assumption"
+        },
+        {
+          "predicate": "tokenization-correspondence/v1",
+          "reference": {
+            "name": "cuda native inference effective assembly",
+            "artifact": "241cb934c91d547493254989de3ba5dba82db6a220c2c5bbc0dd0a7c0dd2bc43",
+            "entry": "vllm_execution.bindings; operation.load; vllm_rollout.trajectory"
+          },
+          "observation": "The pinned tokenizer and template map these exact prompt bytes to the consumed token IDs and decode the generated IDs to the reported text.",
+          "method": "external-assumption"
+        },
+        {
+          "predicate": "model-forward-correspondence/v1",
+          "reference": {
+            "name": "cuda native inference effective assembly",
+            "artifact": "241cb934c91d547493254989de3ba5dba82db6a220c2c5bbc0dd0a7c0dd2bc43",
+            "entry": "vllm_execution.generate; source-bound FP32 row LoRA reduction and native vLLM model with the observed KV/recurrent profile"
+          },
+          "observation": "The actual forward kernels, reductions, cache state and selected numerical profile implement the named model on the complete sequence shapes and policy in this invocation.",
+          "method": "external-assumption"
+        },
+        {
+          "predicate": "sampling-correspondence/v1",
+          "reference": {
+            "name": "cuda native inference effective assembly",
+            "artifact": "241cb934c91d547493254989de3ba5dba82db6a220c2c5bbc0dd0a7c0dd2bc43",
+            "entry": "vllm_rollout.parameters; native categorical sampler and per-request RNG"
+          },
+          "observation": "The selected categorical sampler, RNG algorithm, logical seed, temperature and stopping decisions implement the named request for these actual distributions.",
+          "method": "external-assumption"
+        },
+        {
+          "predicate": "observation-correspondence/v1",
+          "reference": {
+            "name": "cuda native inference effective assembly",
+            "artifact": "241cb934c91d547493254989de3ba5dba82db6a220c2c5bbc0dd0a7c0dd2bc43",
+            "entry": "vllm_execution.compared; inference_report; invocation.approve"
+          },
+          "observation": "The accepted reports and staged artifacts correspond to this actual computation. Cooperative transport, loaded source correspondence and namespace integrity remain external premises.",
+          "method": "external-assumption"
+        }
+      ],
+      "composition": "external-assumption"
+    },
+    {
+      "role": "learning",
+      "tokenizer": "4dffa8484534ec4445bbc87cb330e2d326e18972c01bc3bd8b0126ae91e46c78",
+      "base": "cf454a32da607677fb71ac9426a557dbe1901d2ffd88d7013cd2fe981524d14f",
+      "assembly": "652b9dbf96f4f25b6c44767d29e50590043ad4077ad0d843f782cd74a748a8a0",
+      "target": {
+        "predicate": "grpo-update-refinement/v1",
+        "reference": {
+          "name": "cuda native learning effective assembly",
+          "artifact": "652b9dbf96f4f25b6c44767d29e50590043ad4077ad0d843f782cd74a748a8a0",
+          "entry": "step_resident.main -> learning_resident.serve -> learning.update"
+        },
+        "observation": "Whole-operation refinement for this exact prepared invocation, conditional on the declared region and composition premises; no universal numerical claim."
+      },
+      "regions": [
+        {
+          "predicate": "materialization-correspondence/v1",
+          "reference": {
+            "name": "cuda native learning effective assembly",
+            "artifact": "652b9dbf96f4f25b6c44767d29e50590043ad4077ad0d843f782cd74a748a8a0",
+            "entry": "probe.load_model; binding.restore; policy.activate"
+          },
+          "observation": "The actual loaded tensors, quantization, adapter and state implement the named materialization on this exact invocation. Dependency kernels and physical installation correspondence remain external premises.",
+          "method": "external-assumption"
+        },
+        {
+          "predicate": "model-forward-correspondence/v1",
+          "reference": {
+            "name": "cuda native learning effective assembly",
+            "artifact": "652b9dbf96f4f25b6c44767d29e50590043ad4077ad0d843f782cd74a748a8a0",
+            "entry": "rollout.logprobs; quantized Qwen3_5ForConditionalGeneration forward"
+          },
+          "observation": "The actual forward kernels, reductions, cache state and selected numerical profile implement the named model on the complete sequence shapes and policy in this invocation.",
+          "method": "external-assumption"
+        },
+        {
+          "predicate": "scalar-objective-correspondence/v1",
+          "reference": {
+            "name": "cuda native learning effective assembly",
+            "artifact": "652b9dbf96f4f25b6c44767d29e50590043ad4077ad0d843f782cd74a748a8a0",
+            "entry": "scalar.py grpo-scalar-f32/v1; Invar.Learn.Objective"
+          },
+          "observation": "The scalar FP32 objective and normalized current/reward cotangents implement grpo-scalar-f32/v1 for the actual probability words and coefficients. Host exponential and floating-point primitive correspondence remain assumptions.",
+          "method": "external-assumption"
+        },
+        {
+          "predicate": "model-differentiation-correspondence/v1",
+          "reference": {
+            "name": "cuda native learning effective assembly",
+            "artifact": "652b9dbf96f4f25b6c44767d29e50590043ad4077ad0d843f782cd74a748a8a0",
+            "entry": "learning.update; Torch autograd with verified scalar cotangents"
+          },
+          "observation": "The actual objective and reward parameter VJPs reuse retained forward activations and accumulate gradients in logical order for these exact trajectories and verified FP32 cotangents.",
+          "method": "external-assumption"
+        },
+        {
+          "predicate": "optimizer-restoration-correspondence/v1",
+          "reference": {
+            "name": "cuda native learning effective assembly",
+            "artifact": "652b9dbf96f4f25b6c44767d29e50590043ad4077ad0d843f782cd74a748a8a0",
+            "entry": "step.optimizer_options; binding.restore; probe.checkpoint"
+          },
+          "observation": "AdamW and named state serialization/restoration implement the declared update using the consumed parameters, moments, steps and RNG. Physical producer-to-consumer state correspondence remains assumed.",
+          "method": "external-assumption"
+        },
+        {
+          "predicate": "observation-correspondence/v1",
+          "reference": {
+            "name": "cuda native learning effective assembly",
+            "artifact": "652b9dbf96f4f25b6c44767d29e50590043ad4077ad0d843f782cd74a748a8a0",
+            "entry": "learning_resident.serve; probability.py; learning.capture_gradients; invocation.approve"
+          },
+          "observation": "The accepted reports and staged artifacts correspond to this actual computation. Cooperative transport, loaded source correspondence and namespace integrity remain external premises.",
+          "method": "external-assumption"
+        }
+      ],
+      "composition": "external-assumption"
+    }
+  ]
+}
