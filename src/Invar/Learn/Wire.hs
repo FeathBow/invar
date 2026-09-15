@@ -3,19 +3,24 @@
 module Invar.Learn.Wire (Error (..), lower, image) where
 
 import Control.Monad (unless)
-import Data.Aeson (Value, object, toJSON, (.=))
+import Data.Aeson (Value, eitherDecode, encode, object, toJSON, (.=))
+import Data.Aeson.Types (parseEither)
+import Data.Bifunctor (first)
 import Data.Char (chr, ord)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Ratio (denominator, numerator)
 import Data.Set qualified as Set
+import Data.Word (Word32)
+import Invar.Learn.Advantage qualified as Advantage
+import Invar.Learn.Request qualified as Request
 import Invar.Materialization qualified as Materialization
 import Invar.Spec.Evaluate qualified as E
 import Invar.Spec.Load qualified as Load
 import Invar.Spec.Value qualified as V
 import Numeric.Natural (Natural)
 
-data Error = Shape String | Membership String
+data Error = Shape String | Membership String | Numerical Advantage.Error
     deriving (Eq, Show)
 
 data Inputs = Inputs {trajectories :: Map Natural (V.Value Natural), behavior :: Map Natural (V.Value Natural), rewards :: Map Natural (V.Value Natural), groups :: Map Natural String, order :: [Natural]}
@@ -31,13 +36,18 @@ lower command@(E.Emission "update" "grpo-token-mean/v1" payload) = do
     tokenizer <- field "tokenizer" learner >>= text
     base <- field "base" learner >>= text
     assembly <- field "assembly" learner >>= text
+    behavior <- field "behavior_model" payload >>= modelValue
     reference <- field "reference" payload >>= text
     optimizer <- field "optimizer" learner >>= optimizerValue
     epsilon <- field "epsilon" algorithm >>= number
     penalty <- field "penalty" algorithm >>= number
     delta <- field "delta" algorithm >>= number
-    entries <- traverse (sample samples) (zip [0 :: Natural ..] (order samples))
-    pure (object ["specification" .= ("grpo-token-mean/v1" :: String), "policy" .= policy, "learner" .= checkpoint, "tokenizer" .= tokenizer, "base" .= base, "assembly" .= assembly, "reference" .= reference, "optimizer" .= optimizer, "epsilon" .= epsilon, "penalty" .= penalty, "delta" .= delta, "samples" .= entries, "order" .= map label [0 .. length entries - 1]])
+    let ordered = zip [0 :: Natural ..] (order samples)
+    supplied <- traverse (rewardInput samples) ordered
+    expected <- first Numerical (Advantage.calculate delta supplied)
+    entries <- traverse (sample samples expected) ordered
+    let encoded = object ["specification" .= ("grpo-token-mean/v1" :: String), "policy" .= policy, "learner" .= checkpoint, "tokenizer" .= tokenizer, "base" .= base, "assembly" .= assembly, "behavior_model" .= behavior, "reference" .= reference, "optimizer" .= optimizer, "epsilon" .= epsilon, "penalty" .= penalty, "delta" .= delta, "samples" .= entries, "order" .= map label [0 .. length entries - 1]]
+    Request.value <$> first Shape (parseEither Request.parse encoded)
 lower _ = Left (Shape "Expected the GRPO update emission")
 
 image :: E.Emission -> Either Error Load.Image
@@ -74,12 +84,19 @@ inputs payload = do
 minimumGroup :: Int
 minimumGroup = 2
 
-sample :: Inputs -> (Natural, Natural) -> Either Error Value
-sample batch (position, key) = do
+rewardInput :: Inputs -> (Natural, Natural) -> Either Error Advantage.Reward
+rewardInput batch (position, key) = do
+    assigned <- lookupKey key (groups batch)
+    value <- lookupKey key (rewards batch) >>= number
+    pure Advantage.Reward {Advantage.sample = label position, Advantage.group = assigned, Advantage.value = value}
+
+sample :: Inputs -> Map String Word32 -> (Natural, Natural) -> Either Error Value
+sample batch expected (position, key) = do
     trajectory <- lookupKey key (trajectories batch)
     group <- lookupKey key (groups batch)
     probabilities <- lookupKey key (behavior batch) >>= sequenceValues >>= traverse bits
     reward <- lookupKey key (rewards batch) >>= number
+    advantage <- maybe (Left (Membership "Missing expected sample advantage")) Right (Map.lookup (label position) expected)
     prompt <- field "prompt" trajectory >>= text
     seed <- field "seed" trajectory >>= integer
     limit <- field "limit" trajectory >>= natural
@@ -88,7 +105,13 @@ sample batch (position, key) = do
     prefix <- field "prompt_length" trajectory >>= natural
     response <- field "text" trajectory >>= text
     truncated <- field "truncated" trajectory >>= boolean
-    pure (object ["sample" .= label position, "group" .= group, "prompt" .= prompt, "seed" .= seed, "limit" .= limit, "temperature" .= temperature, "tokens" .= tokens, "prompt_length" .= prefix, "behavior_bits" .= probabilities, "text" .= response, "truncated" .= truncated, "reward" .= reward])
+    pure (object ["sample" .= label position, "group" .= group, "prompt" .= prompt, "seed" .= seed, "limit" .= limit, "temperature" .= temperature, "tokens" .= tokens, "prompt_length" .= prefix, "behavior_bits" .= probabilities, "text" .= response, "truncated" .= truncated, "reward" .= reward, "advantage_bits" .= advantage])
+
+modelValue :: V.Value Natural -> Either Error Value
+modelValue value = do
+    base <- field "base" value >>= text
+    assembly <- field "assembly" value >>= text
+    pure (object ["base" .= base, "assembly" .= assembly])
 
 optimizerValue :: V.Value Natural -> Either Error Value
 optimizerValue value = do
@@ -140,7 +163,7 @@ text value = sequenceValues value >>= traverse character
 
 number :: V.Value Natural -> Either Error Double
 number (V.Atom (V.Number value))
-    | let result = fromRational value, not (isNaN result || isInfinite result) = Right result
+    | let result = fromRational value :: Double, not (isNaN result || isInfinite result) = first Shape (eitherDecode (encode (toJSON result)))
 number _ = Left (Shape "Expected a finite numeric value")
 
 integer :: V.Value Natural -> Either Error Integer

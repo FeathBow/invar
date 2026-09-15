@@ -28,12 +28,12 @@ checkpoints =
     cases chosen =
         [ (fromString (show chosen ++ ": " ++ name), once (verify chosen))
         | (name, verify) <-
-            [ ("both checkpoint members have one published name", publication)
-            , ("either missing member prevents publication", incomplete)
+            [ ("all checkpoint members have one published name", publication)
+            , ("any missing member prevents publication", incomplete)
             , ("even an empty destination cannot be replaced", conflict)
             , ("a dangling destination cannot be replaced", dangling)
             , ("checkpoint and member aliases are rejected", aliases)
-            , ("concurrent publication preserves one complete pair", concurrent)
+            , ("concurrent publication preserves one complete checkpoint", concurrent)
             ]
         ]
 
@@ -42,9 +42,16 @@ stage path value = do
     createDirectory path
     Bytes.writeFile (path </> "adapter.safetensors") ("adapter:" <> value)
     Bytes.writeFile (path </> "learner.pt") ("learner:" <> value)
+    Bytes.writeFile (path </> "policy.json") ("policy:" <> value)
 
-contents :: FilePath -> IO (ByteString, ByteString)
-contents path = (,) <$> Bytes.readFile (path </> "adapter.safetensors") <*> Bytes.readFile (path </> "learner.pt")
+members :: [FilePath]
+members = ["adapter.safetensors", "learner.pt", "policy.json"]
+
+contents :: FilePath -> IO [ByteString]
+contents path = traverse (Bytes.readFile . (path </>)) members
+
+expected :: ByteString -> [ByteString]
+expected value = map (<> value) ["adapter:", "learner:", "policy:"]
 
 publication :: S.Method -> PropertyT IO ()
 publication chosen = do
@@ -54,24 +61,26 @@ publication chosen = do
     receipt <- evalIO (S.publishCheckpoint chosen target)
     S.location receipt === target
     S.method receipt === chosen
-    evalIO (contents (root </> "checkpoint")) >>= (=== ("adapter:complete", "learner:complete"))
+    evalIO (contents (root </> "checkpoint")) >>= (=== expected "complete")
     evalIO (doesPathExist (root </> "staging")) >>= (=== (chosen == S.LinkImmutable))
     when (chosen == S.LinkImmutable) $ do
         evalIO (readSymbolicLink (root </> "checkpoint")) >>= (=== "staging")
-        evalIO (contents (root </> "staging")) >>= (=== ("adapter:complete", "learner:complete"))
+        evalIO (contents (root </> "staging")) >>= (=== expected "complete")
 
 incomplete :: S.Method -> PropertyT IO ()
-incomplete chosen = forM_ ["adapter.safetensors", "learner.pt"] $ \present -> do
+incomplete chosen = forM_ members $ \missing -> do
     root <- workspace
     evalIO $ do
         createDirectory (root </> "staging")
-        Bytes.writeFile (root </> "staging" </> present) "present"
+        forM_ (filter (/= missing) members) $ \present ->
+            Bytes.writeFile (root </> "staging" </> present) "present"
     result <- evalIO (try (S.publishCheckpoint chosen (S.Location root "staging" "checkpoint")))
     case result of
         Left (S.Failure S.Prepare problem) -> assert (isDoesNotExistError problem)
         unexpected -> annotateShow unexpected >> failure
     evalIO (doesPathExist (root </> "checkpoint")) >>= (=== False)
-    evalIO (Bytes.readFile (root </> "staging" </> present)) >>= (=== "present")
+    forM_ (filter (/= missing) members) $ \present ->
+        evalIO (Bytes.readFile (root </> "staging" </> present)) >>= (=== "present")
 
 conflict :: S.Method -> PropertyT IO ()
 conflict chosen = do
@@ -83,7 +92,7 @@ conflict chosen = do
     case result of
         Left (S.Failure phase problem) -> phase === mutation chosen >> assert (isAlreadyExistsError problem)
         unexpected -> annotateShow unexpected >> failure
-    evalIO (contents (root </> "staging")) >>= (=== ("adapter:new", "learner:new"))
+    evalIO (contents (root </> "staging")) >>= (=== expected "new")
     evalIO (doesPathExist (root </> "checkpoint" </> "adapter.safetensors")) >>= (=== False)
 
 mutation :: S.Method -> S.Phase
@@ -101,7 +110,7 @@ dangling chosen = do
         Left (S.Failure phase problem) -> phase === mutation chosen >> assert (isAlreadyExistsError problem)
         unexpected -> annotateShow unexpected >> failure
     evalIO (readSymbolicLink (root </> "checkpoint")) >>= (=== "absent")
-    evalIO (contents (root </> "staging")) >>= (=== ("adapter:new", "learner:new"))
+    evalIO (contents (root </> "staging")) >>= (=== expected "new")
 
 reject :: S.Method -> S.Location -> PropertyT IO ()
 reject chosen target = do
@@ -118,8 +127,8 @@ aliases chosen = do
         stage (root </> "original") "original"
         createSymbolicLink "original" (root </> "alias")
     reject chosen (S.Location root "alias" "checkpoint")
-    evalIO (contents (root </> "original")) >>= (=== ("adapter:original", "learner:original"))
-    forM_ ["adapter.safetensors", "learner.pt"] $ \name ->
+    evalIO (contents (root </> "original")) >>= (=== expected "original")
+    forM_ members $ \name ->
         forM_ [False, True] (rejectMember chosen name)
 
 rejectMember :: S.Method -> FilePath -> Bool -> PropertyT IO ()
@@ -128,7 +137,8 @@ rejectMember chosen name pipe = do
     let neighbor = if name == "adapter.safetensors" then "learner.pt" else "adapter.safetensors"
     evalIO $ do
         createDirectory (root </> "staging")
-        Bytes.writeFile (root </> "staging" </> neighbor) "neighbor"
+        forM_ (filter (/= name) members) $ \present ->
+            Bytes.writeFile (root </> "staging" </> present) "neighbor"
         if pipe
             then createNamedPipe (root </> "staging" </> name) ownerModes
             else createSymbolicLink neighbor (root </> "staging" </> name)
@@ -158,5 +168,5 @@ concurrent chosen = do
         S.method receipt === chosen
         let winner = S.staging (S.location receipt)
             loser = if winner == "first" then "second" else "first"
-        evalIO (contents (root </> "checkpoint")) >>= (=== ("adapter:" <> winner, "learner:" <> winner))
-        evalIO (contents (root </> Text.unpack loser)) >>= (=== ("adapter:" <> loser, "learner:" <> loser))
+        evalIO (contents (root </> "checkpoint")) >>= (=== expected winner)
+        evalIO (contents (root </> Text.unpack loser)) >>= (=== expected loser)

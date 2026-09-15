@@ -1,14 +1,15 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Updates (updates, checkpointResult, setup, field, change, alter, wire, observe) where
+module Updates (updates, checkpointResult, setup, setupFor, field, change, alter, wire, observe) where
 
 import Control.Monad (forM_, void)
-import Data.Aeson (Value (..), encode, object, (.=))
+import Data.Aeson (Value (..), encode, object, toJSON, (.=))
 import Data.Aeson.Key (Key)
 import Data.Aeson.KeyMap qualified as Fields
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as Bytes
 import Data.ByteString.Lazy qualified as Lazy
+import Data.Foldable (toList)
 import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text qualified as Text
 import Data.Text.Encoding (decodeUtf8)
@@ -17,7 +18,9 @@ import Invar.Learn.Program qualified as Program
 import Invar.Learn.Protocol qualified as P
 import Invar.Learn.Wire qualified as Wire
 import Invar.Learn.Worker qualified as Worker
+import Invar.Qualification qualified as Gate
 import Invar.Spec.Artifact qualified as A
+import Invar.Spec.Evaluate qualified as E
 import Invar.Spec.Invocation qualified as V
 import Invar.Spec.Load qualified as Load
 import Learning (world)
@@ -41,9 +44,12 @@ bound :: Value
 bound = object ["call" .= Number 7, "attempt" .= Number 11, "instance" .= Number 13]
 
 setup :: PropertyT IO (Context, [Value])
-setup = do
+setup = setupFor world
+
+setupFor :: E.World -> PropertyT IO (Context, [Value])
+setupFor supplied = do
     checked <- evalEither Program.checked
-    prepared <- evalEither (V.prepare (V.Selection (V.boundCall binding) world) (V.start checked 0))
+    prepared <- evalEither (V.prepare (V.Selection (V.boundCall binding) supplied) (V.start checked 0))
     let runtime = prepared
     command <- evalEither (V.intent runtime (V.boundCall binding))
     actual <- evalEither (Wire.lower command)
@@ -87,7 +93,7 @@ wire = Bytes.unlines . map (Lazy.toStrict . encode)
 observe :: Context -> ByteString -> Either P.Error P.Result
 observe context output = do
     let prefix = Bytes.unlines (takeThroughConsumed (Bytes.lines output))
-    (_, permit) <- P.authorize Load.empty context prefix
+    (_, permit) <- P.authorize Gate.empty context prefix
     P.observe permit output
   where
     takeThroughConsumed [] = []
@@ -127,8 +133,22 @@ inputs = do
     forM_ ["policy", "learner", "tokenizer", "base", "assembly", "reference", "optimizer"] $ \name ->
         mismatch (observe context (wire (alter 0 (change "state" (change name Null loaded)) events)))
     forM_ [1, 2] $ \position ->
-        forM_ ["specification", "policy", "learner", "tokenizer", "base", "assembly", "reference", "samples", "order", "epsilon", "penalty", "delta", "optimizer"] $ \name ->
+        forM_ ["specification", "policy", "learner", "tokenizer", "base", "assembly", "behavior_model", "reference", "samples", "order", "epsilon", "penalty", "delta", "optimizer"] $ \name ->
             mismatch (observe context (wire (alter position (change "request" (change name Null actual)) events)))
+    forM_ ["base", "assembly"] $ \name -> do
+        let changed = change "behavior_model" (change name (digest "2") (field "behavior_model" actual)) actual
+            history = alter 2 (change "request" changed) (alter 1 (change "request" changed) events)
+        mismatch (observe context (wire history))
+    case field "samples" actual of
+        Array delivered -> do
+            let changed name value = change "samples" (toJSON (alter 0 (change name value) (toList delivered))) actual
+                negativeZero = 2147483648
+                mutations = [("advantage_bits", Number 0), ("advantage_bits", Number negativeZero), ("reward", Number 1), ("group", String "other")]
+            forM_ mutations $ \(name, value) -> do
+                let reported = changed name value
+                    history = alter 2 (change "request" reported) (alter 1 (change "request" reported) events)
+                mismatch (observe context (wire history))
+        _ -> failure
 
 protocol :: PropertyT IO ()
 protocol = do
@@ -213,13 +233,13 @@ approval = do
     (context, events) <- setup
     let pending = take 2 events
         actual = field "request" (events !! 1)
-    void (P.authorize Load.empty context (wire pending)) === Right ()
+    void (P.authorize Gate.empty context (wire pending)) === Right ()
     forM_ [[], take 1 events, events, reverse pending] $ \history ->
-        case P.authorize Load.empty context (wire history) of
+        case P.authorize Gate.empty context (wire history) of
             Left _ -> success
             Right _ -> failure
     forM_ ["policy", "learner", "tokenizer", "base", "assembly", "reference", "samples", "order", "optimizer"] $ \name ->
-        case void (P.authorize Load.empty context (wire (alter 1 (change "request" (change name Null actual)) pending))) of
+        case void (P.authorize Gate.empty context (wire (alter 1 (change "request" (change name Null actual)) pending))) of
             Left (P.Mismatch _) -> success
             unexpected -> annotateShow unexpected >> failure
 
@@ -235,20 +255,20 @@ loading = do
                 ++ [alter position (change "load" (change "program" (String "different") loadEnvelope)) pending | position <- [0, 1]]
                 ++ [alter position (change "load" (change "binding" (change name (Number 99) bound) loadEnvelope)) pending | position <- [0, 1], name <- ["call", "attempt", "instance"]]
     forM_ changes $ \history ->
-        case P.authorize Load.empty context (wire history) of
+        case P.authorize Gate.empty context (wire history) of
             Left _ -> success
             Right _ -> failure
 
 ownership :: PropertyT IO ()
 ownership = do
     (context, events) <- setup
-    (registry, permit) <- evalEither (P.authorize Load.empty context (wire (take 2 events)))
+    (registry, permit) <- evalEither (P.authorize Gate.empty context (wire (take 2 events)))
     let fact = P.loadedFact permit
         name = V.boundInstance binding
-        closed = Load.close registry
-    Load.active registry === [name]
-    Load.active closed === []
-    Load.historical closed name === Right fact
+        closed = Gate.close registry
+    Load.active (Gate.loads registry) === [name]
+    Load.active (Gate.loads closed) === []
+    Load.historical (Gate.loads closed) name === Right fact
     V.completedBinding (Load.report fact) === binding
     observed <- evalEither (P.observe permit (wire events))
     assert (V.completedProgram (Load.report fact) /= V.completedProgram (P.completion observed))

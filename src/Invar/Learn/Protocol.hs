@@ -1,8 +1,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Learn.Protocol (Result, Permit, Error (..), observe, authorize, loadProgram, loadedFact, completion, request, adapter, learner, gradients, probabilities) where
+module Invar.Learn.Protocol (Result, Permit, Error (..), observe, authorize, authorizeResident, validateSummary, loadProgram, loadedFact, qualifiedPermit, qualified, completion, request, adapter, learner, gradients, probabilities) where
 
-import Control.Monad (foldM, unless)
+import Control.Monad (foldM, unless, void)
 import Data.Aeson (Object, Value (..), eitherDecodeStrict, object, withObject, (.:), (.=))
 import Data.Aeson.Types (Parser, parseEither)
 import Data.ByteString (ByteString)
@@ -11,45 +11,60 @@ import Data.Text.Encoding (encodeUtf8)
 import Invar.Infer.Wire qualified as Binding
 import Invar.Learn.Wire qualified as Wire
 import Invar.Load qualified as Load
+import Invar.Qualification qualified as Gate
 import Invar.Spec.Invocation qualified as V
 import Invar.Spec.Load qualified as L
+import Invar.Spec.Qualification qualified as Qualification
 import Numeric.Natural (Natural)
 
 data Artifacts = Artifacts String String (String, String)
     deriving (Eq, Show)
 
-data Result = Result V.Completion Value Artifacts
+data Result = Result V.Completion Value Artifacts (Maybe Qualification.QualifiedResult)
     deriving (Eq, Show)
 
-data Error = Malformed String | Unexpected String | Mismatch String | Lowering Wire.Error | Lifecycle V.Error | Loading Load.Error | Registry L.Error
+data Error = Malformed String | Unexpected String | Mismatch String | Lowering Wire.Error | Lifecycle V.Error | Loading Load.Error | Registry L.Error | Qualification Gate.Error
     deriving (Eq, Show)
 
-data Context = Context {bound :: V.Binding, numerical :: Value, loading :: Load.Plan}
-data Progress = Awaiting V.Runtime L.Registry | Loaded V.Runtime L.Registry L.Fact | Consumed V.Runtime L.Registry L.Fact Value | Finished Result
+data Context = Context {bound :: V.Binding, numerical :: Value, loading :: Load.Plan, resident :: Bool}
+data Progress = Awaiting V.Runtime Gate.Registry | Loaded V.Runtime Gate.Registry L.Fact | Consumed V.Runtime Gate.Registry L.Fact Value | Finished Result
 
-data Permit = Permit Context ByteString Progress L.Fact
+data Permit = Permit Context ByteString Progress L.Fact (Maybe Qualification.QualifiedResult)
 
 observe :: Permit -> ByteString -> Either Error Result
-observe (Permit context prefix accepted _) output = do
+observe (Permit context prefix accepted _ _) output = do
     unless (prefix `Bytes.isPrefixOf` output) (Left (Mismatch "Completed stream differs from the authorized prefix"))
     final <- foldM (advance context) accepted (Bytes.lines (Bytes.drop (Bytes.length prefix) output))
     case final of
         Finished result -> Right result
         _ -> Left (Unexpected "Worker output ended without a complete bound update")
 
-authorize :: L.Registry -> (V.Binding, V.Runtime) -> ByteString -> Either Error (L.Registry, Permit)
-authorize registry selection output = do
-    (context, current) <- scan registry selection output
+authorize :: Gate.Registry -> (V.Binding, V.Runtime) -> ByteString -> Either Error (Gate.Registry, Permit)
+authorize = authorizeWith False
+
+authorizeResident :: Gate.Registry -> (V.Binding, V.Runtime) -> ByteString -> Either Error (Gate.Registry, Permit)
+authorizeResident = authorizeWith True
+
+authorizeWith :: Bool -> Gate.Registry -> (V.Binding, V.Runtime) -> ByteString -> Either Error (Gate.Registry, Permit)
+authorizeWith residency registry selection output = do
+    (context, current) <- scan residency registry selection output
     case current of
-        Consumed _ updated fact _ -> Right (updated, Permit context output current fact)
+        Consumed _ updated fact _ -> Right (updated, Permit context output current fact (Gate.qualified updated (bound context)))
         _ -> Left (Unexpected "Update input has not been consumed")
 
 loadedFact :: Permit -> L.Fact
-loadedFact (Permit _ _ _ fact) = fact
+loadedFact (Permit _ _ _ fact _) = fact
 
-scan :: L.Registry -> (V.Binding, V.Runtime) -> ByteString -> Either Error (Context, Progress)
-scan registry selection@(_, runtime) output = do
-    context <- prepare selection
+qualifiedPermit :: Permit -> Maybe Qualification.QualifiedResult
+qualifiedPermit (Permit _ _ _ _ certificate) = certificate
+
+qualified :: Result -> Maybe Qualification.QualifiedResult
+qualified (Result _ _ _ certificate) = certificate
+
+scan :: Bool -> Gate.Registry -> (V.Binding, V.Runtime) -> ByteString -> Either Error (Context, Progress)
+scan residency registry selection@(_, runtime) output = do
+    prepared <- prepare selection
+    let context = prepared {resident = residency}
     current <- foldM (advance context) (Awaiting runtime registry) (Bytes.lines output)
     pure (context, current)
 
@@ -62,7 +77,7 @@ prepare (binding, runtime) = do
     expected <- either (Left . Lowering) Right (Wire.lower command)
     image <- either (Left . Lowering) Right (Wire.image command)
     planned <- either (Left . Loading) Right (Load.prepare binding image)
-    pure (Context binding expected planned)
+    pure (Context binding expected planned False)
 
 advance :: Context -> Progress -> ByteString -> Either Error Progress
 advance _ (Finished _) _ = Left (Unexpected "Output follows the completed update")
@@ -73,6 +88,7 @@ advance context progress encoded = do
         "loaded_learner" -> loaded context progress value
         "consumed" -> consumed context progress value
         "result" -> finished context (progress, value) encoded
+        "activation" | resident context, Awaiting {} <- progress -> Right progress
         _ -> diagnostic stage progress
 
 loaded :: Context -> Progress -> Object -> Either Error Progress
@@ -81,11 +97,10 @@ loaded context (Awaiting runtime registry) value = do
     reported <- parse (.: "state") value
     intended <- parse (withObject "update input" state) (numerical context)
     unless (reported == intended) (Left (Mismatch "Loaded learner tokenizer reference or optimizer differs from the update input"))
-    updated <- either (Left . Loading) Right (Load.register (loading context) value registry)
-    live <- registryError (L.acquire updated (V.boundInstance (bound context)))
-    issued <- registryError (L.dispatch (L.Dispatch live (bound context)) updated runtime)
+    updated <- either (Left . Loading) Right (Load.register (loading context) value (Gate.loads registry))
+    (authorized, issued) <- qualificationError (Gate.dispatch (Gate.withLoads updated registry) (bound context) runtime)
     fact <- registryError (L.historical updated (V.boundInstance (bound context)))
-    pure (Loaded issued updated fact)
+    pure (Loaded issued authorized fact)
   where
     state entry = do
         policy <- entry .: "policy" :: Parser Value
@@ -111,14 +126,14 @@ consumed context (Loaded runtime registry fact) value = do
 consumed _ _ _ = Left (Unexpected "Duplicate consumption or consumption before learner load")
 
 finished :: Context -> (Progress, Object) -> ByteString -> Either Error Progress
-finished context (Consumed runtime _ _ actual, value) encoded = do
+finished context (Consumed runtime registry _ actual, value) encoded = do
     binding <- matching (bound context) value
     _ <- matchingRequest actual value
     artifacts <- summary actual value
     final <- lifecycle (V.finish binding encoded runtime)
     reported <- lifecycle (V.completion final (V.boundAttempt binding))
     case reported of
-        Just completed -> Right (Finished (Result completed actual artifacts))
+        Just completed -> Right (Finished (Result completed actual artifacts (Gate.qualified registry binding)))
         Nothing -> Left (Unexpected "Bound update did not produce a completion")
 finished _ _ _ = Left (Unexpected "Update result arrived without consumption")
 
@@ -139,6 +154,10 @@ summary actual value = do
     unless (before == previous && after == policy) (Left (Mismatch "Update and materialized adapter identities disagree"))
     validateStats actual update
     pure (Artifacts policy checkpoint (observation, probability))
+
+-- This predicate shares result validation without constructing lifecycle facts.
+validateSummary :: Value -> Object -> Either Error ()
+validateSummary actual value = void (summary actual value)
 
 validateStats :: Value -> Object -> Either Error ()
 validateStats actual value = do
@@ -186,20 +205,24 @@ lifecycle = either (Left . Lifecycle) Right
 registryError :: Either L.Error value -> Either Error value
 registryError = either (Left . Registry) Right
 
+qualificationError :: Either Gate.Error value -> Either Error value
+qualificationError (Left (Gate.RegistryError problem)) = Left (Registry problem)
+qualificationError result = either (Left . Qualification) Right result
+
 completion :: Result -> V.Completion
-completion (Result result _ _) = result
+completion (Result result _ _ _) = result
 
 request :: Result -> Value
-request (Result _ actual _) = actual
+request (Result _ actual _ _) = actual
 
 adapter :: Result -> String
-adapter (Result _ _ (Artifacts policy _ _)) = policy
+adapter (Result _ _ (Artifacts policy _ _) _) = policy
 
 learner :: Result -> String
-learner (Result _ _ (Artifacts _ checkpoint _)) = checkpoint
+learner (Result _ _ (Artifacts _ checkpoint _) _) = checkpoint
 
 gradients :: Result -> String
-gradients (Result _ _ (Artifacts _ _ (observation, _))) = observation
+gradients (Result _ _ (Artifacts _ _ (observation, _)) _) = observation
 
 probabilities :: Result -> String
-probabilities (Result _ _ (Artifacts _ _ (_, observation))) = observation
+probabilities (Result _ _ (Artifacts _ _ (_, observation)) _) = observation
