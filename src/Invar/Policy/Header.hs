@@ -21,18 +21,18 @@ data Tensor = Tensor {name :: Text, shape :: [Integer], begin :: Integer, end ::
 fp32Bytes :: Integer
 fp32Bytes = 4
 
-decode :: ByteString -> Integer -> Either String [Tensor]
+decode :: ByteString -> Integer -> Either String (Map Text Text, [Tensor])
 decode encoded payloadSize = do
     unless (Bytes.take 1 encoded == "{") (Left "Policy header must begin with an object")
     (parsed, remaining) <- value (bsToTokens encoded)
     unless (Bytes.all (== space) remaining) (Left "Unexpected bytes after policy header")
     fields <- object parsed
-    mapM_ metadata (Map.lookup "__metadata__" fields)
+    attributes <- maybe (pure Map.empty) metadata (Map.lookup "__metadata__" fields)
     tensors <- traverse tensor (Map.toAscList (Map.delete "__metadata__" fields))
     when (null tensors) (Left "Policy must contain a nonempty tensor inventory")
     occupied <- foldM contiguous 0 (sortOn (\entry -> (begin entry, end entry)) tensors)
     unless (occupied == payloadSize) (Left "Policy tensor offsets do not cover the data buffer")
-    pure tensors
+    pure (attributes, tensors)
   where
     space = 0x20
 
@@ -64,13 +64,13 @@ object :: Field -> Either String (Map Text Field)
 object (Object fields) = Right fields
 object _ = Left "Expected a policy header object"
 
-metadata :: Field -> Either String ()
+metadata :: Field -> Either String (Map Text Text)
 metadata field = do
     entries <- object field
-    unless (all text (Map.elems entries)) (Left "Policy metadata must contain only strings")
+    traverse text entries
   where
-    text (String _) = True
-    text _ = False
+    text (String entry) = Right entry
+    text _ = Left "Policy metadata must contain only strings"
 
 tensor :: (Text, Field) -> Either String Tensor
 tensor (label, field) = do

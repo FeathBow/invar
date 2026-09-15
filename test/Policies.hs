@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Policies (policies) where
+module Policies (policies, artifact) where
 
 import Control.Monad (forM_)
 import Data.Aeson (Value (..), encode, object, (.=))

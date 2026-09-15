@@ -1,4 +1,4 @@
-module Invar.Policy.Encoding (metadata) where
+module Invar.Policy.Encoding (metadata, mlxMetadata) where
 
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as Bytes
@@ -9,7 +9,13 @@ import Invar.Policy.Header (Tensor (..))
 import Numeric (showHex)
 
 metadata :: Tensor -> ByteString
-metadata entry = Bytes.pack ("[\"" ++ concatMap escape (Text.unpack (name entry)) ++ "\", \"torch.float32\", [" ++ intercalate ", " (map show (shape entry)) ++ "]]")
+metadata = typed "torch.float32"
+
+mlxMetadata :: Tensor -> ByteString
+mlxMetadata = typed "mlx.core.float32"
+
+typed :: String -> Tensor -> ByteString
+typed dtype entry = Bytes.pack ("[\"" ++ concatMap escape (Text.unpack (name entry)) ++ "\", \"" ++ dtype ++ "\", [" ++ intercalate ", " (map show (shape entry)) ++ "]]")
 
 escape :: Char -> String
 escape character = case lookup character escapes of
