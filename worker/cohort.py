@@ -22,6 +22,7 @@ class Observation:
     text: str
     truncated: bool
     reward: float
+    advantage_bits: int
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -33,6 +34,12 @@ class Optimizer:
 
 
 @dataclass(frozen=True, kw_only=True)
+class BehaviorModel:
+    base: str
+    assembly: str
+
+
+@dataclass(frozen=True, kw_only=True)
 class Cohort:
     specification: str
     policy: str
@@ -41,6 +48,7 @@ class Cohort:
     tokenizer: str
     base: str
     assembly: str
+    behavior_model: BehaviorModel
     samples: tuple[Observation, ...]
     order: tuple[str, ...]
     epsilon: float
@@ -68,7 +76,7 @@ def identity(value):
 
 
 def sample(value):
-    value = fields(value, "sample group prompt seed limit temperature tokens prompt_length behavior_bits text truncated reward")
+    value = fields(value, "sample group prompt seed limit temperature tokens prompt_length behavior_bits text truncated reward advantage_bits")
     if any(not isinstance(value[name], str) for name in ("sample", "group", "prompt", "text")):
         raise ValueError("Prompt and logical identities must be text")
     if not value["sample"] or not value["group"]:
@@ -80,7 +88,8 @@ def sample(value):
         raise ValueError("Sample temperature must be positive")
     tokens, probabilities = observation(value)
     return Observation(**{**value, "temperature": temperature, "reward": number(value["reward"]),
-                          "tokens": tokens, "behavior_bits": probabilities})
+                          "tokens": tokens, "behavior_bits": probabilities,
+                          "advantage_bits": finite_word(value["advantage_bits"])})
 
 
 def observation(value):
@@ -108,11 +117,18 @@ def behavior_words(values):
     return tuple(behavior_word(value) for value in values)
 
 
-def behavior_word(value):
+def finite_word(value):
     if type(value) is not int or not 0 <= value < 1 << WORD_BITS:
-        raise ValueError("Behavior observations must be FP32 words")
+        raise ValueError("Expected an FP32 word")
+    if not math.isfinite(struct.unpack("!f", struct.pack("!I", value))[0]):
+        raise ValueError("Expected a finite FP32 word")
+    return value
+
+
+def behavior_word(value):
+    finite_word(value)
     probability = struct.unpack("!f", struct.pack("!I", value))[0]
-    if not math.isfinite(probability) or probability > 0:
+    if probability > 0:
         raise ValueError("Behavior log probabilities must be finite and nonpositive")
     return value
 
@@ -129,6 +145,11 @@ def optimizer(value):
     if any(not 0 <= beta < 1 for beta in result.betas):
         raise ValueError("AdamW moment coefficients must be in [0, 1)")
     return result
+
+
+def behavior_model(value):
+    fields(value, "base assembly")
+    return BehaviorModel(base=identity(value["base"]), assembly=identity(value["assembly"]))
 
 
 def logical_batch(samples, order):
@@ -149,7 +170,7 @@ def logical_order(order, names):
 
 
 def decode(value):
-    value = fields(value, "specification policy learner reference tokenizer base assembly samples order epsilon penalty delta optimizer")
+    value = fields(value, "specification policy learner reference tokenizer base assembly behavior_model samples order epsilon penalty delta optimizer")
     if value["specification"] != SPECIFICATION:
         raise ValueError("Unsupported update specification")
     if not isinstance(value["samples"], list):
@@ -163,5 +184,6 @@ def decode(value):
                   learner=identity(value["learner"]), reference=identity(value["reference"]),
                   tokenizer=identity(value["tokenizer"]),
                   base=identity(value["base"]), assembly=identity(value["assembly"]),
+                  behavior_model=behavior_model(value["behavior_model"]),
                   samples=samples, order=tuple(value["order"]), epsilon=epsilon,
                   penalty=penalty, delta=delta, optimizer=optimizer(value["optimizer"]))

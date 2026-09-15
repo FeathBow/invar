@@ -1,18 +1,19 @@
 import argparse
 import hashlib
 import json
-import struct
+import os
 import subprocess
 import time
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 
-import evaluation
-from cohort import fields, number
+from worker import core
+from worker import partition as direct_resident
+from worker.batch import FORMAT as BATCH_FORMAT
 
-FP32_WORD_LIMIT = 1 << 32
 INDEX_WIDTH = 4
-MODES = ("process", "session")
+MODES = ("process", "session", "batch", "resident")
 SESSION_FIELDS = "binding program load adapter tokenizer base assembly request"
 
 
@@ -28,6 +29,9 @@ class Options:
     reference_exit_code: int
     output: Path
     mode: str
+    core: str = "invar"
+    worker_config: Path | None = None
+    devices: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -41,61 +45,31 @@ class Call:
 class Services:
     run: object
     clock: object
+    spawn: object = None
+    environment: object = None
 
 
-def calls(options):
-    expected = evaluation.tasks(options.tasks)
-    run = evaluation.Run(log=options.reference_log, policy=options.policy, exit_code=options.reference_exit_code)
-    digest, samples = evaluation.read(run, expected)
-    observed_digest, encoded = evaluation.snapshot(options.reference_log)
-    evaluation.require(digest == observed_digest, "Reference log changed during preparation")
-    consumed, results, declared = reports(encoded)
-    evaluation.require(len(consumed) == len(results) == len(samples), "Incomplete reference worker inventory")
-    planned = tuple(Call(consumed=first, result=last, cohort=declared[evaluation.binding(first["binding"])][0])
-                    for first, last in zip(consumed, results, strict=True))
-    for call in planned:
-        check_reference(call, declared, expected)
-    evaluation.require(len({evaluation.binding(call.consumed["binding"]) for call in planned}) == len(samples),
-                       "Repeated reference consumption binding")
-    return digest, expected.digest, planned
+def calls(options, *, mode="process", core_executable="invar"):
+    observed = reference(options, mode=mode, core_executable=core_executable)
+    return observed["reference_log_sha256"], observed["tasks_sha256"], decode_calls(observed["calls"])
 
 
-def reports(encoded):
-    records = tuple(evaluation.decode(line) for line in encoded.splitlines())
-    consumed = tuple(row for row in records if row.get("stage") == "consumed")
-    results = tuple(row for row in records if row.get("stage") == "result")
-    declared = {evaluation.binding(item["binding"]): (row["cohort"], item["name"])
-                for row in records if row.get("phase") == "evaluation" for item in row["samples"]}
-    return consumed, results, declared
+def reference(options, *, mode, core_executable):
+    return core.invoke(["inspect", "replay-calls", "--tasks", options.tasks, "--log", options.reference_log,
+                            "--policy", options.policy, "--exit-code", options.reference_exit_code, "--mode", mode],
+                           executable=core_executable)
 
 
-def check_reference(call, declared, expected):
-    value = call.consumed
-    materialization = evaluation.model_binding(value)
-    loading = ' load' if 'load' in value else ''
-    fields(value, "stage binding program adapter request " + " ".join(materialization) + loading)
-    if loading:
-        from invocation import decode
-
-        load = decode(value['load'])
-        evaluation.require(load.binding() == value['binding'], 'Reference load and inference bindings differ')
-    evaluation.require(isinstance(value["program"], str) and value["program"], "Missing consumed program")
-    bound = evaluation.binding(value["binding"])
-    cohort, name = declared[bound]
-    task = next(task for task in expected.cohorts[cohort] if task["name"] == name)
-    request = {key: task[key] for key in ("prompt", "seed", "tokens", "temperature")}
-    evaluation.require(value["request"] == request, "Reference consumption differs from the frozen task")
-    for key in ("binding", "adapter", "request"):
-        evaluation.require(call.result[key] == value[key], "Reference result differs from consumption")
-    evaluation.require(evaluation.model_binding(call.result) == materialization, "Reference model and tokenizer differ from consumption")
-    result_tokens(call.result)
+def decode_calls(rows):
+    return tuple(Call(consumed=core.decode(row["consumed_json"]), result=core.decode(row["result_json"]),
+                      cohort=row["cohort"]) for row in rows)
 
 
 def command(call, options):
     request = call.consumed["request"]
-    materialization = [f"--{name}-digest={value}" for name, value in evaluation.model_binding(call.consumed).items()]
+    materialization = [f"--{name}-digest={call.consumed[name]}" for name in ("tokenizer", "base", "assembly") if name in call.consumed]
     return [options.python, str(options.worker), f"--cache={options.cache}", f"--adapter={options.adapter}",
-            f"--digest={options.policy}", *materialization,
+            f"--digest={options.policy}", *configuration(options), *materialization,
             *(f"--{key}={request[key]}" for key in ("prompt", "tokens", "temperature", "seed"))]
 
 
@@ -113,101 +87,42 @@ def permission(call):
 
 def session_envelope(call):
     value = {key: item for key, item in call.consumed.items() if key != "stage"}
-    evaluation.require(set(value) == set(SESSION_FIELDS.split()),
-                       "A session replay requires a batch reference with load and materialization bindings")
     return (json.dumps(value, allow_nan=False) + "\n").encode()
 
 
 def session_command(options):
-    return [options.python, str(options.worker), f"--cache={options.cache}", f"--adapter={options.adapter}"]
+    adapter = [] if options.mode in ("batch", "resident") else [f"--adapter={options.adapter}"]
+    return [options.python, str(options.worker), f"--cache={options.cache}", *adapter, *configuration(options)]
+
+
+def configuration(options):
+    return [] if options.worker_config is None else [f"--config={options.worker_config}"]
 
 
 def session_input(planned):
     return b"".join(session_envelope(call) + permission(call) for call in planned)
 
 
-def measured(record):
-    fields(record, "stage seconds peak_allocated peak_reserved")
-    seconds = number(record["seconds"])
-    evaluation.require(seconds >= 0, "Negative worker duration")
-    return {"seconds": seconds, "peak_allocated": evaluation.natural(record["peak_allocated"]),
-            "peak_reserved": evaluation.natural(record["peak_reserved"])}
+def batch_input(planned, *, adapter):
+    frames = ({"format": BATCH_FORMAT, "adapter": str(adapter),
+               "calls": [session_envelope(call).decode() for call in planned]},
+              {"format": BATCH_FORMAT, "permissions": [permission(call).decode() for call in planned]})
+    return "".join(json.dumps(frame, allow_nan=False) + "\n" for frame in frames).encode()
 
 
-def result_tokens(value):
-    materialization = evaluation.model_binding(value)
-    fields(value, "stage binding adapter request tokens prompt_length behavior text behavior_bits truncated"
-           + " " + " ".join(materialization))
-    tokens, bits, behavior = (value[key] for key in ("tokens", "behavior_bits", "behavior"))
-    evaluation.require(all(isinstance(items, list) for items in (tokens, bits, behavior)), "Expected numerical sequences")
-    prefix = evaluation.natural(value["prompt_length"])
-    evaluation.require(0 < prefix < len(tokens), "Invalid prompt boundary")
-    count = len(tokens) - prefix
-    evaluation.require(len(bits) == len(behavior) == count <= value["request"]["tokens"], "Invalid response lengths")
-    evaluation.require(all(evaluation.natural(token) >= 0 for token in tokens), "Invalid token identity")
-    for probability, word in zip(behavior, bits, strict=True):
-        behavior_word(probability, word)
-    evaluation.require(isinstance(value["text"], str) and type(value["truncated"]) is bool, "Invalid decoded output")
-    evaluation.require(not value["truncated"] or count == value["request"]["tokens"], "Invalid truncation length")
-    return count
+def serialized(call):
+    return {"cohort": call.cohort, "consumed_json": json.dumps(call.consumed, allow_nan=False),
+            "result_json": json.dumps(call.result, allow_nan=False)}
 
 
-def behavior_word(value, word):
-    evaluation.require(evaluation.natural(word) < FP32_WORD_LIMIT, "Invalid FP32 word")
-    actual = number(struct.unpack("!f", struct.pack("!I", word))[0])
-    reported = number(value)
-    evaluation.require(actual <= 0 and reported <= 0, "Invalid behavior probability")
-    evaluation.require(struct.pack("!d", actual) == struct.pack("!d", reported),
-                       "Behavior value and FP32 word disagree")
+def inspect(path, call, *, exit_code, core_executable="invar"):
+    return core.invoke(["inspect", "replay-output", "--log", path, "--mode", "process", "--exit-code", exit_code],
+                       executable=core_executable, stdin=json.dumps([serialized(call)], allow_nan=False))
 
 
-def inspect(path, call):
-    digest, encoded = evaluation.snapshot(path)
-    evaluation.require(encoded.endswith(b"\n"), "Incomplete direct worker output")
-    records = tuple(evaluation.decode(line) for line in encoded.splitlines())
-    evaluation.require(all(isinstance(row, dict) and row.get("stage") in evaluation.WORKER_STAGES for row in records),
-                       "Unexpected direct worker record")
-    selected = {stage: tuple(row for row in records if row["stage"] == stage)
-                for stage in ("consumed", "result", "load", "inference")}
-    evaluation.require(all(len(rows) == 1 for rows in selected.values()), "Incomplete or repeated direct worker stages")
-    evaluation.require(selected["consumed"][0] == call.consumed, "Direct worker consumed different input")
-    result = selected["result"][0]
-    evaluation.require(records[-1] == result, "Trailing direct worker output")
-    for key in ("binding", "adapter", "request"):
-        evaluation.require(result[key] == call.result[key], "Direct result binding differs from the reference")
-    evaluation.require(evaluation.model_binding(result) == evaluation.model_binding(call.result),
-                       "Direct model and tokenizer binding differs from the reference")
-    return {"stdout_sha256": digest, "result_equal": result == call.result, "response_tokens": result_tokens(result),
-            "load": measured(selected["load"][0]), "inference": measured(selected["inference"][0])}
-
-
-def inspect_session(path, planned):
-    digest, encoded = evaluation.snapshot(path)
-    evaluation.require(encoded.endswith(b"\n"), "Incomplete direct worker output")
-    records = tuple(evaluation.decode(line) for line in encoded.splitlines())
-    evaluation.require(all(isinstance(row, dict) and row.get("stage") in evaluation.WORKER_STAGES for row in records),
-                       "Unexpected direct worker record")
-    positions = {stage: tuple(index for index, row in enumerate(records) if row["stage"] == stage)
-                 for stage in ("load", "consumed", "inference", "result")}
-    evaluation.require(len(positions["load"]) == 1, "Expected exactly one model load in a session replay")
-    evaluation.require(all(len(positions[stage]) == len(planned) for stage in ("consumed", "inference", "result")),
-                       "Incomplete or repeated session replay stages")
-    evaluation.require(records[-1] is records[positions["result"][-1]], "Trailing direct worker output")
-    previous = positions["load"][0]
-    calls = []
-    for index, call in enumerate(planned):
-        first, timing, last = (records[positions[stage][index]] for stage in ("consumed", "inference", "result"))
-        evaluation.require(previous < positions["consumed"][index] < positions["inference"][index] < positions["result"][index],
-                           "Reordered session replay stages")
-        previous = positions["result"][index]
-        evaluation.require(first == call.consumed, "Direct worker consumed different input")
-        for key in ("binding", "adapter", "request"):
-            evaluation.require(last[key] == call.result[key], "Direct result binding differs from the reference")
-        evaluation.require(evaluation.model_binding(last) == evaluation.model_binding(call.result),
-                           "Direct model and tokenizer binding differs from the reference")
-        calls.append({"index": index, "binding": call.consumed["binding"], "result_equal": last == call.result,
-                      "response_tokens": result_tokens(last), "inference": measured(timing)})
-    return {"stdout_sha256": digest, "load": measured(records[positions["load"][0]]), "calls": calls}
+def inspect_session(path, planned, *, exit_code, core_executable="invar", mode="session"):
+    return core.invoke(["inspect", "replay-output", "--log", path, "--mode", mode, "--exit-code", exit_code],
+                       executable=core_executable, stdin=json.dumps([serialized(call) for call in planned], allow_nan=False))
 
 
 def cohorts(planned):
@@ -229,7 +144,8 @@ def execute_session(planned, options, *, services, queued, index):
     with (options.output / f"session-{index:0{INDEX_WIDTH}d}.status.json").open("x") as stream:
         json.dump(record, stream, sort_keys=True, allow_nan=False)
     completed.check_returncode()
-    return {**record, **inspect_session(output, planned)}
+    return {**record, **inspect_session(output, planned, exit_code=completed.returncode,
+                                      core_executable=options.core, mode=options.mode)}
 
 
 def execute(call, options, *, services, index):
@@ -244,19 +160,30 @@ def execute(call, options, *, services, index):
     with (options.output / f"{index:0{INDEX_WIDTH}d}.status.json").open("x") as stream:
         json.dump(record, stream, sort_keys=True, allow_nan=False)
     completed.check_returncode()
-    return {**record, **inspect(output, call)}
+    return {**record, **inspect(output, call, exit_code=completed.returncode, core_executable=options.core)}
 
 
 def run(options, services):
-    evaluation.require(options.mode in MODES, "Unknown direct replay mode")
-    digest, tasks_digest, planned = calls(options)
-    evaluation.require(all(call.consumed["adapter"] == options.policy for call in planned), "Reference policy mismatch")
+    if options.mode == "resident":
+        observed = reference(options, mode=options.mode, core_executable=options.core)
+        owners = tuple((owner["owner"], decode_calls(owner["calls"])) for owner in observed["residence"]["owners"])
+        return direct_resident.run(options, services, reference=observed, planned=decode_calls(observed["calls"]),
+                                   owners=owners, command=session_command(options), grouped=cohorts, serialized=serialized,
+                                   queued=partial(batch_input, adapter=options.adapter))
+    if options.devices is not None:
+        raise ValueError("Direct --devices requires resident mode")
+    return finite(options, services)
+
+
+def finite(options, services):
+    digest, tasks_digest, planned = calls(options, mode=options.mode, core_executable=options.core)
     grouped = cohorts(planned)
-    queued = {index: session_input(members) for index, members in grouped} if options.mode == "session" else None
+    queued = {index: batch_input(members, adapter=options.adapter) if options.mode == "batch" else session_input(members)
+              for index, members in grouped} if options.mode != "process" else None
     options.output.mkdir()
     started = services.clock()
     results = []
-    if options.mode == "session":
+    if options.mode != "process":
         process_seconds = 0.0
         with (options.output / "calls.jsonl").open("x") as stream:
             for index, members in grouped:
@@ -268,7 +195,7 @@ def run(options, services):
                     stream.write(json.dumps(result, sort_keys=True, allow_nan=False) + "\n")
                 stream.flush()
         loads = len(grouped)
-        scope = "direct session replays, one process and one model load per cohort in sequence; no Invar admission, completion or publication evidence"
+        scope = f"direct {options.mode} replays, one process and one model load per cohort in sequence; no Invar admission, completion or publication evidence"
     else:
         with (options.output / "calls.jsonl").open("x") as stream:
             for index, call in enumerate(planned):
@@ -291,13 +218,18 @@ def run(options, services):
 def arguments():
     parser = argparse.ArgumentParser(description="Replay all consumed requests from one complete evaluation directly")
     parser.add_argument("--python", required=True)
+    parser.add_argument("--core", default="invar", help="Core executable owning replay admission")
     parser.add_argument("--policy", required=True)
     parser.add_argument("--reference-exit-code", type=int, required=True)
     parser.add_argument("--mode", choices=MODES, required=True)
+    parser.add_argument("--worker-config", type=Path, help="Explicit configuration passed to the selected worker")
+    parser.add_argument("--devices", type=lambda value: tuple(value.split(",")),
+                        help="Resident physical owner CUDA devices in reference order, required for multiple owners")
     for name in ("worker", "cache", "adapter", "tasks", "reference-log", "output"):
         parser.add_argument(f"--{name}", type=Path, required=True)
     return Options(**vars(parser.parse_args()))
 
 
 if __name__ == "__main__":
-    print(json.dumps(run(arguments(), Services(run=subprocess.run, clock=time.perf_counter)), sort_keys=True))
+    print(json.dumps(run(arguments(), Services(run=subprocess.run, clock=time.perf_counter, spawn=subprocess.Popen,
+                                               environment=dict(os.environ))), sort_keys=True))

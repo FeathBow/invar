@@ -1,15 +1,17 @@
 import copy
 import hashlib
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
+import os
 import unittest
 from dataclasses import replace
 from pathlib import Path
 
-import evaluation
-from quality import compare
+from worker import evaluation
+from worker.quality import compare
 
 SEEDS = (17, 29, 43, 71)
 TOKEN_LIMIT = 4
@@ -70,6 +72,63 @@ class QualityTests(unittest.TestCase):
         self.assertEqual(result["zero_variance_groups"], {"initial": 1, "trained": 1})
         self.assertEqual(result["tasks_sha256"], hashlib.sha256(self.tasks.read_bytes()).hexdigest())
         self.assertEqual(result["trained"]["log_sha256"], hashlib.sha256(self.trained.log.read_bytes()).hexdigest())
+
+    def test_selected_core_is_required_and_owns_the_comparison(self):
+        core = shutil.which("invar")
+        self.assertIsNotNone(core, "Build invar and add its executable directory to this test process's PATH")
+        self.assertEqual(compare(self.tasks, self.initial, self.trained, core=core),
+                         compare(self.tasks, self.initial, self.trained))
+        with self.assertRaises(FileNotFoundError):
+            compare(self.tasks, self.initial, self.trained, core=self.directory / "missing-invar")
+
+    def test_separate_task_inspection_binds_a_snapshot_not_a_mutable_path(self):
+        expected = evaluation.tasks(self.tasks)
+        digest, samples = evaluation.read(self.trained, expected)
+        self.assertEqual(digest, hashlib.sha256(self.trained.log.read_bytes()).hexdigest())
+        self.assertEqual(tuple(sample.reward for sample in samples), (1, 1, 0, 1, 0, 0))
+        self.tasks.write_bytes(self.tasks.read_bytes() + b"\n")
+        changed = copy.deepcopy(self.values)
+        changed[-1]["tasks_sha256"] = hashlib.sha256(self.tasks.read_bytes()).hexdigest()
+        write(self.trained.log, changed)
+        with self.assertRaisesRegex(ValueError, "input identity changed"):
+            evaluation.read(self.trained, expected)
+        refreshed = evaluation.tasks(self.tasks)
+        self.assertEqual(evaluation.read(self.trained, refreshed)[1], samples)
+
+    def test_core_numeric_input_semantics_accept_integral_json_numbers(self):
+        before = compare(self.tasks, self.initial, self.trained)
+        changed = declarations()
+        for cohort in changed:
+            for task in cohort["tasks"]:
+                task["seed"], task["tokens"] = float(task["seed"]), float(task["tokens"])
+        self.tasks.write_text(json.dumps(changed))
+        for run in (self.initial, self.trained):
+            rows = [json.loads(line) for line in run.log.read_text().splitlines()]
+            rows[-1]["tasks_sha256"] = hashlib.sha256(self.tasks.read_bytes()).hexdigest()
+            for cohort in rows[:-1]:
+                cohort["cohort"] = float(cohort["cohort"])
+                for sample in cohort["samples"]:
+                    sample["seed"] = float(sample["seed"])
+                    sample["response_tokens"] = float(sample["response_tokens"])
+            write(run.log, rows)
+        after = compare(self.tasks, self.initial, self.trained)
+        for field in ("overall", "by_group", "by_seed"):
+            self.assertEqual(before[field], after[field])
+
+    def test_comparison_rejects_different_reported_models_between_valid_runs(self):
+        rows = records(INITIAL_POLICY, ((0, 1), (0, 0, 0, 0)))
+        rows[-1]["tokenizer"] = "c" * 64
+        self.values[-1]["tokenizer"] = "c" * 64
+        write(self.initial.log, rows)
+        write(self.trained.log, self.values)
+        self.assertEqual(compare(self.tasks, self.initial, self.trained)["overall"]["reward_sum_change"], 2)
+        self.values[-1]["tokenizer"] = "d" * 64
+        write(self.trained.log, self.values)
+        expected = evaluation.tasks(self.tasks)
+        evaluation.read(self.initial, expected)
+        evaluation.read(self.trained, expected)
+        with self.assertRaisesRegex(ValueError, "same reported model"):
+            compare(self.tasks, self.initial, self.trained)
 
     def test_report_delivery_order_does_not_change_sample_pairing(self):
         before = compare(self.tasks, self.initial, self.trained)
@@ -211,14 +270,14 @@ class QualityTests(unittest.TestCase):
             compare(self.tasks, self.initial, self.trained)
 
     def test_cli_reports_valid_summary_and_rejects_a_failed_process(self):
-        command = [sys.executable, "-B", str(Path(__file__).resolve().parents[1] / "quality.py"), "--tasks", str(self.tasks)]
+        command = [sys.executable, "-B", "-m", "worker.quality", "--tasks", str(self.tasks)]
         for name, run in (("initial", self.initial), ("trained", self.trained)):
             command += [f"--{name}-log", str(run.log), f"--{name}-policy", run.policy, f"--{name}-exit-code", "0"]
-        result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=10)
+        result = subprocess.run(command, capture_output=True, text=True, check=False, cwd=Path(__file__).resolve().parents[2], timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)["overall"]["reward_sum_change"], 2)
         command[-1] = "7"
-        result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=10)
+        result = subprocess.run(command, capture_output=True, text=True, check=False, cwd=Path(__file__).resolve().parents[2], timeout=10)
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(result.stdout, "")
 

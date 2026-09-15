@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from invocation import decode, request
+from worker.invocation import decode, request
 
 
 class InvocationTests(unittest.TestCase):
@@ -37,14 +37,14 @@ class InvocationTests(unittest.TestCase):
         variants = [initial, None, {**initial, "program": "other"}]
         variants += [{**initial, "binding": {**initial["binding"], field: 99}}
                      for field in ("call", "attempt", "instance")]
-        code = "from invocation import read, approve; value = read(); approve(value); print('approved')"
+        code = "from worker.invocation import read, approve; value = read(); approve(value); print('approved')"
         for index, permission in enumerate(variants):
             with self.subTest(permission=permission):
                 encoded = json.dumps(initial) + "\n"
                 if permission is not None:
                     encoded += json.dumps(permission) + "\n"
                 outcome = subprocess.run([sys.executable, "-B", "-c", code], input=encoded,
-                                         cwd=Path(__file__).resolve().parents[1], text=True, capture_output=True, timeout=10)
+                                         cwd=Path(__file__).resolve().parents[2], text=True, capture_output=True, timeout=10)
                 self.assertEqual(outcome.returncode == 0, index == 0)
                 self.assertEqual(outcome.stdout, "approved\n" if index == 0 else "")
 

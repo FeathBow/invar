@@ -12,9 +12,9 @@ def decode(tokenizer, tokens):
     return tokenizer.decode(tokens, **dict(DECODE_SETTINGS))
 
 
-def validate(tokenizer, samples):
+def validate(tokenizer, samples, *, encode=prompt):
     for item in samples:
-        prefix = tuple(prompt(tokenizer, item.prompt)[0].tolist())
+        prefix = tuple(encode(tokenizer, item.prompt)[0].tolist())
         if prefix != item.tokens[:item.prompt_length]:
             raise ValueError(f"Observed prompt tokens differ from the loaded tokenizer: {item.sample}")
         response = item.tokens[item.prompt_length:]

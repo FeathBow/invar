@@ -1,11 +1,8 @@
 import hashlib
 from dataclasses import asdict, dataclass
 
-from cohort import Cohort, decode as cohort
-from invocation import Invocation, decode as invocation
-
-FP32_MASK = 0xffffffff
-
+from worker.cohort import Cohort, decode as cohort
+from worker.invocation import Invocation, decode as invocation
 
 @dataclass(frozen=True, kw_only=True)
 class Call:
@@ -29,23 +26,25 @@ def snapshot(path):
     return hashlib.sha256(encoded).hexdigest(), encoded
 
 
-def observation(trajectory, reward):
-    import torch
+def observation(trajectory, reward, *, advantage):
+    from worker.advantage import word
 
     if trajectory.request.sample != reward.sample or trajectory.request.group != reward.group:
         raise ValueError("Actual reward and trajectory identities disagree")
-    words = trajectory.behavior.cpu().view(torch.int32).tolist()
     return {**asdict(trajectory.request), "tokens": trajectory.tokens[0].tolist(),
             "prompt_length": trajectory.prompt_length,
-            "behavior_bits": [word & FP32_MASK for word in words],
-            "text": trajectory.text, "truncated": trajectory.truncated, "reward": reward.value}
+            "behavior_bits": [word(value) for value in trajectory.behavior.tolist()],
+            "text": trajectory.text, "truncated": trajectory.truncated, "reward": reward.value,
+            "advantage_bits": word(advantage)}
 
 
 def consumed(request, *, batch, rewards, loaded):
     if len(rewards) != len(batch.samples) or len({item.sample for item in rewards}) != len(rewards):
         raise ValueError("Actual rewards must match the prepared samples")
     values = {item.sample: item for item in rewards}
-    samples = [observation(item.trajectory, values[item.trajectory.request.sample]) for item in batch.samples]
-    return {"specification": request.specification, **loaded, "samples": samples,
+    samples = [observation(item.trajectory, values[item.trajectory.request.sample], advantage=item.advantage)
+               for item in batch.samples]
+    return {"specification": request.specification, **loaded,
+            "behavior_model": asdict(request.behavior_model), "samples": samples,
             "order": batch.order, "epsilon": batch.profile.epsilon,
             "penalty": batch.profile.penalty, "delta": request.delta}
