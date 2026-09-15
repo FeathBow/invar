@@ -18,14 +18,13 @@ import Invar.Learn.Wire qualified as Wire
 import Invar.Learn.Worker.Internal qualified as W
 import Invar.Process qualified as Process
 import Invar.Process.Resident qualified as Transport
-import Invar.Qualification qualified as Gate
 import Invar.Resident qualified as Boundary
 import Invar.Spec.Load qualified as Load
 import Numeric.Natural (Natural)
 
 data Options = Options {worker :: W.Worker, owner :: Natural, echo :: ByteString -> IO ()}
 data Paths = Paths {checkpoint :: FilePath, output :: FilePath}
-data State = State Gate.Registry Natural
+data State = State Load.Registry Natural
 
 type role Receipt nominal
 data Receipt scope = Receipt (L.Plan scope) P.Result FilePath Load.Fact ByteString
@@ -36,7 +35,7 @@ type role Resident nominal
 data Resident scope = Resident (Transport.Resident scope) (IORef State) Boundary.Owner
 
 withResident :: Options -> (forall scope. Resident scope -> IO (Either W.Failure value)) -> IO (Either W.Failure value)
-withResident options action = bracket (Gate.open Gate.Learning (W.qualificationFile (worker options)) >>= \registry -> newIORef (State registry 0)) retireOwner $ \state -> do
+withResident options action = bracket (newIORef (State Load.empty 0)) retireOwner $ \state -> do
     let selected = worker options
         arguments = [W.script selected, "--cache=" ++ W.cache selected, "--reference=" ++ W.reference selected, "--session=" ++ show (owner options)]
         launch = Process.Launch (W.executable selected) arguments [] (echo options)
@@ -44,21 +43,21 @@ withResident options action = bracket (Gate.open Gate.Learning (W.qualificationF
         closing = Transport.Handshake (Boundary.close identity) (close identity state)
     first failure <$> Transport.withResident launch (const closing) (\process -> first Process.Rejected <$> action (Resident process state identity))
   where
-    retireOwner state = modifyIORef' state (\(State registry groups) -> State (Gate.close registry) groups)
+    retireOwner state = modifyIORef' state (\(State registry groups) -> State (Load.close registry) groups)
     close identity state encoded = do
         State registry groups <- readIORef state
         pure $ first W.ProtocolFailure $ do
-            unless (null (Load.active (Gate.loads registry))) (Left "Learner closes with active invocation loads")
+            unless (null (Load.active registry)) (Left "Learner closes with active invocation loads")
             void (Boundary.closed identity groups encoded)
 
-withBorrowed :: (Transport.Resident scope, Maybe FilePath) -> Boundary.Owner -> (Resident scope -> IO value) -> IO value
-withBorrowed (process, qualificationFile) identity action = bracket (Gate.open Gate.Learning qualificationFile >>= \registry -> newIORef (State registry 0)) retire $ \state -> do
+withBorrowed :: Transport.Resident scope -> Boundary.Owner -> (Resident scope -> IO value) -> IO value
+withBorrowed process identity action = bracket (newIORef (State Load.empty 0)) retire $ \state -> do
     returned <- action (Resident process state identity)
     State registry _ <- readIORef state
-    unless (null (Load.active (Gate.loads registry))) (ioError (userError "Borrowed learner role exits with active invocation loads"))
+    unless (null (Load.active registry)) (ioError (userError "Borrowed learner role exits with active invocation loads"))
     pure returned
   where
-    retire state = modifyIORef' state (\(State registry count) -> State (Gate.close registry) count)
+    retire state = modifyIORef' state (\(State registry count) -> State (Load.close registry) count)
 
 run :: Resident owner -> Paths -> W.Call scope -> IO (Either W.Failure (Receipt scope))
 run (Resident process state identity) paths call = do
@@ -86,7 +85,6 @@ authorize process (state, progress) call@(W.Call planned binding runtime _) enco
             Right (updated, permit) -> do
                 writeIORef state (State updated groups)
                 writeIORef progress (Consumed permit)
-                Gate.emit (P.qualifiedPermit permit)
                 pure (Right (W.permission call))
         _ -> pure (Left (W.ProtocolFailure "Resident update already holds a consumption permit"))
   where
@@ -124,10 +122,10 @@ release (state, progress) (paths, W.Call planned _ _ _) _ = do
   where
     acknowledge prepared result fact encoded = mask_ $ do
         State registry groups <- readIORef state
-        case first W.ProtocolFailure (Boundary.retire prepared (Gate.loads registry) encoded) of
+        case first W.ProtocolFailure (Boundary.retire prepared registry encoded) of
             Left problem -> pure (Left problem)
             Right updated -> do
-                writeIORef state (State (Gate.withLoads updated registry) (groups + 1))
+                writeIORef state (State updated (groups + 1))
                 writeIORef progress (Released (Receipt planned result (output paths) fact encoded))
                 pure (Right ())
 

@@ -18,7 +18,6 @@ import Invar.Learn.Program qualified as Program
 import Invar.Learn.Protocol qualified as P
 import Invar.Learn.Wire qualified as Wire
 import Invar.Learn.Worker qualified as Worker
-import Invar.Qualification qualified as Gate
 import Invar.Spec.Artifact qualified as A
 import Invar.Spec.Evaluate qualified as E
 import Invar.Spec.Invocation qualified as V
@@ -93,7 +92,7 @@ wire = Bytes.unlines . map (Lazy.toStrict . encode)
 observe :: Context -> ByteString -> Either P.Error P.Result
 observe context output = do
     let prefix = Bytes.unlines (takeThroughConsumed (Bytes.lines output))
-    (_, permit) <- P.authorize Gate.empty context prefix
+    (_, permit) <- P.authorize Load.empty context prefix
     P.observe permit output
   where
     takeThroughConsumed [] = []
@@ -233,13 +232,13 @@ approval = do
     (context, events) <- setup
     let pending = take 2 events
         actual = field "request" (events !! 1)
-    void (P.authorize Gate.empty context (wire pending)) === Right ()
+    void (P.authorize Load.empty context (wire pending)) === Right ()
     forM_ [[], take 1 events, events, reverse pending] $ \history ->
-        case P.authorize Gate.empty context (wire history) of
+        case P.authorize Load.empty context (wire history) of
             Left _ -> success
             Right _ -> failure
     forM_ ["policy", "learner", "tokenizer", "base", "assembly", "reference", "samples", "order", "optimizer"] $ \name ->
-        case void (P.authorize Gate.empty context (wire (alter 1 (change "request" (change name Null actual)) pending))) of
+        case void (P.authorize Load.empty context (wire (alter 1 (change "request" (change name Null actual)) pending))) of
             Left (P.Mismatch _) -> success
             unexpected -> annotateShow unexpected >> failure
 
@@ -255,20 +254,20 @@ loading = do
                 ++ [alter position (change "load" (change "program" (String "different") loadEnvelope)) pending | position <- [0, 1]]
                 ++ [alter position (change "load" (change "binding" (change name (Number 99) bound) loadEnvelope)) pending | position <- [0, 1], name <- ["call", "attempt", "instance"]]
     forM_ changes $ \history ->
-        case P.authorize Gate.empty context (wire history) of
+        case P.authorize Load.empty context (wire history) of
             Left _ -> success
             Right _ -> failure
 
 ownership :: PropertyT IO ()
 ownership = do
     (context, events) <- setup
-    (registry, permit) <- evalEither (P.authorize Gate.empty context (wire (take 2 events)))
+    (registry, permit) <- evalEither (P.authorize Load.empty context (wire (take 2 events)))
     let fact = P.loadedFact permit
         name = V.boundInstance binding
-        closed = Gate.close registry
-    Load.active (Gate.loads registry) === [name]
-    Load.active (Gate.loads closed) === []
-    Load.historical (Gate.loads closed) name === Right fact
+        closed = Load.close registry
+    Load.active registry === [name]
+    Load.active closed === []
+    Load.historical closed name === Right fact
     V.completedBinding (Load.report fact) === binding
     observed <- evalEither (P.observe permit (wire events))
     assert (V.completedProgram (Load.report fact) /= V.completedProgram (P.completion observed))

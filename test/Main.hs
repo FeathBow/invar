@@ -32,8 +32,6 @@ import Observations (observations)
 import Policies (policies)
 import Probabilities (probabilities)
 import Properties (properties)
-import Qualifications (qualifications)
-import QualifiedCalls (qualifiedCalls)
 import Quality (quality)
 import Records (records)
 import Reports (reports)
@@ -55,5 +53,5 @@ import Workloads (workloads)
 
 main :: IO ()
 main = do
-    outcomes <- traverse checkSequential [fixtures, properties, arguments, values, dependencies, evaluation, artifacts, construction, collections, records, literals, invocations, evidence, qualifications, qualifiedCalls, loads, store, checkpoints, inference, results, calls, batchCalls, groupedCalls, batchedProtocol, residentCalls, residentDrivers, residentObservations, residentMeasurements, residentReplays, rewards, cohorts, rollouts, sessions, learning, advantages, objectives, updates, learnerCalls, loops, schedules, policies, probabilities, workloads, reports, quality, observations, inferenceObservations, measurements, batchedObservations]
+    outcomes <- traverse checkSequential [fixtures, properties, arguments, values, dependencies, evaluation, artifacts, construction, collections, records, literals, invocations, evidence, loads, store, checkpoints, inference, results, calls, batchCalls, groupedCalls, batchedProtocol, residentCalls, residentDrivers, residentObservations, residentMeasurements, residentReplays, rewards, cohorts, rollouts, sessions, learning, advantages, objectives, updates, learnerCalls, loops, schedules, policies, probabilities, workloads, reports, quality, observations, inferenceObservations, measurements, batchedObservations]
     unless (and outcomes) exitFailure

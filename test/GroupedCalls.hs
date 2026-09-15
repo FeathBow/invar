@@ -10,7 +10,6 @@ import Data.ByteString (ByteString)
 import Hedgehog
 import Invar.Infer qualified as Infer
 import Invar.Infer.Invocation qualified as Call
-import Invar.Qualification qualified as Gate
 import Invar.Spec.Invocation qualified as Invocation
 import Invar.Spec.Load qualified as Load
 
@@ -38,22 +37,22 @@ ready = map (\(call, events) -> (call, Fixture.wire (Fixture.reviewPrefix events
 completed :: PropertyT IO ()
 completed = do
     requests <- setup
-    (registry, permits) <- evalEither (Call.authorizeBatch Gate.empty (ready requests))
-    Load.active (Gate.loads registry) === map (Invocation.boundInstance . Call.binding . fst) requests
+    (registry, permits) <- evalEither (Call.authorizeBatch Load.empty (ready requests))
+    Load.active registry === map (Invocation.boundInstance . Call.binding . fst) requests
     forM_ (zip requests permits) $ \((call, events), permit) -> do
         Call.permission permit === Fixture.permissionInput call
         (finished, _) <- evalEither (Call.observe permit (Fixture.wire events))
         Invocation.completedBinding finished === Call.binding call
         Invocation.completedBinding (Load.report (Call.loadFact permit)) === Call.binding call
-    Load.active (Gate.loads registry) === map (Invocation.boundInstance . Call.binding . fst) requests
-    let closed = Gate.close registry
-    Load.active (Gate.loads closed) === []
+    Load.active registry === map (Invocation.boundInstance . Call.binding . fst) requests
+    let closed = Load.close registry
+    Load.active closed === []
     isLeft (Call.authorizeBatch closed (ready requests))
 
 rejected :: PropertyT IO ()
 rejected = do
     requests <- setup
-    isLeft (Call.authorizeBatch Gate.empty [])
+    isLeft (Call.authorizeBatch Load.empty [])
     case reverse requests of
         (call, [loaded, consumed, result]) : previous -> do
             let mutate fields key value = Fixture.change key value fields
@@ -68,7 +67,7 @@ rejected = do
                     ]
             forM_ malformed $ \events -> do
                 let submitted = takeWhile (\event -> Fixture.field "stage" event /= String "result") events
-                isLeft (Call.authorizeBatch Gate.empty (ready (reverse previous) ++ [(call, Fixture.wire submitted)]))
+                isLeft (Call.authorizeBatch Load.empty (ready (reverse previous) ++ [(call, Fixture.wire submitted)]))
         _ -> failure
 
 identities :: PropertyT IO ()
@@ -83,7 +82,7 @@ identities = do
             forM_ aliases $ \alias -> do
                 call <- evalEither (Call.prepare alias planned)
                 output <- rebound call events
-                isLeft (Call.authorizeBatch Gate.empty (ready ((first, events) : (call, output) : remaining)))
+                isLeft (Call.authorizeBatch Load.empty (ready ((first, events) : (call, output) : remaining)))
         _ -> failure
 
 rebound :: Call.Call -> [Value] -> PropertyT IO [Value]
@@ -101,9 +100,9 @@ active = do
     requests <- setup
     case requests of
         (first, events) : remaining -> do
-            (registry, _) <- evalEither (Call.authorize Gate.empty first (Fixture.wire (Fixture.reviewPrefix events)))
+            (registry, _) <- evalEither (Call.authorize Load.empty first (Fixture.wire (Fixture.reviewPrefix events)))
             isLeft (Call.authorizeBatch registry (ready remaining))
-            Load.active (Gate.loads registry) === [Invocation.boundInstance (Call.binding first)]
+            Load.active registry === [Invocation.boundInstance (Call.binding first)]
             forM_ remaining $ \(call, output) -> isLeft (Call.authorize registry call (Fixture.wire (Fixture.reviewPrefix output)))
         _ -> failure
 

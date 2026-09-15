@@ -64,7 +64,7 @@ setup root count policies = do
 settings :: FilePath -> [[(String, String)]] -> (Int, Infer.Plan) -> PropertyT IO Rollout.Options
 settings root overlays (index, planned) = do
     expected <- evalEither (Reward.decimal "#### 12")
-    let worker = Worker.Worker "/bin/sh" (root </> "driver.sh") root (root </> ("checkpoint" ++ show index) </> "adapter.safetensors") [] (Just "native configuration.json") Nothing
+    let worker = Worker.Worker "/bin/sh" (root </> "driver.sh") root (root </> ("checkpoint" ++ show index) </> "adapter.safetensors") [] (Just "native configuration.json")
         tasks = [Cohort.Task ("member" ++ show member) "group" planned expected | member <- [0 .. memberCount - 1]]
     pure (Rollout.Options worker Rollout.Resident overlays (Cohort.Definition (Infer.artifact (Infer.requested planned)) tasks) execution arrival)
 

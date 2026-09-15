@@ -1,9 +1,8 @@
-module Invar.Rollout.Observation (Observation (..), report, completion, loaded, qualified) where
+module Invar.Rollout.Observation (Observation (..), report, completion, loaded) where
 
 import Invar.Infer.Result qualified as Result
 import Invar.Spec.Invocation qualified as Invocation
 import Invar.Spec.Load qualified as Load
-import Invar.Spec.Qualification qualified as Qualification
 import Invar.Worker qualified as Worker
 import Invar.Worker.Resident qualified as Resident
 
@@ -20,7 +19,3 @@ completion (Acknowledged value) = Resident.completion value
 loaded :: Observation -> Load.Fact
 loaded (Terminated value) = Worker.loaded value
 loaded (Acknowledged value) = Resident.loaded value
-
-qualified :: Observation -> Maybe Qualification.QualifiedResult
-qualified (Terminated value) = Worker.qualified value
-qualified (Acknowledged value) = Resident.qualified value

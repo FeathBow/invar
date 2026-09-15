@@ -33,8 +33,8 @@ withShared configuration@(inference, learning, overlays) action = case validate 
     closing process = Transport.Handshake (Boundary.close owner) $ \encoded -> do
         count <- Transport.groups process
         pure (first Learn.ProtocolFailure (void (Boundary.closed owner count encoded)))
-    execute process = Inference.withBorrowed (process, Infer.qualificationFile inference) owner $ \collector ->
-        Update.withBorrowed (process, Learn.qualificationFile learning) owner $ \updater ->
+    execute process = Inference.withBorrowed process owner $ \collector ->
+        Update.withBorrowed process owner $ \updater ->
             Right <$> action (Rollout.borrowed (inference, overlays) collector) (Learner.borrowed updater)
     failure (Process.Exit status) = Learn.WorkerExit status
     failure (Process.Rejected problem) = problem

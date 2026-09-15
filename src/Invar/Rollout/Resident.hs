@@ -31,7 +31,7 @@ matches :: Pool -> Configuration -> Bool
 matches (Pool (original, overlays) _ _) (requested, environments) =
     launch original == launch requested && overlays == environments
   where
-    launch worker = (Worker.executable worker, Worker.script worker, Worker.cache worker, Worker.configuration worker, Worker.qualificationFile worker)
+    launch worker = (Worker.executable worker, Worker.script worker, Worker.cache worker, Worker.configuration worker)
 
 sessions :: Pool -> [Session]
 sessions (Pool _ workers _) = workers

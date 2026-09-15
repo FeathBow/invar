@@ -105,7 +105,7 @@ scriptWith (physical, paths) root selected =
 run :: FilePath -> Scenario -> PropertyT IO (Either Worker.Failure [Resident.Receipt], ByteString)
 run root selected = do
     let path = root </> "resident.sh"
-        worker = Worker.Worker "/bin/sh" path root adapter [] Nothing Nothing
+        worker = Worker.Worker "/bin/sh" path root adapter [] Nothing
     evalIO (writeFile path (script root selected))
     buffer <- evalIO (newIORef [])
     let options = Resident.Options worker owner (\line -> modifyIORef' buffer (line :))

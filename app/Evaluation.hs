@@ -56,7 +56,7 @@ emit = Lazy.putStrLn . encode
 
 configure :: (FilePath, Maybe Policy.Description) -> O.Fields -> Either String (Worker.Worker, Dataset.Identity, [[(String, String)]], Rollout.Mode)
 configure (adapter, description) fields = do
-    worker <- Worker.Worker <$> string "python" <*> string "worker" <*> string "cache" <*> pure adapter <*> pure [] <*> pure (O.optional fields "worker-config") <*> pure (O.optional fields "qualification")
+    worker <- Worker.Worker <$> string "python" <*> string "worker" <*> string "cache" <*> pure adapter <*> pure [] <*> pure (O.optional fields "worker-config")
     selected <- case description of
         Nothing -> Dataset.Identity <$> string "policy" <*> string "tokenizer-digest" <*> string "base-digest" <*> string "assembly-digest"
         Just policy -> pure (Dataset.Identity (Policy.adapter policy) (Policy.tokenizer policy) (Policy.base policy) (Policy.assembly policy))
@@ -67,7 +67,7 @@ configure (adapter, description) fields = do
     string = O.required fields
 
 usage :: String
-usage = usageInfo "Usage: invar evaluate OPTIONS < tasks.json\nSelect --checkpoint, or an explicit --adapter with --policy and all three materialization digests. --checkpoint derives the inference selection from policy.json and binds every task before dispatch. --devices, --worker-config, --worker-mode and --qualification are optional. Every cohort uses the same policy; no learning or publication occurs. --qualification requires the selected numerical judgement before dispatch." options
+usage = usageInfo "Usage: invar evaluate OPTIONS < tasks.json\nSelect --checkpoint, or an explicit --adapter with --policy and all three materialization digests. --checkpoint derives the inference selection from policy.json and binds every task before dispatch. --devices, --worker-config and --worker-mode are optional. Every cohort uses the same policy; no learning or publication occurs." options
 
 options :: [OptDescr (String, String)]
-options = O.descriptions [("devices", "Optional comma-separated CUDA devices, one worker process per device"), ("python", "Python executable"), ("worker", "Inference worker script"), ("worker-config", "Optional worker launch configuration"), ("qualification", "Numerical qualification document required before dispatch"), ("worker-mode", "Inference execution: serial (default), batch or resident"), ("cache", "Pinned model cache"), ("checkpoint", "Checkpoint containing policy.json and adapter.safetensors"), ("adapter", "Explicit adapter file or native handoff directory"), ("policy", "Canonical adapter tensor SHA-256"), ("tokenizer-digest", "Tokenizer operation SHA-256"), ("base-digest", "Frozen model tensor SHA-256"), ("assembly-digest", "Model assembly SHA-256")]
+options = O.descriptions [("devices", "Optional comma-separated CUDA devices, one worker process per device"), ("python", "Python executable"), ("worker", "Inference worker script"), ("worker-config", "Optional worker launch configuration"), ("worker-mode", "Inference execution: serial (default), batch or resident"), ("cache", "Pinned model cache"), ("checkpoint", "Checkpoint containing policy.json and adapter.safetensors"), ("adapter", "Explicit adapter file or native handoff directory"), ("policy", "Canonical adapter tensor SHA-256"), ("tokenizer-digest", "Tokenizer operation SHA-256"), ("base-digest", "Frozen model tensor SHA-256"), ("assembly-digest", "Model assembly SHA-256")]

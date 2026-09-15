@@ -1,7 +1,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE RoleAnnotations #-}
 
-module Invar.Rollout (Driver, Mode (..), Options (..), Batch, Sample, Error (..), withDriver, withConfiguredDriver, run, samples, delivered, name, group, observation, reward, scored, completion, loaded, qualified) where
+module Invar.Rollout (Driver, Mode (..), Options (..), Batch, Sample, Error (..), withDriver, withConfiguredDriver, run, samples, delivered, name, group, observation, reward, scored, completion, loaded) where
 
 import Control.Concurrent (forkIOWithUnmask, killThread)
 import Control.Concurrent.MVar (newEmptyMVar, newMVar, putMVar, takeMVar, withMVar)
@@ -20,7 +20,6 @@ import Invar.Rollout.Resident qualified as Resident
 import Invar.Schedule qualified as S
 import Invar.Spec.Invocation qualified as V
 import Invar.Spec.Load qualified as Load
-import Invar.Spec.Qualification qualified as Qualification
 import Invar.Worker qualified as W
 import Numeric.Natural (Natural)
 import System.IO (hFlush, stdout)
@@ -183,6 +182,3 @@ completion (Sample _ executed _) = Observed.completion executed
 
 loaded :: Sample -> Load.Fact
 loaded (Sample _ executed _) = Observed.loaded executed
-
-qualified :: Sample -> Maybe Qualification.QualifiedResult
-qualified (Sample _ executed _) = Observed.qualified executed

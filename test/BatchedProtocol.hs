@@ -94,7 +94,7 @@ run requests observations = do
     let path = root </> "finite.sh"
         configuration = "native configuration.json"
         argument = "test \"$2\" = " ++ Serial.quote ("--config=" ++ configuration) ++ " || exit 20\n"
-        worker = Worker.Worker "/bin/sh" path root "adapter path" [] (Just configuration) Nothing
+        worker = Worker.Worker "/bin/sh" path root "adapter path" [] (Just configuration)
     evalIO (writeFile path (argument ++ script root (map fst requests) observations))
     output <- evalIO (newIORef [])
     returned <- evalIO (Worker.runBatchedSession worker (\line -> modifyIORef' output (line :)) (map fst requests))
@@ -185,7 +185,7 @@ rollout = forM_ [1, 2] $ \count -> do
     let path = root </> "rollout.sh"
         branch slot calls = show slot ++ ")\n" ++ script root (map fst calls) (prefix calls, suffix calls, clean) ++ ";;"
         body = unlines (["case \"$INVAR_TEST_SESSION\" in"] ++ zipWith branch [0 :: Int ..] requests ++ ["*) exit 31;;", "esac"])
-        worker = Worker.Worker "/bin/sh" path root "adapter path" [] Nothing Nothing
+        worker = Worker.Worker "/bin/sh" path root "adapter path" [] Nothing
         tasks = [Cohort.Task ("member" ++ show index) "group" planned expected | index <- [0 :: Int .. 2]]
         options = Rollout.Options worker Rollout.Batched [[("INVAR_TEST_SESSION", show slot)] | slot <- [0 .. count - 1]] (Cohort.Definition (Infer.artifact Fixture.request) tasks) order [1, 2, 0]
         project batch = (map Rollout.name (Rollout.samples batch), Rollout.delivered batch)

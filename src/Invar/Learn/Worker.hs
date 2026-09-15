@@ -12,7 +12,6 @@ import Invar.Learn qualified as L
 import Invar.Learn.Protocol qualified as P
 import Invar.Learn.Worker.Internal
 import Invar.Process qualified as Process
-import Invar.Qualification qualified as Gate
 import Invar.Spec.Invocation qualified as V
 import Invar.Spec.Load qualified as Registry
 
@@ -20,9 +19,9 @@ type role Execution nominal
 data Execution scope = Execution (L.Plan scope) P.Result FilePath Registry.Fact
 
 run :: Worker -> Call scope -> IO (Either Failure (Execution scope))
-run worker call = bracket (Gate.open Gate.Learning (qualificationFile worker) >>= newIORef) (`modifyIORef'` Gate.close) (execute worker call)
+run worker call = bracket (newIORef Registry.empty) (`modifyIORef'` Registry.close) (execute worker call)
 
-execute :: Worker -> Call scope -> IORef Gate.Registry -> IO (Either Failure (Execution scope))
+execute :: Worker -> Call scope -> IORef Registry.Registry -> IO (Either Failure (Execution scope))
 execute worker call@(Call planned binding runtime _) registry = do
     slot <- newIORef Nothing
     let arguments = [script worker, "--cache=" ++ cache worker, "--checkpoint=" ++ checkpoint worker, "--reference=" ++ reference worker, "--output=" ++ output worker]
@@ -35,7 +34,7 @@ execute worker call@(Call planned binding runtime _) registry = do
         Left (Process.Rejected problem) -> pure (Left (InvalidOutput problem))
         Left (Process.Protocol problem) -> pure (Left (ProtocolFailure problem))
 
-authorize :: (IORef Gate.Registry, IORef (Maybe P.Permit)) -> (V.Binding, V.Runtime) -> Bytes.ByteString -> IO (Either P.Error ())
+authorize :: (IORef Registry.Registry, IORef (Maybe P.Permit)) -> (V.Binding, V.Runtime) -> Bytes.ByteString -> IO (Either P.Error ())
 authorize (owner, slot) context observed = mask_ $ do
     previous <- readIORef slot
     registry <- readIORef owner
@@ -46,7 +45,6 @@ authorize (owner, slot) context observed = mask_ $ do
             Right (updated, permit) -> do
                 writeIORef owner updated
                 writeIORef slot (Just permit)
-                Gate.emit (P.qualifiedPermit permit)
                 pure (Right ())
 
 complete :: (L.Plan scope, FilePath) -> IORef (Maybe P.Permit) -> Bytes.ByteString -> IO (Either Failure (Execution scope))

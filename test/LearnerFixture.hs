@@ -109,7 +109,7 @@ scenario :: [Exchange scope] -> Scenario scope
 scenario exchanges = Scenario exchanges (object ["stage" .= String "closed", "format" .= String "invar-resident-v1", "owner" .= owner, "groups" .= length exchanges, "measurement" .= measurement "closed"]) "IFS= read -r extra && exit 29\nexit 0"
 
 worker :: FilePath -> W.Worker
-worker root = W.Worker "/bin/sh" (root </> "learner.sh") root "initial launch checkpoint" (root </> "fixed reference") "initial launch output" Nothing
+worker root = W.Worker "/bin/sh" (root </> "learner.sh") root "initial launch checkpoint" (root </> "fixed reference") "initial launch output"
 
 script :: FilePath -> Scenario scope -> String
 script root selected = unlines (header ++ concat (zipWith groupScript [0 :: Int ..] (groups selected)) ++ closing)

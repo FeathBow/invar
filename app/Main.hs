@@ -41,10 +41,10 @@ main = do
         _ -> die usage
 
 usage :: String
-usage = usageInfo "Usage: invar infer OPTIONS | invar policy OPTIONS | invar train OPTIONS < tasks.json | invar evaluate OPTIONS < tasks.json | invar quality OPTIONS | invar performance OPTIONS | invar inspect KIND OPTIONS | invar compare KIND OPTIONS | invar replay KIND OPTIONS\nUse the command's --help for its options. Inference selects --checkpoint, or an explicit --adapter with all four digest options. --checkpoint reads the published policy description. --worker-config and --qualification are optional. --qualification requires a bound numerical judgement with explicit assumptions; otherwise no numerical qualification is requested." options
+usage = usageInfo "Usage: invar infer OPTIONS | invar policy OPTIONS | invar train OPTIONS < tasks.json | invar evaluate OPTIONS < tasks.json | invar quality OPTIONS | invar performance OPTIONS | invar inspect KIND OPTIONS | invar compare KIND OPTIONS | invar replay KIND OPTIONS\nUse the command's --help for its options. Inference selects --checkpoint, or an explicit --adapter with all four digest options. --checkpoint reads the published policy description. --worker-config is optional." options
 
 options :: [OptDescr (String, String)]
-options = O.descriptions [("python", "Python executable"), ("worker", "Inference worker script"), ("worker-config", "Optional worker launch configuration"), ("qualification", "Numerical qualification document required before dispatch"), ("cache", "Pinned model cache"), ("adapter", "Explicit adapter file or native handoff directory"), ("checkpoint", "Checkpoint containing policy.json and adapter.safetensors")] ++ InferenceInput.options
+options = O.descriptions [("python", "Python executable"), ("worker", "Inference worker script"), ("worker-config", "Optional worker launch configuration"), ("cache", "Pinned model cache"), ("adapter", "Explicit adapter file or native handoff directory"), ("checkpoint", "Checkpoint containing policy.json and adapter.safetensors")] ++ InferenceInput.options
 
 parse :: [String] -> IO (W.Worker, I.Plan, V.Binding)
 parse supplied = do
@@ -59,4 +59,4 @@ parseWorker fields adapter = do
     python <- O.required fields "python"
     worker <- O.required fields "worker"
     cache <- O.required fields "cache"
-    pure W.Worker {W.executable = python, W.script = worker, W.cache = cache, W.adapter = adapter, W.environment = [], W.configuration = O.optional fields "worker-config", W.qualificationFile = O.optional fields "qualification"}
+    pure W.Worker {W.executable = python, W.script = worker, W.cache = cache, W.adapter = adapter, W.environment = [], W.configuration = O.optional fields "worker-config"}

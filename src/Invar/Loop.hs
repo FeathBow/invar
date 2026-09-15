@@ -38,7 +38,6 @@ data Backend = Backend
     , learningMode :: W.Mode
     , cache :: FilePath
     , sessions :: [[(String, String)]]
-    , qualificationFile :: Maybe FilePath
     }
 data Config = Config {backend :: Backend, root :: FilePath, checkpoint :: FilePath, reference :: FilePath, settings :: L.Settings, publication :: S.Method}
 data Cycle = Cycle {tasks :: [C.Task], order :: [Natural], delivery :: [Natural]}
@@ -143,7 +142,7 @@ collect driver (cursor@(Cursor _ selected description), workload) = do
 
 inferenceWorker :: Config -> Checkpoint -> Infer.Worker
 inferenceWorker config selected =
-    Infer.Worker (inferencePython engine) (inference engine) (cache engine) (directory selected </> "adapter.safetensors") [] (inferenceConfiguration engine) (qualificationFile engine)
+    Infer.Worker (inferencePython engine) (inference engine) (cache engine) (directory selected </> "adapter.safetensors") [] (inferenceConfiguration engine)
   where
     engine = backend config
 
@@ -175,7 +174,6 @@ updateWorker config (Cursor _ selected _, ordinal) =
         , W.checkpoint = directory selected
         , W.reference = reference config
         , W.output = root config </> stagedName ordinal
-        , W.qualificationFile = qualificationFile (backend config)
         }
 
 publish :: Driver scope -> (Cursor, Observation.Observation scope) -> IO (Generation scope)

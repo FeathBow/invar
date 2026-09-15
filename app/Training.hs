@@ -58,7 +58,7 @@ report generated = Lazy.putStrLn (encode (object ["phase" .= ("published" :: Str
 
 configure :: O.Fields -> Either String Loop.Config
 configure fields = do
-    backend <- Loop.Backend <$> string "python" <*> string "inference-python" <*> string "inference" <*> pure (O.optional fields "inference-config") <*> InferenceInput.mode (O.optional fields "inference-mode") <*> string "learning" <*> learningMode (O.optional fields "learning-mode") <*> string "cache" <*> Dataset.sessions (O.optional fields "devices") <*> pure (O.optional fields "qualification")
+    backend <- Loop.Backend <$> string "python" <*> string "inference-python" <*> string "inference" <*> pure (O.optional fields "inference-config") <*> InferenceInput.mode (O.optional fields "inference-mode") <*> string "learning" <*> learningMode (O.optional fields "learning-mode") <*> string "cache" <*> Dataset.sessions (O.optional fields "devices")
     Loop.Config backend <$> string "output" <*> string "checkpoint" <*> string "reference" <*> settings fields <*> publication fields
   where
     string = O.required fields
@@ -91,10 +91,10 @@ settings fields = do
     number = O.numeric fields
 
 usage :: String
-usage = usageInfo "Usage: invar train OPTIONS < tasks.json\nAll options except --devices, --inference-config, --inference-mode, --learning-mode and --qualification are required. Input is a nonempty JSON array of declared cycles. --qualification requires both numerical roles to carry their checked conditional judgements." options
+usage = usageInfo "Usage: invar train OPTIONS < tasks.json\nAll options except --devices, --inference-config, --inference-mode and --learning-mode are required. Input is a nonempty JSON array of declared cycles." options
 
 options :: [OptDescr (String, String)]
-options = O.descriptions [("publication", "Checkpoint publication: rename or reference"), ("qualification", "Qualification document for both numerical roles"), ("devices", "Optional comma-separated CUDA devices, one rollout worker process per device"), ("python", "Learning Python executable"), ("inference-python", "Inference Python executable"), ("inference", "Inference worker script"), ("inference-config", "Optional inference worker launch configuration"), ("inference-mode", "Inference execution: serial (default), batch, resident or shared"), ("learning", "Update worker script"), ("learning-mode", "Learning execution: process (default), resident or shared; shared requires both roles"), ("cache", "Pinned model cache"), ("output", "New output directory"), ("checkpoint", "Initial paired checkpoint directory"), ("reference", "Fixed reference adapter file")] ++ settingsOptions
+options = O.descriptions [("publication", "Checkpoint publication: rename or reference"), ("devices", "Optional comma-separated CUDA devices, one rollout worker process per device"), ("python", "Learning Python executable"), ("inference-python", "Inference Python executable"), ("inference", "Inference worker script"), ("inference-config", "Optional inference worker launch configuration"), ("inference-mode", "Inference execution: serial (default), batch, resident or shared"), ("learning", "Update worker script"), ("learning-mode", "Learning execution: process (default), resident or shared; shared requires both roles"), ("cache", "Pinned model cache"), ("output", "New output directory"), ("checkpoint", "Initial paired checkpoint directory"), ("reference", "Fixed reference adapter file")] ++ settingsOptions
 
 settingsOptions :: [OptDescr (String, String)]
 settingsOptions = O.descriptions [("policy", "Consumed canonical policy tensor SHA-256"), ("tokenizer-digest", "Tokenizer operation SHA-256"), ("base-digest", "Learner frozen model tensor SHA-256"), ("assembly-digest", "Learner model assembly SHA-256"), ("behavior-base-digest", "Actual rollout frozen model SHA-256"), ("behavior-assembly-digest", "Actual rollout model assembly SHA-256"), ("learner", "Consumed learner file SHA-256"), ("reference-digest", "Canonical reference tensor SHA-256"), ("clip", "GRPO clipping coefficient"), ("penalty", "Reference penalty coefficient"), ("delta", "Advantage normalization epsilon"), ("rate", "AdamW learning rate"), ("beta1", "AdamW first moment coefficient"), ("beta2", "AdamW second moment coefficient"), ("optimizer-epsilon", "AdamW epsilon"), ("decay", "AdamW weight decay")]

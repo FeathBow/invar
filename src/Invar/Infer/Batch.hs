@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Infer.Batch (Permit, input, authorize, authorizeActivation, permission, qualifications, observe) where
+module Invar.Infer.Batch (Permit, input, authorize, authorizeActivation, permission, observe) where
 
 import Control.Monad (unless)
 import Data.Aeson (encode, object, (.=))
@@ -13,23 +13,21 @@ import Invar.Infer.Framing qualified as Framing
 import Invar.Infer.Invocation qualified as Call
 import Invar.Infer.Output qualified as Output
 import Invar.Infer.Result qualified as Result
-import Invar.Qualification qualified as Gate
 import Invar.Spec.Invocation qualified as Invocation
 import Invar.Spec.Load qualified as Load
-import Invar.Spec.Qualification qualified as Qualification
 
 data Permit = Permit ByteString [ByteString] [Call.Permit]
 
 input :: FilePath -> [Call.Call] -> ByteString
 input adapter calls = Lazy.toStrict (encode (object ["format" .= Framing.format, "adapter" .= adapter, "calls" .= map (decodeUtf8 . Call.batchInput) calls]))
 
-authorize :: Gate.Registry -> [Call.Call] -> ByteString -> Either Call.Error (Gate.Registry, Permit)
+authorize :: Load.Registry -> [Call.Call] -> ByteString -> Either Call.Error (Load.Registry, Permit)
 authorize registry calls = authorizeWith Framing.readiness (registry, calls)
 
-authorizeActivation :: Gate.Registry -> [Call.Call] -> ByteString -> Either Call.Error (Gate.Registry, Permit)
+authorizeActivation :: Load.Registry -> [Call.Call] -> ByteString -> Either Call.Error (Load.Registry, Permit)
 authorizeActivation registry calls = authorizeWith Framing.activationReadiness (registry, calls)
 
-authorizeWith :: ([Framing.Frame] -> Either String [ByteString]) -> (Gate.Registry, [Call.Call]) -> ByteString -> Either Call.Error (Gate.Registry, Permit)
+authorizeWith :: ([Framing.Frame] -> Either String [ByteString]) -> (Load.Registry, [Call.Call]) -> ByteString -> Either Call.Error (Load.Registry, Permit)
 authorizeWith readiness (registry, calls) encoded = do
     sources <- first Call.Protocol (Framing.decode encoded >>= readiness)
     unless (length calls == length sources) (Left (Call.Protocol "Batch readiness inventory differs from the declared calls"))
@@ -39,10 +37,7 @@ authorizeWith readiness (registry, calls) encoded = do
 permission :: Permit -> ByteString
 permission (Permit _ _ permits) = Lazy.toStrict (encode (object ["format" .= Framing.format, "permissions" .= map (decodeUtf8 . Call.permission) permits]))
 
-qualifications :: Permit -> [Maybe Qualification.QualifiedResult]
-qualifications (Permit _ _ permits) = map Call.qualified permits
-
-observe :: Permit -> ByteString -> Either Call.Error [(Invocation.Completion, Result.Result, Load.Fact, Maybe Qualification.QualifiedResult)]
+observe :: Permit -> ByteString -> Either Call.Error [(Invocation.Completion, Result.Result, Load.Fact)]
 observe (Permit prefix sources permits) encoded = do
     unless (prefix `Bytes.isPrefixOf` encoded) (Left (Call.Protocol "Completed batch differs from its authorized prefix"))
     (_, results) <- first Call.Protocol (Framing.decode (Bytes.drop (Bytes.length prefix) encoded) >>= Framing.completion)
@@ -52,4 +47,4 @@ observe (Permit prefix sources permits) encoded = do
     completed (permit, source, output) = do
         (finished, result) <- Call.observe permit (source <> output)
         first Call.Protocol (Output.rawBehavior output (Result.behaviorBits result))
-        pure (finished, result, Call.loadFact permit, Call.qualified permit)
+        pure (finished, result, Call.loadFact permit)

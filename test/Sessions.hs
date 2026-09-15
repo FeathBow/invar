@@ -72,7 +72,7 @@ options root count = do
     (calls, definition) <- setup count
     let path = root </> ("session" ++ show count ++ ".sh")
     evalIO (writeFile path (script root calls count))
-    let worker = W.Worker "/bin/sh" path root "unused" [] Nothing Nothing
+    let worker = W.Worker "/bin/sh" path root "unused" [] Nothing
         overlays = if count == 1 then [[]] else [[("INVAR_TEST_SESSION", show slot)] | slot <- [0 .. count - 1]]
     pure R.Options {R.worker = worker, R.mode = R.Serial, R.sessions = overlays, R.definition = definition, R.order = execution, R.delivery = arrival}
 
@@ -113,7 +113,7 @@ cancelled = do
     let path = root </> "slow.sh"
         record = " >> " ++ quote (root </> "launched")
     evalIO (writeFile path (unlines ["printf '%s\\n' \"started $INVAR_TEST_SESSION\"" ++ record, "sleep 3", "printf '%s\\n' \"late $INVAR_TEST_SESSION\"" ++ record, "exit 0"]))
-    let slow = split {R.worker = W.Worker "/bin/sh" path root "unused" [] Nothing Nothing}
+    let slow = split {R.worker = W.Worker "/bin/sh" path root "unused" [] Nothing}
     outcome <- evalIO (timeout 1000000 (R.withDriver (\driver -> void <$> R.run driver slow)))
     outcome === Nothing
     evalIO (threadDelay 3500000)

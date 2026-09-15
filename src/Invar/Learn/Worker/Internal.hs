@@ -25,7 +25,7 @@ import System.FilePath ((</>))
 import System.IO (hClose)
 
 data Mode = Process | Resident | Shared deriving (Eq, Show)
-data Worker = Worker {executable :: FilePath, script :: FilePath, cache :: FilePath, checkpoint :: FilePath, reference :: FilePath, output :: FilePath, qualificationFile :: Maybe FilePath}
+data Worker = Worker {executable :: FilePath, script :: FilePath, cache :: FilePath, checkpoint :: FilePath, reference :: FilePath, output :: FilePath}
 
 type role Call nominal
 data Call scope = Call (L.Plan scope) V.Binding V.Runtime String

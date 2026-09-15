@@ -31,7 +31,7 @@ options root = do
     planned <- evalEither (I.prepare (I.Request identity (replicate 64 'c') (replicate 64 'e') (replicate 64 'f') "Same request, distinct members." 2 0.8 17))
     expected <- evalEither (Reward.decimal "#### 12")
     script <- evalIO (makeAbsolute "test/fail.sh")
-    let worker = W.Worker "/bin/sh" script root "unused" [] Nothing Nothing
+    let worker = W.Worker "/bin/sh" script root "unused" [] Nothing
         tasks = [C.Task "first" "question" planned expected, C.Task "second" "question" planned expected]
     pure R.Options {R.worker = worker, R.mode = R.Serial, R.sessions = [[]], R.definition = C.Definition identity tasks, R.order = [0, 1], R.delivery = [0, 1]}
 

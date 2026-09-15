@@ -75,7 +75,7 @@ runWith configuration requests ending = do
         configuredArgument = maybe "" (\path -> "test \"$3\" = " ++ quote ("--config=" ++ path) ++ " || exit 20\n") configuration
         body = configuredArgument ++ "printf '%s\\n' launched >> " ++ quote (root </> "launched") ++ "\n" ++ concatMap (exchange root) requests ++ ending
     evalIO (writeFile script body)
-    returned <- evalIO (W.runBatch (W.Worker "/bin/sh" script root "unused" [] configuration Nothing) (map fst requests))
+    returned <- evalIO (W.runBatch (W.Worker "/bin/sh" script root "unused" [] configuration) (map fst requests))
     launches <- evalIO (readFile (root </> "launched"))
     launches === "launched\n"
     received <- evalIO (readFile (root </> "received"))
