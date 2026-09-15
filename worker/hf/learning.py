@@ -45,6 +45,19 @@ def capture_gradients(model, reward_gradients):
     return recorded
 
 
+def parameter_vjps(current, trainable, *, objective, reward):
+    # A fixed two-role batch reuses the same forward graph for both adjoints.
+    gradients = torch.autograd.grad(current, trainable,
+                                    grad_outputs=torch.stack((reward, objective)), is_grads_batched=True)
+    reward_values, objective_values = zip(*(value.unbind() for value in gradients), strict=True)
+    return objective_values, reward_values
+
+
+def accumulate_objective(trainable, contribution):
+    for parameter, gradient in zip(trainable, contribution, strict=True):
+        parameter.grad = gradient.clone() if parameter.grad is None else parameter.grad + gradient
+
+
 def update(learner, batch):
     samples = ordered(batch)
     model, optimizer = learner.model, learner.optimizer
@@ -67,9 +80,9 @@ def update(learner, batch):
                            count=item.trajectory.tokens.shape[-1] - item.trajectory.prompt_length)
         evaluated, objective, reward = cotangents(observed, batch.profile, total=count, device=current.device)
         observations.append(evaluated)
-        contribution = torch.autograd.grad(current, trainable, grad_outputs=reward, retain_graph=True)
-        reward_gradients = tuple(total + addition for total, addition in zip(reward_gradients, contribution))
-        current.backward(objective)
+        objective_values, reward_values = parameter_vjps(current, trainable, objective=objective, reward=reward)
+        reward_gradients = tuple(total + addition for total, addition in zip(reward_gradients, reward_values, strict=True))
+        accumulate_objective(trainable, objective_values)
     mean = number(loss(observations))
     norm = gradient_norm(tuple(value.grad for value in trainable))
     reward_norm = gradient_norm(reward_gradients)

@@ -1,9 +1,12 @@
 from contextlib import ExitStack
 from dataclasses import asdict, dataclass
 from functools import partial
+from itertools import accumulate
 from types import MappingProxyType
 
 import torch
+from vllm.forward_context import get_forward_context
+from vllm.model_executor.layers.logits_processor import LogitsProcessor
 
 from worker.hf.rollout import Request
 from worker.hf.tensors import assert_equal
@@ -26,6 +29,13 @@ class Binding:
     receipt: str
 
 
+@dataclass(frozen=True, kw_only=True)
+class Step:
+    rows: tuple
+    model_tokens: int
+    logits_indices: tuple[int, ...]
+
+
 def binding(value):
     return Binding(**{**value, "request": Request(**value["request"]),
                        "selection": Selection(**value["selection"]), "prompt": tuple(value["prompt"])})
@@ -39,9 +49,9 @@ def sampling(state, bound):
         raise ValueError("Native cached prompt differs from the approved request")
 
 
-def model_inputs(runner, rows, *, bindings, tokens, arguments):
+def model_inputs(runner, step, *, bindings, tokens, arguments):
     expected_tokens, expected_positions, sampling_requests = [], [], []
-    for row in rows:
+    for row in step.rows:
         bound, state = bindings[row.request], runner.requests[row.request]
         sampling(state, bound)
         known = (*bound.prompt, *tokens[row.request])
@@ -52,12 +62,21 @@ def model_inputs(runner, rows, *, bindings, tokens, arguments):
         expected_positions.extend(range(start, end))
         if end == len(known):
             sampling_requests.append(row.request)
-    assert_equal(arguments["input_ids"], torch.tensor(expected_tokens, dtype=torch.int32))
+    actual_tokens = arguments["input_ids"]
+    if actual_tokens.shape != (step.model_tokens,):
+        raise ValueError("Native model token IDs have a different physical shape")
+    logical_tokens = len(expected_tokens)
+    descriptor = get_forward_context().batch_descriptor
+    if step.model_tokens != logical_tokens and (descriptor is None or descriptor.num_tokens != step.model_tokens):
+        raise ValueError("Native model padding differs from its actual batch descriptor")
+    assert_equal(actual_tokens[:logical_tokens], torch.tensor(expected_tokens, dtype=torch.int32))
     positions = arguments["positions"]
+    if positions.ndim not in (1, 2) or positions.shape[-1] != step.model_tokens:
+        raise ValueError("Native model positions have a different physical shape")
     expected = torch.tensor(expected_positions, dtype=torch.int64)
     if positions.ndim == 2:
         expected = expected.expand(positions.shape[0], -1)
-    assert_equal(positions, expected)
+    assert_equal(positions[..., :logical_tokens], expected)
     return tuple(sampling_requests)
 
 
@@ -76,7 +95,12 @@ def before_model(module, args, kwargs, *, monitor):
 
 
 def after_model(module, args, output, *, monitor):
-    monitor.model_finished = True
+    monitor.after_model(output)
+
+
+def before_logits(module, args, kwargs, *, monitor):
+    hidden = kwargs["hidden_states"] if "hidden_states" in kwargs else args[1]
+    monitor.before_logits(hidden)
 
 
 def before_sampler(module, args, kwargs, *, monitor):
@@ -105,6 +129,8 @@ class Monitor:
         self.pending = None
         self.sampling_requests = ()
         self.model_finished = False
+        self.hidden_states = None
+        self.logits_finished = False
         self.permitted = False
         self.hooks = ExitStack()
         self.resident = self.verify_policies()
@@ -127,6 +153,11 @@ class Monitor:
 
     def attach(self):
         with ExitStack() as hooks:
+            processors = [module for module in self.native.model.modules() if isinstance(module, LogitsProcessor)]
+            if len(processors) != 1:
+                raise ValueError("Native model must expose one actual logits row consumer")
+            handle = processors[0].register_forward_pre_hook(partial(before_logits, monitor=self), with_kwargs=True)
+            hooks.callback(handle.remove)
             for module, before, after in ((self.native.model, before_model, after_model),
                                           (self.runner.sampler, before_sampler, after_sampler)):
                 handle = module.register_forward_pre_hook(partial(before, monitor=self), with_kwargs=True)
@@ -147,15 +178,32 @@ class Monitor:
             self.verify_policies()
             self.slot_layout = layout
         rows = observe(self.runner, self.native, expected=self.selections, token_count=arguments["input_ids"].numel())
-        self.sampling_requests = model_inputs(self.runner, rows, bindings=self.bindings,
+        step = Step(rows=rows, model_tokens=arguments["input_ids"].numel(),
+                    logits_indices=tuple(end - 1 for end in accumulate(row.tokens for row in rows)))
+        self.sampling_requests = model_inputs(self.runner, step, bindings=self.bindings,
                                                tokens=self.tokens, arguments=arguments)
-        self.pending = rows
+        self.pending = step
         self.model_finished = False
+        self.logits_finished = False
+
+    def after_model(self, output):
+        if self.pending is None or not isinstance(output, torch.Tensor) or output.shape[0] != self.pending.model_tokens:
+            raise ValueError("Native model output differs from its owned physical rows")
+        self.hidden_states = output
+        self.model_finished = True
+
+    def before_logits(self, hidden):
+        if self.pending is None or not self.model_finished or self.logits_finished:
+            raise RuntimeError("Native logits have no unconsumed owned model step")
+        indices = torch.tensor(self.pending.logits_indices, device=self.hidden_states.device)
+        assert_equal(hidden, self.hidden_states[indices])
+        self.hidden_states = None
+        self.logits_finished = True
 
     def before_sampler(self, metadata):
-        if self.pending is None or not self.model_finished:
+        if self.pending is None or not self.model_finished or not self.logits_finished:
             raise RuntimeError("Native sampler has no completed owned model step")
-        requests = tuple(row.request for row in self.pending)
+        requests = tuple(row.request for row in self.pending.rows)
         if tuple(self.runner.input_batch.req_ids) != requests or set(metadata.generators) != set(range(len(requests))):
             raise ValueError("Native sampler rows differ from the observed model requests")
         sampler_controls(metadata, [self.bindings[key].request.temperature for key in requests])
@@ -172,19 +220,20 @@ class Monitor:
             self.generators_seen.add(key)
 
     def after_sampler(self, output):
-        count = len(self.pending)
+        count = len(self.pending.rows)
         token_ids, logprobs = output.sampled_token_ids, output.logprobs_tensors.logprobs
         if token_ids.shape != (count, 1) or logprobs.shape != (count, 1) or logprobs.dtype != torch.float32:
             raise ValueError("Native sampler observations have a different row or probability representation")
         if not logprobs.isfinite().all() or (logprobs > 0).any():
             raise ValueError("Native sampler returned invalid behavior probabilities")
-        for row, token, probability in zip(self.pending, token_ids.flatten().tolist(), logprobs.flatten().tolist(), strict=True):
+        for row, token, probability in zip(self.pending.rows, token_ids.flatten().tolist(), logprobs.flatten().tolist(), strict=True):
             if row.request in self.sampling_requests:
                 self.tokens[row.request].append(token)
                 self.behavior[row.request].append(probability)
-        self.steps.append(tuple(asdict(row) for row in self.pending))
+        self.steps.append(asdict(self.pending))
         self.pending = None
         self.model_finished = False
+        self.logits_finished = False
 
     def close(self, *, completed):
         self.hooks.close()

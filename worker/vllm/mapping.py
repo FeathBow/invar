@@ -48,12 +48,17 @@ def kernel_expected(slots, *, capacity):
             (*active, *([NO_ADAPTER] * padding)))
 
 
-def kernel(meta, slots, *, max_loras, specialized, device):
+def kernel(meta, slots, *, max_loras, specialized, device, token_count):
     capacity = max_loras + 1
     expected = kernel_expected(slots, capacity=capacity)
-    *routing, no_lora, num_active = meta.meta_args(len(slots), specialized)
+    *routing, no_lora, num_active = meta.meta_args(token_count, specialized)
     labels = ("token slots", "sorted token indices", "tokens per slot", "slot starts", "active slots")
-    for value, wanted, label in zip(routing, expected, labels, strict=True):
+    for index, (value, wanted, label) in enumerate(zip(routing, expected, labels, strict=True)):
+        if index < 2:
+            if value.shape != (token_count,):
+                raise ValueError(f"Native LoRA routing physical shape mismatch: {label}")
+            # Exact counts and starts below bound every consumed sorted index.
+            value = value[:len(slots)]
         tensor(value, wanted, dtype=torch.int32, device=device, label=label)
     active_count = len(set(slots))
     if specialized:
@@ -114,11 +119,12 @@ def wrappers(native):
 def observe(runner, native, *, expected, token_count):
     scheduled = rows(runner, native, expected=expected)
     slots = tuple(row.slot for row in scheduled for _ in range(row.tokens))
-    if len(slots) != token_count:
-        raise ValueError("Native model input rows differ from the scheduled LoRA mapping")
+    if len(slots) > token_count:
+        raise ValueError("Native model input rows omit scheduled LoRA tokens")
     for wrapper in wrappers(native):
         tensor(wrapper.token_lora_indices, slots, dtype=torch.int64,
                device=native.device.type, label="native token slot indices")
         kernel(wrapper.token_mapping_meta, slots, max_loras=native.lora_slots,
-               specialized=native.lora_config.specialize_active_lora, device=native.device.type)
+               specialized=native.lora_config.specialize_active_lora, device=native.device.type,
+               token_count=token_count)
     return scheduled
