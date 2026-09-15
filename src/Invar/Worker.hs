@@ -1,4 +1,4 @@
-module Invar.Worker (Worker (..), Failure (..), Execution, report, completion, loaded, run, runBatch, runSession) where
+module Invar.Worker (Worker (..), Failure (..), Execution, report, completion, loaded, qualified, run, runBatch, runSession, runBatchedSession) where
 
 import Control.Exception (bracket, mask_)
 import Data.Bifunctor (first)
@@ -8,11 +8,14 @@ import Data.Functor (void)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Text qualified as Text
 import Data.Text.Encoding (encodeUtf8)
+import Invar.Infer.Batch qualified as Batch
 import Invar.Infer.Invocation qualified as I
 import Invar.Infer.Result qualified as R
 import Invar.Process qualified as Process
+import Invar.Qualification qualified as Gate
 import Invar.Spec.Invocation qualified as V
 import Invar.Spec.Load qualified as L
+import Invar.Spec.Qualification qualified as Qualification
 import System.Exit (ExitCode)
 import System.IO (hFlush, stdout)
 
@@ -22,28 +25,33 @@ data Worker = Worker
     , cache :: FilePath
     , adapter :: FilePath
     , environment :: [(String, String)]
+    , configuration :: Maybe FilePath
+    , qualificationFile :: Maybe FilePath
     }
 
 data Failure = WorkerExit ExitCode | InvalidOutput I.Error | ProtocolFailure String
     deriving (Eq, Show)
 
-data Execution = Execution V.Completion R.Result L.Fact
+data Execution = Execution V.Completion R.Result L.Fact (Maybe Qualification.QualifiedResult)
 
 data Pending = Pending I.Call (IORef (Maybe I.Permit))
 
 report :: Execution -> R.Result
-report (Execution _ result _) = result
+report (Execution _ result _ _) = result
 
 completion :: Execution -> V.Completion
-completion (Execution completed _ _) = completed
+completion (Execution completed _ _ _) = completed
 
 loaded :: Execution -> L.Fact
-loaded (Execution _ _ fact) = fact
+loaded (Execution _ _ fact _) = fact
+
+qualified :: Execution -> Maybe Qualification.QualifiedResult
+qualified (Execution _ _ _ certificate) = certificate
 
 run :: Worker -> I.Call -> IO (Either Failure Execution)
-run worker call = withRegistry $ \registry -> do
+run worker call = withRegistry worker $ \registry -> do
     pending <- Pending call <$> newIORef Nothing
-    let inputs = [script worker, "--cache=" ++ cache worker, "--adapter=" ++ adapter worker] ++ I.arguments call
+    let inputs = arguments worker ++ I.arguments call
         command = Process.Command (executable worker) inputs (environment worker) (encodeUtf8 (Text.pack (I.input call)))
     returned <- Process.run command (authorize registry pending)
     case first failure returned of
@@ -54,9 +62,9 @@ runBatch :: Worker -> [I.Call] -> IO (Either Failure [Execution])
 runBatch worker = runSession worker (\line -> Bytes.hPutStrLn stdout line >> hFlush stdout)
 
 runSession :: Worker -> (ByteString -> IO ()) -> [I.Call] -> IO (Either Failure [Execution])
-runSession worker echo calls = withRegistry $ \registry -> do
+runSession worker echo calls = withRegistry worker $ \registry -> do
     pending <- traverse (\call -> Pending call <$> newIORef Nothing) calls
-    let inputs = [script worker, "--cache=" ++ cache worker, "--adapter=" ++ adapter worker]
+    let inputs = arguments worker
         launch = Process.Launch (executable worker) inputs (environment worker) echo
         exchange value@(Pending call _) = Process.Exchange (I.batchInput call) (authorize registry value) (fmap void . observe value)
     returned <- Process.batch launch (map exchange pending)
@@ -64,21 +72,54 @@ runSession worker echo calls = withRegistry $ \registry -> do
         Right outputs -> fmap (first InvalidOutput . sequence) (traverse (uncurry observe) (zip pending outputs))
         Left problem -> pure (Left problem)
 
-withRegistry :: (IORef L.Registry -> IO value) -> IO value
-withRegistry = bracket (newIORef L.empty) (`modifyIORef'` L.close)
+runBatchedSession :: Worker -> (ByteString -> IO ()) -> [I.Call] -> IO (Either Failure [Execution])
+runBatchedSession _ _ [] = pure (Right [])
+runBatchedSession worker echo calls = withRegistry worker $ \registry -> do
+    slot <- newIORef Nothing
+    let launch = Process.Launch (executable worker) (batchArguments worker) (environment worker) echo
+        review output = do
+            accepted <- grant registry slot (\current -> Batch.authorize current calls output)
+            mapM_ (mapM_ Gate.emit . Batch.qualifications) accepted
+            pure (Batch.permission <$> accepted)
+        finish output = do
+            permit <- readIORef slot
+            pure $ case permit of
+                Nothing -> Left (I.Protocol "Batch result has no accepted consumption permits")
+                Just accepted -> map (\(completed, result, fact, certificate) -> Execution completed result fact certificate) <$> Batch.observe accepted output
+        exchange = Process.Exchange (Batch.input (adapter worker) calls) review (fmap void . finish)
+    returned <- Process.batch launch [exchange]
+    case first failure returned of
+        Right [output] -> first InvalidOutput <$> finish output
+        Right _ -> pure (Left (ProtocolFailure "Expected one finite batch response"))
+        Left problem -> pure (Left problem)
 
-authorize :: IORef L.Registry -> Pending -> ByteString -> IO (Either I.Error ByteString)
-authorize owner (Pending call slot) output = mask_ $ do
+arguments :: Worker -> [String]
+arguments worker = [script worker, "--cache=" ++ cache worker, "--adapter=" ++ adapter worker] ++ maybe [] (\path -> ["--config=" ++ path]) (configuration worker)
+
+batchArguments :: Worker -> [String]
+batchArguments worker = [script worker, "--cache=" ++ cache worker] ++ maybe [] (\path -> ["--config=" ++ path]) (configuration worker)
+
+withRegistry :: Worker -> (IORef Gate.Registry -> IO value) -> IO value
+withRegistry worker = bracket (Gate.open Gate.Inference (qualificationFile worker) >>= newIORef) (`modifyIORef'` Gate.close)
+
+authorize :: IORef Gate.Registry -> Pending -> ByteString -> IO (Either I.Error ByteString)
+authorize owner (Pending call slot) output = do
+    accepted <- grant owner slot (\registry -> I.authorize registry call output)
+    mapM_ (Gate.emit . I.qualified) accepted
+    pure (I.permission <$> accepted)
+
+grant :: IORef Gate.Registry -> IORef (Maybe permit) -> (Gate.Registry -> Either I.Error (Gate.Registry, permit)) -> IO (Either I.Error permit)
+grant owner slot admit = mask_ $ do
     previous <- readIORef slot
     registry <- readIORef owner
     case previous of
         Just _ -> pure (Left (I.Protocol "Invocation already holds a consumption permit"))
-        Nothing -> case I.authorize registry call output of
+        Nothing -> case admit registry of
             Left problem -> pure (Left problem)
             Right (updated, permit) -> do
                 writeIORef owner updated
                 writeIORef slot (Just permit)
-                pure (Right (I.permission permit))
+                pure (Right permit)
 
 observe :: Pending -> ByteString -> IO (Either I.Error Execution)
 observe (Pending _ slot) output = do
@@ -87,7 +128,7 @@ observe (Pending _ slot) output = do
         Nothing -> Left (I.Protocol "Inference result has no accepted load and consumption permit")
         Just permit -> completed permit <$> I.observe permit output
   where
-    completed permit (result, value) = Execution result value (I.loadFact permit)
+    completed permit (result, value) = Execution result value (I.loadFact permit) (I.qualified permit)
 
 failure :: Process.Failure I.Error -> Failure
 failure (Process.Exit status) = WorkerExit status

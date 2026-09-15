@@ -10,12 +10,14 @@ module Invar.Cohort (
     Batch,
     Error (..),
     withCohort,
+    validateMembers,
     members,
     planned,
     record,
     admit,
     observations,
     observed,
+    source,
     reward,
     scored,
 ) where
@@ -63,17 +65,21 @@ withCohort definition continuation = do
 
 validate :: Definition -> Either Error ()
 validate definition = do
-    let entries = tasks definition
-        names = map name entries
-        groups = Map.fromListWith (+) [(group task, 1 :: Natural) | task <- entries]
+    validateMembers [(name task, group task) | task <- tasks definition]
+    mapM_ samePolicy (tasks definition)
+  where
+    samePolicy task = unless (I.artifact (I.requested (plan task)) == policy definition) (Left (PolicyMismatch (name task)))
+
+validateMembers :: [(String, String)] -> Either Error ()
+validateMembers entries = do
+    let names = map fst entries
+        groups = Map.fromListWith (+) [(membership, 1 :: Natural) | (_, membership) <- entries]
     when (null entries) (Left EmptyCohort)
-    when (any null names || any (null . group) entries) (Left InvalidIdentity)
+    when (any null names || any (null . snd) entries) (Left InvalidIdentity)
     unless (Set.size (Set.fromList names) == length names) (Left DuplicateMember)
     when (any (< minimumGroup) groups) (Left SingletonGroup)
-    mapM_ samePolicy entries
   where
     minimumGroup = 2
-    samePolicy task = unless (I.artifact (I.requested (plan task)) == policy definition) (Left (PolicyMismatch (name task)))
 
 members :: Cohort scope -> [Member scope]
 members (Cohort entries) = entries
@@ -103,6 +109,9 @@ observations (Batch entries) = entries
 
 observed :: Observation scope -> R.Result
 observed (Observation _ output _) = output
+
+source :: Observation scope -> Task
+source (Observation (Member _ task) _ _) = task
 
 reward :: Observation scope -> Rational
 reward = Reward.value . scored

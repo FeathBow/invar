@@ -1,7 +1,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Infer.Load (Plan, Error (..), prepare, program, register) where
+module Invar.Infer.Load (Plan, Error (..), prepare, program, register, registerBatch) where
 
 import Control.Monad (foldM, unless, when, (>=>))
 import Data.Aeson (Object, eitherDecodeStrict, withObject, (.:))
@@ -20,6 +20,8 @@ data Plan = Plan V.Binding Load.Plan
 data Error = Loading Load.Error | Lifecycle V.Error | Registry L.Error | Protocol String
     deriving (Eq, Show)
 
+data Registration = Serial | Batched
+
 prepare :: V.Binding -> I.Plan -> Either Error Plan
 prepare bound planned = Plan bound <$> either (Left . Loading) Right (Load.prepare bound (I.image (I.requested planned)))
 
@@ -27,17 +29,28 @@ program :: Plan -> ByteString
 program (Plan _ loading) = Load.program loading
 
 register :: Plan -> L.Registry -> ByteString -> Either Error L.Registry
-register planned registry encoded = do
+register planned = registerMode (Serial, planned)
+
+registerBatch :: L.Registry -> [(Plan, ByteString)] -> Either Error L.Registry
+registerBatch registry selected = do
+    unless (not (null selected) && null (L.active registry)) (Left (Protocol "A finite activation batch requires an idle load registry"))
+    foldM (\current (planned, encoded) -> registerMode (Batched, planned) current encoded) registry selected
+
+registerMode :: (Registration, Plan) -> L.Registry -> ByteString -> Either Error L.Registry
+registerMode selected registry encoded = do
     events <- traverse (either (Left . Protocol) Right . eitherDecodeStrict) (Bytes.lines encoded)
-    (seen, updated) <- foldM (advance planned) (False, registry) events
+    (seen, updated) <- foldM (advance selected) (False, registry) events
     unless seen (Left (Protocol "Missing completed policy load"))
     pure updated
 
-advance :: Plan -> (Bool, L.Registry) -> Object -> Either Error (Bool, L.Registry)
-advance planned (seen, registry) value = do
+advance :: (Registration, Plan) -> (Bool, L.Registry) -> Object -> Either Error (Bool, L.Registry)
+advance (mode, planned) (seen, registry) value = do
     stage <- parse (.: "stage") value
     case stage :: String of
         "unloaded_adapter" -> do
+            case mode of
+                Batched -> Left (Protocol "A prepared activation batch cannot unload one of its members")
+                Serial -> pure ()
             when seen (Left (Protocol "Unload follows the new policy load"))
             bound <- parse Wire.binding value
             previous <- registryError (L.historical registry (V.boundInstance bound))
@@ -47,7 +60,10 @@ advance planned (seen, registry) value = do
             updated <- registryError (L.unload (V.boundInstance bound) registry)
             pure (False, updated)
         "loaded_adapter" -> do
-            unless (not seen && null (L.active registry)) (Left (Protocol "Previous policy load remains live"))
+            when seen (Left (Protocol "Duplicate policy load within one invocation"))
+            case mode of
+                Serial -> unless (null (L.active registry)) (Left (Protocol "Previous policy load remains live"))
+                Batched -> pure ()
             let Plan _ loading = planned
             updated <- either (Left . Loading) Right (Load.register loading value registry)
             pure (True, updated)

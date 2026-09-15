@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Loads (loads) where
+module Loads (loads, descriptor, bound, registered, callFor, runtimeFor) where
 
 import Control.Monad (forM_)
 import Data.ByteString (ByteString)

@@ -21,6 +21,7 @@ batchCalls =
     Group
         "Persistent batch protocol"
         [ ("one process performs distinct request and permission exchanges", once completed)
+        , ("worker configuration is passed intact to the persistent process", once configured)
         , ("invalid consumption or result prevents subsequent dispatch", once rejected)
         , ("completion requires clean exit and no trailing output", once terminal)
         , ("adapter replacement requires the exact previous unload", once lifetime)
@@ -65,16 +66,28 @@ exchange root (call, events) =
     emit values = "printf '%s\\n' " ++ unwords (map (quote . Bytes.unpack) (Bytes.lines (Fixture.wire values)))
 
 run :: [(C.Call, [Value])] -> String -> PropertyT IO (Either W.Failure [W.Execution], Int)
-run requests ending = do
+run = runWith Nothing
+
+runWith :: Maybe FilePath -> [(C.Call, [Value])] -> String -> PropertyT IO (Either W.Failure [W.Execution], Int)
+runWith configuration requests ending = do
     root <- workspace
     let script = root </> "batch.sh"
-        body = "printf '%s\\n' launched >> " ++ quote (root </> "launched") ++ "\n" ++ concatMap (exchange root) requests ++ ending
+        configuredArgument = maybe "" (\path -> "test \"$3\" = " ++ quote ("--config=" ++ path) ++ " || exit 20\n") configuration
+        body = configuredArgument ++ "printf '%s\\n' launched >> " ++ quote (root </> "launched") ++ "\n" ++ concatMap (exchange root) requests ++ ending
     evalIO (writeFile script body)
-    returned <- evalIO (W.runBatch (W.Worker "/bin/sh" script root "unused" []) (map fst requests))
+    returned <- evalIO (W.runBatch (W.Worker "/bin/sh" script root "unused" [] configuration Nothing) (map fst requests))
     launches <- evalIO (readFile (root </> "launched"))
     launches === "launched\n"
     received <- evalIO (readFile (root </> "received"))
     pure (returned, length (lines received))
+
+configured :: PropertyT IO ()
+configured = do
+    requests <- setup
+    (outcome, count) <- runWith (Just "native configuration.json") requests "IFS= read -r extra && exit 25\nexit 0\n"
+    values <- evalEither outcome
+    count === length requests
+    length values === length requests
 
 completed :: PropertyT IO ()
 completed = do

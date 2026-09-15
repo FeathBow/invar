@@ -17,6 +17,7 @@ import Hedgehog
 import Invar.Infer qualified as I
 import Invar.Infer.Invocation qualified as C
 import Invar.Infer.Result qualified as R
+import Invar.Qualification qualified as Gate
 import Invar.Spec.Invocation qualified as V
 import Invar.Spec.Load qualified as L
 import Invar.Worker qualified as W
@@ -84,7 +85,7 @@ permissionInput call = case eitherDecodeStrict (encodeUtf8 (Text.pack (C.input c
 observe :: C.Call -> ByteString -> Either C.Error (V.Completion, R.Result)
 observe call encoded = do
     events <- either (Left . C.Protocol) Right (traverse eitherDecodeStrict (Bytes.lines encoded))
-    (_, permit) <- C.authorize L.empty call (wire (reviewPrefix events))
+    (_, permit) <- C.authorize Gate.empty call (wire (reviewPrefix events))
     C.observe permit encoded
 
 completed :: PropertyT IO ()
@@ -151,16 +152,16 @@ approval :: PropertyT IO ()
 approval = do
     (call, events) <- setup
     let pending = take 2 events
-    (fmap (C.permission . snd) . C.authorize L.empty call) (wire pending) === Right (permissionInput call)
+    (fmap (C.permission . snd) . C.authorize Gate.empty call) (wire pending) === Right (permissionInput call)
     forM_ [[], take 1 events, events, reverse pending] $ \history ->
-        case (fmap (C.permission . snd) . C.authorize L.empty call) (wire history) of
+        case (fmap (C.permission . snd) . C.authorize Gate.empty call) (wire history) of
             Left _ -> success
             Right _ -> failure
-    lifecycle V.ProgramMismatch ((fmap (C.permission . snd) . C.authorize L.empty call) (wire (alter 1 (change "program" (String "other")) pending)))
-    emissionMismatch ((fmap (C.permission . snd) . C.authorize L.empty call) (wire (alter 1 (change "adapter" (String (Text.replicate 64 "b"))) pending)))
-    emissionMismatch ((fmap (C.permission . snd) . C.authorize L.empty call) (wire (alter 1 (change "tokenizer" (String (Text.replicate 64 "b"))) pending)))
+    lifecycle V.ProgramMismatch ((fmap (C.permission . snd) . C.authorize Gate.empty call) (wire (alter 1 (change "program" (String "other")) pending)))
+    emissionMismatch ((fmap (C.permission . snd) . C.authorize Gate.empty call) (wire (alter 1 (change "adapter" (String (Text.replicate 64 "b"))) pending)))
+    emissionMismatch ((fmap (C.permission . snd) . C.authorize Gate.empty call) (wire (alter 1 (change "tokenizer" (String (Text.replicate 64 "b"))) pending)))
     forM_ ["base", "assembly"] $ \name ->
-        emissionMismatch ((fmap (C.permission . snd) . C.authorize L.empty call) (wire (alter 1 (change name (String (Text.replicate 64 "0"))) pending)))
+        emissionMismatch ((fmap (C.permission . snd) . C.authorize Gate.empty call) (wire (alter 1 (change name (String (Text.replicate 64 "0"))) pending)))
 
 handshake :: PropertyT IO ()
 handshake = do
@@ -176,9 +177,10 @@ handshake = do
         root <- workspace
         let script = root </> "handshake.sh"
             marker = root </> "approved"
-            body = unlines ["IFS= read -r invocation || exit 21", "printf '%s\\n' " ++ unwords (map (quote . Bytes.unpack) (Bytes.lines (wire reported))), "IFS= read -r permission || exit 22", "test \"$permission\" = " ++ quote (Bytes.unpack (permissionInput call)) ++ " || exit 23", "printf '%s' \"$permission\" > " ++ quote marker, "exit 7"]
+            configuration = root </> "native config.json"
+            body = unlines ["test \"$3\" = " ++ quote ("--config=" ++ configuration) ++ " || exit 20", "IFS= read -r invocation || exit 21", "printf '%s\\n' " ++ unwords (map (quote . Bytes.unpack) (Bytes.lines (wire reported))), "IFS= read -r permission || exit 22", "test \"$permission\" = " ++ quote (Bytes.unpack (permissionInput call)) ++ " || exit 23", "printf '%s' \"$permission\" > " ++ quote marker, "exit 7"]
         evalIO (writeFile script body)
-        outcome <- evalIO (W.run (W.Worker "/bin/sh" script root root []) call)
+        outcome <- evalIO (W.run (W.Worker "/bin/sh" script root root [] (Just configuration) Nothing) call)
         case (valid, outcome) of
             (True, Left (W.WorkerExit (ExitFailure 7))) -> success
             (False, Left (W.InvalidOutput _)) -> success
@@ -191,12 +193,12 @@ loadOwnership :: PropertyT IO ()
 loadOwnership = do
     (call, events) <- setup
     let prefix = wire (reviewPrefix events)
-    (registry, permit) <- evalEither (C.authorize L.empty call prefix)
+    (registry, permit) <- evalEither (C.authorize Gate.empty call prefix)
     let fact = C.loadFact permit
-        closed = L.close registry
-    L.active registry === [V.Instance 13]
-    L.active closed === []
-    L.historical closed (V.Instance 13) === Right fact
+        closed = Gate.close registry
+    L.active (Gate.loads registry) === [V.Instance 13]
+    L.active (Gate.loads closed) === []
+    L.historical (Gate.loads closed) (V.Instance 13) === Right fact
     V.completedEmission (L.report fact) === L.expectedEmission (I.image request)
     assert (V.completedProgram (L.report fact) /= encodeUtf8 (textField "program" (events !! 1)))
     _ <- evalEither (C.observe permit (wire events))

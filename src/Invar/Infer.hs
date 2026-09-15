@@ -1,7 +1,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE Safe #-}
 
-module Invar.Infer (Request (..), Plan, Error (..), prepare, emission, invocation, arguments, requested, image) where
+module Invar.Infer (Request (..), Plan, Error (..), prepare, bindPolicy, boundPolicy, emission, fromEmission, invocation, arguments, requested, image) where
 
 import Control.Monad (unless, when)
 import Data.ByteString (ByteString)
@@ -11,6 +11,7 @@ import Data.Ratio (denominator, numerator)
 import Data.Set qualified as Set
 import Invar.Construct qualified as C
 import Invar.Materialization qualified as Materialization
+import Invar.Policy.Description qualified as Policy
 import Invar.Spec.Artifact qualified as A
 import Invar.Spec.Evaluate qualified as E
 import Invar.Spec.Invocation qualified as V
@@ -31,7 +32,7 @@ data Request = Request
     }
     deriving (Eq, Show)
 
-newtype Plan = Plan Request
+data Plan = Plan Request (Maybe Policy.Description)
     deriving (Eq, Show)
 
 data Error
@@ -45,7 +46,22 @@ data Error
 type Inputs = C.Record '[ '("artifact", [Natural]), '("tokenizer", [Natural]), '("base", [Natural]), '("assembly", [Natural]), '("prompt", [Natural]), '("tokens", Natural), '("temperature", Rational)]
 
 prepare :: Request -> Either Error Plan
-prepare request = Plan <$> (emission request >>= lower . E.payload)
+prepare request = do
+    selected <- emission request >>= fromEmission
+    pure (Plan selected Nothing)
+
+bindPolicy :: Policy.Description -> Plan -> Either Error Plan
+bindPolicy selected planned = do
+    let request = requested planned
+    unless (Policy.bindings selected == (artifact request, tokenizer request, base request, assembly request)) (Left (InvalidRequest "Inference inputs differ from the selected policy description"))
+    pure (Plan request (Just selected))
+
+boundPolicy :: Plan -> Maybe Policy.Description
+boundPolicy (Plan _ selected) = selected
+
+fromEmission :: E.Emission -> Either Error Request
+fromEmission (E.Emission "infer" "categorical-inference/v1" payload) = lower payload
+fromEmission _ = Left (InvalidEmission "Expected one categorical-inference/v1 operation")
 
 emission :: Request -> Either Error E.Emission
 emission request = do
@@ -134,7 +150,7 @@ rational (Atom (Number value)) = Right value
 rational _ = Left (InvalidEmission "Expected a rational number")
 
 arguments :: Plan -> [String]
-arguments (Plan request) = ["--digest=" ++ artifact request, "--tokenizer-digest=" ++ tokenizer request, "--base-digest=" ++ base request, "--assembly-digest=" ++ assembly request, "--prompt=" ++ prompt request, "--tokens=" ++ show (tokens request), "--temperature=" ++ show (temperature request), "--seed=" ++ show (seed request)]
+arguments (Plan request _) = ["--digest=" ++ artifact request, "--tokenizer-digest=" ++ tokenizer request, "--base-digest=" ++ base request, "--assembly-digest=" ++ assembly request, "--prompt=" ++ prompt request, "--tokens=" ++ show (tokens request), "--temperature=" ++ show (temperature request), "--seed=" ++ show (seed request)]
 
 requested :: Plan -> Request
-requested (Plan request) = request
+requested (Plan request _) = request
