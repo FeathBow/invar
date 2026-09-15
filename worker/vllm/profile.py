@@ -36,8 +36,9 @@ MODULE_FIELDS = ("eps", "epsilon", "variance_epsilon", "hidden_size", "intermedi
                  "mrope_section", "mrope_interleaved", "activation", "use_bias", "input_size", "output_size",
                  "output_sizes", "output_partition_sizes", "output_slices", "tp_rank", "tp_size")
 METHOD_FIELDS = ("forward", "_forward_method", "forward_qkv", "forward_core", "apply")
-SOURCE_MODULES = ("vllm_identity", "vllm_profile", "vllm_quantization", "vllm_lora", "vllm_rollout", "vllm_worker",
-                  "vllm_mapping", "vllm_execution", "vllm_execution_state", "vllm_gdn", "gdn_kernel",
+SOURCE_MODULES = ("worker.vllm.identity", "worker.vllm.profile", "worker.vllm.quantization", "worker.vllm.lora",
+                  "worker.vllm.rollout", "worker.vllm.worker", "worker.vllm.mapping", "worker.vllm.execution",
+                  "worker.vllm.state", "worker.vllm.gdn", "worker.vllm.recurrence",
                   "vllm.v1.engine.core_client", "vllm.v1.engine.core", "vllm.v1.engine.llm_engine",
                   "vllm.v1.core.sched.scheduler", "vllm.v1.core.kv_cache_manager",
                   "vllm.lora.model_manager", "vllm.lora.worker_manager",

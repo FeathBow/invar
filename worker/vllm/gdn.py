@@ -85,4 +85,4 @@ class Layer(QwenGatedDeltaNetAttention):
 
 def install():
     QwenGatedDeltaNetAttention.register_oot(Layer)
-    register_backend(MambaAttentionBackendEnum.GDN_ATTN, "vllm_gdn.Backend", is_mamba=True)
+    register_backend(MambaAttentionBackendEnum.GDN_ATTN, "worker.vllm.gdn.Backend", is_mamba=True)
