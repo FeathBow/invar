@@ -2,6 +2,7 @@
 
 module Evaluation (evaluation, semantics, world, genWorld, genExpression) where
 
+import Control.Monad (forM_)
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Hedgehog
@@ -28,6 +29,8 @@ evaluation =
         , ("input worlds match their declared domains", once inputs)
         , ("missing or mismatched primitive meanings fail explicitly", once meanings)
         , ("commands bind checked sink outputs", once commands)
+        , ("raw commands reject static errors before checking the world", once commandErrors)
+        , ("prepared commands retain runtime primitive checks", once preparedMeanings)
         , ("dependency agreement preserves evaluated values", campaign noninterference)
         ]
   where
@@ -216,6 +219,36 @@ commands = do
         === Right [E.Emission "observe" "number-reference" (number 20), E.Emission "observe" "number-reference" (number 7)]
     E.runCommands semantics world [Emit "observe" "number-reference" (If (readInput history) (literal 1) (literal 0))]
         === Left (E.InvalidProgram (D.ForbiddenSources (Set.singleton history)))
+
+commandErrors :: PropertyT IO ()
+commandErrors = do
+    let valid = Emit "observe" "number-reference" (readInput own)
+        cases =
+            [ (Emit "observe" "wrong" (Variable "missing"), D.WrongSpecification "number-reference" "wrong")
+            , (Emit "missing" "number-reference" (Variable "missing"), D.MissingSink "missing")
+            , (Emit "observe" "number-reference" (Variable "missing"), D.MissingVariable "missing")
+            ]
+    forM_ cases $ \(invalid, expected) -> do
+        E.runCommands semantics Map.empty [valid, invalid] === Left (E.InvalidProgram expected)
+        case E.prepareCommands semantics [valid, invalid] of
+            Left actual -> actual === expected
+            Right _ -> failure
+
+preparedMeanings :: PropertyT IO ()
+preparedMeanings = do
+    let absent = semantics {E.meanings = Map.delete "add" (E.meanings semantics)}
+        mismatched = semantics {E.meanings = Map.insert "add" O.Not (E.meanings semantics)}
+        call = Primitive "add" [literal 1, literal 2]
+        declared = (E.schema semantics) {sinks = Map.singleton "observe" (Sink "number-reference" NumberType (Set.singleton history) (Set.singleton history))}
+        program = [Emit "observe" "number-reference" (If (readInput history) call (literal 0))]
+    forM_ [(absent, E.MissingMeaning "add"), (mismatched, E.MeaningMismatch "add" (O.signature O.Add) (O.signature O.Not))] $ \(meaning, expected) -> do
+        let bound = meaning {E.schema = declared}
+            selected = Map.insert history (Atom (Boolean True)) world
+        execute <- evalEither (E.prepareCommands bound program)
+        execute world === Right [E.Emission "observe" "number-reference" (number 0)]
+        execute selected === Left expected
+        execute selected === E.runCommands bound selected program
+        execute world === Right [E.Emission "observe" "number-reference" (number 0)]
 
 maxMagnitude, maxWidth, lastKey :: Int
 maxMagnitude = 10

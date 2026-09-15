@@ -1,0 +1,198 @@
+{-# LANGUAGE OverloadedStrings #-}
+
+module Invar.History (Declaration (..), Profiles (..), Checked, admit, compare, describe) where
+
+import Control.Monad (unless)
+import Data.Aeson (Value (..), object, withObject, (.:), (.=))
+import Data.Aeson.Key (Key)
+import Data.Aeson.KeyMap qualified as Fields
+import Data.Aeson.Types (parseEither)
+import Data.ByteString (ByteString)
+import Data.ByteString.Char8 qualified as Bytes
+import Data.Text (Text)
+import Invar.History.Artifacts qualified as Artifacts
+import Invar.History.Cohort qualified as Cohort
+import Invar.History.Initial qualified as Initial
+import Invar.History.Profile (Profiles (..))
+import Invar.History.Profile qualified as Profile
+import Invar.History.Publication qualified as Publication
+import Invar.History.Trace qualified as Trace
+import Invar.Infer qualified as Infer
+import Invar.Infer.Observation qualified as Inference
+import Invar.Json qualified as Json
+import Invar.Learn qualified as Learn
+import Invar.Learn.Adapter qualified as Adapter
+import Invar.Learn.Codec (Decoder)
+import Invar.Learn.Gradient qualified as Gradient
+import Invar.Learn.Report qualified as Report
+import Invar.Learn.State qualified as State
+import Invar.Policy.File qualified as File
+import Invar.Resident qualified as Resident
+import Invar.Spec.Invocation qualified as V
+import Invar.Workload qualified as Workload
+import Numeric.Natural (Natural)
+import System.FilePath ((</>))
+import Prelude hiding (compare)
+
+data Declaration = Declaration
+    { training :: Trace.Run
+    , tasks :: Workload.Document
+    , checkpoint :: FilePath
+    , reference :: FilePath
+    , randomProfile :: Initial.Random
+    , initialSource :: Initial.Source
+    , profileMode :: Profiles
+    , finalRequest :: Infer.Request
+    , finalBinding :: V.Binding
+    , finalExit :: Int
+    }
+
+data Checked = Checked
+    { declaration :: Declaration
+    , trainingTrace :: Trace.Checked
+    , initialObservation :: Value
+    , generationObservations :: [Generation]
+    , independentObservation :: Inference.Report
+    , standaloneDiagnostics :: [Value]
+    , initializationDiagnostics :: [Value]
+    , profileObservation :: Value
+    }
+
+data Generation = Generation {generationTrace :: Trace.Generation, generationDirectory :: FilePath, generationArtifacts :: Value}
+
+admit :: Decoder -> Declaration -> (ByteString, ByteString) -> IO Checked
+admit decoder declared (trainingOutput, finalOutput) = do
+    trace <- either invalid pure (Trace.admit (training declared) (tasks declared) trainingOutput)
+    let selected = Trace.generations trace
+        settings = Trace.settings (training declared)
+    final <- independent declared selected finalOutput
+    admittedInitial <- Initial.admit decoder (settings, checkpoint declared, randomProfile declared) (initialSource declared)
+    let schema = Initial.schema admittedInitial
+        initial = Initial.describe admittedInitial
+        initialDiagnostics = Initial.diagnostics admittedInitial
+    File.withFile (reference declared) $ \file -> Adapter.verify (Learn.reference settings) file >> Adapter.matches schema file
+    expectedRng <- either invalid pure (rng initial)
+    observed <- traverse (generation (schema, expectedRng)) (zip [1 ..] selected)
+    finalDiagnostics <- metadata (selected, initialDiagnostics) final finalOutput
+    profiles <- either invalid pure (profileSummary declared selected (initialDiagnostics, finalDiagnostics))
+    pure (Checked declared trace initial observed final finalDiagnostics initialDiagnostics profiles)
+  where
+    generation (schema, expectedRng) (index, selected) = do
+        published <- Publication.observe selected
+        observed <- Artifacts.successor (decoder, schema) (index, selected) published
+        actualRng <- either invalid pure (rng observed)
+        unless (actualRng == expectedRng) (invalid "Successor RNG vector inventory differs from the complete initial state")
+        pure (Generation selected (Publication.directory published) observed)
+
+independent :: Declaration -> [Trace.Generation] -> ByteString -> IO Inference.Report
+independent declared generations output = do
+    lastGeneration <- case reverse generations of
+        selected : _ -> pure selected
+        [] -> invalid "A complete history requires a training generation"
+    expected <- either invalid pure (Report.artifact "adapter" (Cohort.update (Trace.cohort lastGeneration)))
+    let requested = finalRequest declared
+        bound = finalBinding declared
+        next = sum [fromIntegral (length (Workload.tasks workload)) + 1 | workload <- Workload.cycles (tasks declared)]
+    unless (finalExit declared == 0) (invalid "Final independent inference did not exit successfully")
+    unless (Infer.artifact requested == expected) (invalid "Final independent inference does not load the last published policy")
+    either (invalid . show) pure (Learn.materialization (Trace.settings (training declared)) requested)
+    unless (V.boundCall bound >= V.CallId next && V.boundAttempt bound >= V.AttemptId next && V.boundInstance bound >= V.Instance next) (invalid "Final independent inference reuses a training invocation identity")
+    planned <- either (invalid . show) pure (Infer.prepare requested)
+    either invalid pure (Inference.admit planned bound output)
+
+rng :: Value -> Either String Value
+rng = parseEither (withObject "checkpoint observation" (\fields -> fields .: "state" >>= \state -> pure (Object (Fields.delete "steps" state))))
+
+metadata :: ([Trace.Generation], [Value]) -> Inference.Report -> ByteString -> IO [Value]
+metadata (generations, initial) final output = do
+    expected <- either invalid pure (workerModel (Inference.describe final))
+    let inferences = [Inference.describe observation | generation <- generations, observation <- Cohort.inferences (Trace.cohort generation)]
+        learners = [value | generation <- generations, value@(Object fields) <- Trace.diagnostics generation, Fields.lookup "stage" fields == Just (String "loaded_learner")]
+    profiles <- either invalid pure (traverse Json.decode (Bytes.lines output))
+    actual <- either invalid pure (traverse workerModel (inferences ++ learners ++ selectedProfiles (initial ++ concatMap Trace.diagnostics generations ++ profiles)))
+    unless (all (== expected) actual) (invalid "History workers disagree about their model or revision")
+    pure [value | value@(Object fields) <- profiles, Fields.lookup "stage" fields `elem` map (Just . String) ["loading", "profile", "load", "inference"]]
+
+selectedProfiles :: [Value] -> [Value]
+selectedProfiles records = [value | value@(Object fields) <- records, Fields.lookup "stage" fields == Just (String "profile")]
+
+profileSummary :: Declaration -> [Trace.Generation] -> ([Value], [Value]) -> Either String Value
+profileSummary declared generations (initial, final) = do
+    let initialProfiles = Profile.fromPrefix Resident.Learning [fields | Object fields <- initial]
+        trainingProfiles = concatMap Trace.profiles generations
+        mode = profileMode declared
+    ending <- Profile.final mode final
+    Profile.summarize mode (initialProfiles ++ trainingProfiles ++ ending)
+
+workerModel :: Value -> Either String (Text, Text)
+workerModel = parseEither (withObject "worker model observation" (\fields -> (,) <$> fields .: "model" <*> fields .: "revision"))
+
+compare :: Decoder -> (Checked, Checked) -> IO Value
+compare decoder (left, right) = do
+    let first = declaration left
+        second = declaration right
+        leftSettings = Trace.settings (training first)
+        rightSettings = Trace.settings (training second)
+    initial <- State.compareInitial decoder (leftSettings, checkpoint first) (rightSettings, checkpoint second)
+    generations <- compareGenerations decoder (1, checkpoint first, checkpoint second) (generationObservations left, generationObservations right)
+    initialEqual <- decision initial
+    generationEqual <- and <$> traverse decision generations
+    leftModel <- either invalid pure (workerModel (Inference.describe (independentObservation left)))
+    rightModel <- either invalid pure (workerModel (Inference.describe (independentObservation right)))
+    let taskEqual = map Workload.tasks (Workload.cycles (tasks first)) == map Workload.tasks (Workload.cycles (tasks second))
+        settingsEqual = leftSettings == rightSettings && randomProfile first == randomProfile second && initialization (initialSource first) == initialization (initialSource second)
+        finalEqual = Inference.result (independentObservation left) == Inference.result (independentObservation right)
+        modelEqual = leftModel == rightModel
+        same = and [initialEqual, generationEqual, taskEqual, settingsEqual, finalEqual, modelEqual]
+        scheduling declared = ((Trace.sessions (training declared), Trace.inferenceMode (training declared), Trace.learningMode (training declared)), map (\workload -> (Workload.order workload, Workload.delivery workload)) (Workload.cycles (tasks declared)), finalBinding declared)
+        diagnostic checked = (initializationDiagnostics checked, map Trace.diagnostics (Trace.generations (trainingTrace checked)), Trace.closing (trainingTrace checked), standaloneDiagnostics checked)
+    pure (object ["comparison" .= ("complete histories: semantic inputs and artifact values" :: Text), "equal" .= same, "tasks_equal" .= taskEqual, "settings_equal" .= settingsEqual, "models_equal" .= modelEqual, "schedule_equal" .= (scheduling first == scheduling second), "publication_method_equal" .= (Trace.method (training first) == Trace.method (training second)), "diagnostics_equal" .= (diagnostic left == diagnostic right), "initial" .= initial, "generations" .= generations, "final_equal" .= finalEqual, "left" .= describe left, "right" .= describe right, "scope" .= ("all admitted generations are compared, including differing successor inputs; scheduling and diagnostic observations are reported separately from semantic and artifact equality" :: Text)])
+
+initialization :: Initial.Source -> Maybe Integer
+initialization Initial.Provided = Nothing
+initialization (Initial.Executed run _) = Just (Initial.seed run)
+
+compareGenerations :: Decoder -> (Natural, FilePath, FilePath) -> ([Generation], [Generation]) -> IO [Value]
+compareGenerations _ _ ([], []) = pure []
+compareGenerations _ (index, _, _) ([], remaining) = pure (missing "left" index remaining)
+compareGenerations _ (index, _, _) (remaining, []) = pure (missing "right" index remaining)
+compareGenerations decoder context@(index, _, _) (left : restLeft, right : restRight) = do
+    observed <- compareGeneration decoder context (left, right)
+    rest <- compareGenerations decoder (index + 1, generationDirectory left, generationDirectory right) (restLeft, restRight)
+    pure (observed : rest)
+
+missing :: Text -> Natural -> [Generation] -> [Value]
+missing side index remaining = [object ["generation" .= position, "missing" .= side, "equal" .= False] | (position, _) <- zip [index ..] remaining]
+
+compareGeneration :: Decoder -> (Natural, FilePath, FilePath) -> (Generation, Generation) -> IO Value
+compareGeneration decoder (index, previousLeft, previousRight) (left, right) = do
+    let leftCohort = Trace.cohort (generationTrace left)
+        rightCohort = Trace.cohort (generationTrace right)
+        leftReport = Cohort.update leftCohort
+        rightReport = Cohort.update rightCohort
+        leftPolicy = previousLeft </> "adapter.safetensors"
+        rightPolicy = previousRight </> "adapter.safetensors"
+        leftPath = generationDirectory left
+        rightPath = generationDirectory right
+    inputsEqual <- either invalid pure (Report.sameInput leftReport rightReport)
+    states <- State.compareObserved decoder (leftReport, leftPolicy, leftPath) (rightReport, rightPolicy, rightPath)
+    gradients <- Gradient.compareObserved (leftReport, leftPolicy, leftPath </> "gradients.safetensors") (rightReport, rightPolicy, rightPath </> "gradients.safetensors")
+    statesEqual <- decision states
+    gradientsEqual <- decision gradients
+    leftProbabilities <- field "probabilities" (generationArtifacts left)
+    rightProbabilities <- field "probabilities" (generationArtifacts right)
+    let probabilitiesEqual = leftProbabilities == rightProbabilities
+        inferenceEqual = map Inference.result (Cohort.inferences leftCohort) == map Inference.result (Cohort.inferences rightCohort)
+    pure (object ["generation" .= index, "equal" .= and [inputsEqual, statesEqual, gradientsEqual, probabilitiesEqual, inferenceEqual], "inputs_equal" .= inputsEqual, "inferences_equal" .= inferenceEqual, "states" .= states, "gradients" .= gradients, "probabilities_equal" .= probabilitiesEqual])
+
+decision :: Value -> IO Bool
+decision = either invalid pure . parseEither (withObject "comparison decision" (.: "equal"))
+
+field :: Key -> Value -> IO Value
+field key = either invalid pure . parseEither (withObject "artifact observation" (.: key))
+
+describe :: Checked -> Value
+describe checked = object ["tasks_sha256" .= Workload.digest (tasks (declaration checked)), "initial" .= initialObservation checked, "initial_diagnostics" .= initializationDiagnostics checked, "training" .= Trace.describe (trainingTrace checked), "artifacts" .= map generationArtifacts (generationObservations checked), "final" .= Inference.describe (independentObservation checked), "final_diagnostics" .= standaloneDiagnostics checked, "profiles" .= profileObservation checked, "scope" .= ("complete declared history and actual artifact snapshots under report, process-observation, immutable-input and native-codec correspondence premises; not a durability, restoration or numerical qualification proof" :: Text)]
+
+invalid :: String -> IO value
+invalid = ioError . userError

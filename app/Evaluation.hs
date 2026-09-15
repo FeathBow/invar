@@ -4,76 +4,70 @@ module Evaluation (run) where
 
 import Crypto.Hash.SHA256 qualified as SHA256
 import Data.Aeson (Value, encode, object, (.=))
+import Data.Bifunctor (first)
 import Data.ByteString qualified as Bytes
 import Data.ByteString.Lazy.Char8 qualified as Lazy
-import Data.Map.Strict qualified as Map
 import Dataset qualified
+import InferenceInput qualified
 import Invar.Artifact qualified as Artifact
 import Invar.Cohort qualified as Cohort
+import Invar.Evaluation qualified as Evaluation
 import Invar.Infer qualified as Infer
-import Invar.Infer.Result qualified as Result
 import Invar.Loop qualified as Loop
+import Invar.Policy qualified as Policy
 import Invar.Rollout qualified as Rollout
-import Invar.Spec.Invocation qualified as Invocation
 import Invar.Worker qualified as Worker
 import Numeric.Natural (Natural)
 import Options qualified as O
+import PolicyInput qualified
 import System.Console.GetOpt (OptDescr, usageInfo)
 import System.Exit (die)
 
 run :: [String] -> IO ()
 run ["--help"] = putStrLn usage
 run supplied = do
-    (worker, selected, sessions) <- either die pure (O.parse options supplied >>= configure)
+    fields <- either die pure (O.parse options supplied)
+    selection@(_, description) <- PolicyInput.selection "policy" fields
+    (worker, selected, sessions, mode) <- either die pure (configure selection fields)
     encoded <- Bytes.getContents
     workloads <- either die pure (Dataset.decode selected encoded)
-    plans <- either die pure (traverse (prepare (worker, sessions) selected) workloads)
-    Rollout.withDriver $ \driver -> mapM_ (evaluate driver) (zip [0 :: Natural ..] plans)
-    emit (object ["phase" .= ("evaluation_complete" :: String), "policy" .= Dataset.policy selected, "tokenizer" .= Dataset.tokenizer selected, "base" .= Dataset.base selected, "assembly" .= Dataset.assembly selected, "cohorts" .= length plans, "sessions" .= length sessions, "tasks_sha256" .= Artifact.hex (SHA256.hash encoded)])
+    plans <- either die pure (traverse (prepare (worker, sessions, mode) (selected, description)) workloads)
+    completed <- Rollout.withConfiguredDriver mode (worker, sessions) (\driver -> mapM_ (evaluate driver) (zip [0 :: Natural ..] plans))
+    either (die . show) pure completed
+    emit (object (["phase" .= ("evaluation_complete" :: String), "policy" .= Dataset.policy selected, "tokenizer" .= Dataset.tokenizer selected, "base" .= Dataset.base selected, "assembly" .= Dataset.assembly selected, "cohorts" .= length plans, "sessions" .= length sessions, "tasks_sha256" .= Artifact.hex (SHA256.hash encoded)] ++ ["worker_mode" .= ("resident" :: String) | mode == Rollout.Resident]))
 
-prepare :: (Worker.Worker, [[(String, String)]]) -> Dataset.Identity -> Dataset.Cycle -> Either String Rollout.Options
-prepare (worker, sessions) selected workload = do
+prepare :: (Worker.Worker, [[(String, String)]], Rollout.Mode) -> (Dataset.Identity, Maybe Policy.Description) -> Dataset.Cycle -> Either String Rollout.Options
+prepare (worker, sessions, mode) (selected, description) workload = do
     planned <- Dataset.instantiate selected workload
-    pure Rollout.Options {Rollout.worker = worker, Rollout.sessions = sessions, Rollout.definition = Cohort.Definition (Dataset.policy selected) (Loop.tasks planned), Rollout.order = Loop.order planned, Rollout.delivery = Loop.delivery planned}
+    tasks <- traverse bind (Loop.tasks planned)
+    pure Rollout.Options {Rollout.worker = worker, Rollout.mode = mode, Rollout.sessions = sessions, Rollout.definition = Cohort.Definition (Dataset.policy selected) tasks, Rollout.order = Loop.order planned, Rollout.delivery = Loop.delivery planned}
+  where
+    bind task = do
+        requested <- first show (maybe Right Infer.bindPolicy description (Cohort.plan task))
+        pure task {Cohort.plan = requested}
 
 evaluate :: Rollout.Driver scope -> (Natural, Rollout.Options) -> IO ()
 evaluate driver (index, planned) = do
     completed <- Rollout.run driver planned >>= either (die . show) pure
-    emit (object ["phase" .= ("evaluation" :: String), "cohort" .= index, "policy" .= Cohort.policy (Rollout.definition planned), "summary" .= summary completed, "samples" .= map sample (Rollout.samples completed)])
-
-summary :: Rollout.Batch scope -> Value
-summary batch = object ["sample_count" .= length values, "reward_sum" .= (fromRational (sum rewards) :: Double), "response_tokens" .= sum (map responseLength observations), "truncated_count" .= length (filter Result.truncated observations), "group_count" .= Map.size groups, "zero_variance_groups" .= length (filter constant (Map.elems groups))]
-  where
-    values = Rollout.samples batch
-    rewards = map Rollout.reward values
-    observations = map Rollout.observation values
-    groups = Map.fromListWith (++) [(Rollout.group value, [Rollout.reward value]) | value <- values]
-    constant [] = False
-    constant (first : rest) = all (== first) rest
-
-sample :: Rollout.Sample -> Value
-sample value = object ["name" .= Rollout.name value, "group" .= Rollout.group value, "seed" .= Infer.seed (Result.consumed observed), "reward" .= (fromRational (Rollout.reward value) :: Double), "response_tokens" .= responseLength observed, "truncated" .= Result.truncated observed, "binding" .= object ["call" .= call, "attempt" .= attempt, "instance" .= instanceId]]
-  where
-    observed = Rollout.observation value
-    Invocation.Binding (Invocation.CallId call) (Invocation.AttemptId attempt) (Invocation.Instance instanceId) = Invocation.completedBinding (Rollout.completion value)
-
-responseLength :: Result.Result -> Int
-responseLength = length . Result.behaviorBits
+    either die emit (Evaluation.cohortValue index (Cohort.policy (Rollout.definition planned)) completed)
 
 emit :: Value -> IO ()
 emit = Lazy.putStrLn . encode
 
-configure :: O.Fields -> Either String (Worker.Worker, Dataset.Identity, [[(String, String)]])
-configure fields = do
-    worker <- Worker.Worker <$> string "python" <*> string "worker" <*> string "cache" <*> string "adapter" <*> pure []
-    selected <- Dataset.Identity <$> string "policy" <*> string "tokenizer-digest" <*> string "base-digest" <*> string "assembly-digest"
+configure :: (FilePath, Maybe Policy.Description) -> O.Fields -> Either String (Worker.Worker, Dataset.Identity, [[(String, String)]], Rollout.Mode)
+configure (adapter, description) fields = do
+    worker <- Worker.Worker <$> string "python" <*> string "worker" <*> string "cache" <*> pure adapter <*> pure [] <*> pure (O.optional fields "worker-config") <*> pure (O.optional fields "qualification")
+    selected <- case description of
+        Nothing -> Dataset.Identity <$> string "policy" <*> string "tokenizer-digest" <*> string "base-digest" <*> string "assembly-digest"
+        Just policy -> pure (Dataset.Identity (Policy.adapter policy) (Policy.tokenizer policy) (Policy.base policy) (Policy.assembly policy))
     sessions <- Dataset.sessions (O.optional fields "devices")
-    pure (worker, selected, sessions)
+    mode <- InferenceInput.mode (O.optional fields "worker-mode")
+    pure (worker, selected, sessions, mode)
   where
     string = O.required fields
 
 usage :: String
-usage = usageInfo "Usage: invar evaluate OPTIONS < tasks.json\nAll options are required. Every cohort uses the same policy; no learning or publication occurs." options
+usage = usageInfo "Usage: invar evaluate OPTIONS < tasks.json\nSelect --checkpoint, or an explicit --adapter with --policy and all three materialization digests. --checkpoint derives the inference selection from policy.json and binds every task before dispatch. --devices, --worker-config, --worker-mode and --qualification are optional. Every cohort uses the same policy; no learning or publication occurs. --qualification requires the selected numerical judgement before dispatch." options
 
 options :: [OptDescr (String, String)]
-options = O.descriptions [("devices", "Optional comma-separated CUDA devices, one worker process per device"), ("python", "Python executable"), ("worker", "Batch inference worker script (session.py)"), ("cache", "Pinned model cache"), ("adapter", "Adapter file"), ("policy", "Canonical adapter tensor SHA-256"), ("tokenizer-digest", "Tokenizer operation SHA-256"), ("base-digest", "Frozen model tensor SHA-256"), ("assembly-digest", "Model assembly SHA-256")]
+options = O.descriptions [("devices", "Optional comma-separated CUDA devices, one worker process per device"), ("python", "Python executable"), ("worker", "Inference worker script"), ("worker-config", "Optional worker launch configuration"), ("qualification", "Numerical qualification document required before dispatch"), ("worker-mode", "Inference execution: serial (default), batch or resident"), ("cache", "Pinned model cache"), ("checkpoint", "Checkpoint containing policy.json and adapter.safetensors"), ("adapter", "Explicit adapter file or native handoff directory"), ("policy", "Canonical adapter tensor SHA-256"), ("tokenizer-digest", "Tokenizer operation SHA-256"), ("base-digest", "Frozen model tensor SHA-256"), ("assembly-digest", "Model assembly SHA-256")]

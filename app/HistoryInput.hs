@@ -1,0 +1,138 @@
+module HistoryInput (trace, traceOptions, inspect, inspectInitial, compareHistories, options) where
+
+import Control.Monad (unless)
+import Data.Aeson (encode)
+import Data.ByteString (ByteString)
+import Data.ByteString qualified as Bytes
+import Data.ByteString.Lazy.Char8 qualified as Lazy
+import Data.List (isPrefixOf)
+import Data.Map.Strict qualified as Map
+import Data.Maybe (isNothing)
+import InferenceInput qualified
+import Invar.History qualified as History
+import Invar.History.Initial qualified as Initial
+import Invar.History.Trace qualified as Trace
+import Invar.Workload qualified as Workload
+import NativeCodec qualified
+import Options qualified as O
+import System.Console.GetOpt (OptDescr, usageInfo)
+import System.Exit (die)
+import Training qualified
+
+trace :: O.Fields -> IO (Trace.Run, Workload.Document, ByteString)
+trace fields = do
+    settings <- either die pure (Training.settings fields)
+    path <- either die pure (O.required fields "tasks")
+    tasks <- Bytes.readFile path >>= either die pure . Workload.decode
+    sessions <- either die pure (O.numeric fields "sessions")
+    output <- either die pure (O.required fields "output")
+    method <- either die pure (O.required fields "publication")
+    status <- either die pure (O.numeric fields "exit-code")
+    logPath <- either die pure (O.required fields "log")
+    encoded <- Bytes.readFile logPath
+    inference <- either die pure (lifetimeMode fields ("inference-mode", ["serial", "batch"]))
+    learning <- either die pure (lifetimeMode fields ("learning-mode", ["process"]))
+    pure (Trace.Run {Trace.settings = settings, Trace.sessions = sessions, Trace.output = output, Trace.method = method, Trace.exitCode = status, Trace.inferenceMode = inference, Trace.learningMode = learning}, tasks, encoded)
+
+lifetimeMode :: O.Fields -> (String, [String]) -> Either String Trace.Mode
+lifetimeMode fields (key, finite) = case O.optional fields key of
+    Nothing -> Right Trace.Finite
+    Just "resident" -> Right Trace.Resident
+    Just "shared" -> Right Trace.Shared
+    Just value | value `elem` finite -> Right Trace.Finite
+    _ -> Left ("Unsupported declared --" ++ key)
+
+inspect :: [String] -> IO ()
+inspect ["--help"] = putStrLn (usageInfo "Usage: invar inspect history OPTIONS" options)
+inspect supplied = do
+    fields <- either die pure (O.parse options supplied)
+    decoder <- either die pure (NativeCodec.select fields)
+    (declared, output) <- load fields
+    observed <- History.admit decoder declared output
+    Lazy.putStrLn (encode (History.describe observed))
+
+load :: O.Fields -> IO (History.Declaration, (ByteString, ByteString))
+load fields = do
+    (run, tasks, encoded) <- trace fields
+    finalRequest <- either die pure (InferenceInput.requestWith "final-" fields)
+    finalBinding <- either die pure (InferenceInput.bindingWith "final-" fields)
+    finalExit <- either die pure (O.numeric fields "final-exit-code")
+    finalPath <- either die pure (O.required fields "final-log")
+    finalOutput <- Bytes.readFile finalPath
+    checkpoint <- either die pure (O.required fields "checkpoint")
+    reference <- either die pure (O.required fields "reference")
+    random <- either die pure (randomProfile fields)
+    source <- initialSource fields
+    mode <- either die pure $ case O.optional fields "profile-mode" of
+        Just "unreported" -> Right History.Unreported
+        Just "uniform" -> Right History.Uniform
+        Just "roles" -> Right History.Roles
+        _ -> Left "Expected explicit --profile-mode unreported, uniform or roles"
+    let declared = History.Declaration {History.training = run, History.tasks = tasks, History.checkpoint = checkpoint, History.reference = reference, History.randomProfile = random, History.initialSource = source, History.profileMode = mode, History.finalRequest = finalRequest, History.finalBinding = finalBinding, History.finalExit = finalExit}
+    pure (declared, (encoded, finalOutput))
+
+initialSource :: O.Fields -> IO Initial.Source
+initialSource fields = case O.optional fields "initial-source" of
+    Just "provided" -> do
+        unless (all (isNothing . O.optional fields) ["initial-log", "initial-exit-code", "initial-seed"]) (die "Provided initial checkpoint does not accept initializer observations")
+        pure Initial.Provided
+    Just "initializer" -> do
+        path <- either die pure (O.required fields "initial-log")
+        status <- either die pure (O.numeric fields "initial-exit-code")
+        seed <- either die pure (O.numeric fields "initial-seed")
+        Initial.Executed (Initial.Run seed status) <$> Bytes.readFile path
+    _ -> die "Expected explicit --initial-source provided or initializer"
+
+inspectInitial :: [String] -> IO ()
+inspectInitial ["--help"] = putStrLn (usageInfo "Usage: invar inspect initial OPTIONS" initialOptions)
+inspectInitial supplied = do
+    fields <- either die pure (O.parse initialOptions supplied)
+    decoder <- either die pure (NativeCodec.select fields)
+    settings <- either die pure (Training.settings fields)
+    checkpoint <- either die pure (O.required fields "checkpoint")
+    random <- either die pure (randomProfile fields)
+    source <- initialSource fields
+    observed <- Initial.admit decoder (settings, checkpoint, random) source
+    Lazy.putStrLn (encode (Initial.describe observed))
+
+randomProfile :: O.Fields -> Either String Initial.Random
+randomProfile fields = case O.optional fields "rng-profile" of
+    Nothing -> torch
+    Just "torch" -> torch
+    Just "mlx" -> do
+        unless (isNothing (O.optional fields "cuda-rng-vectors")) (Left "MLX RNG does not accept a CUDA vector declaration")
+        pure Initial.MLX
+    _ -> Left "Expected --rng-profile torch or mlx"
+  where
+    torch = Initial.Torch <$> O.numeric fields "cuda-rng-vectors"
+
+compareHistories :: [String] -> IO ()
+compareHistories ["--help"] = putStrLn (usageInfo "Usage: invar compare histories OPTIONS" pairOptions)
+compareHistories supplied = do
+    fields <- either die pure (O.parse pairOptions supplied)
+    decoder <- either die pure (NativeCodec.select fields)
+    (first, firstOutput) <- load (select "left-" fields)
+    (second, secondOutput) <- load (select "right-" fields)
+    left <- History.admit decoder first firstOutput
+    right <- History.admit decoder second secondOutput
+    History.compare decoder (left, right) >>= Lazy.putStrLn . encode
+  where
+    select prefix fields = Map.fromList [(drop (length prefix) key, value) | (key, value) <- Map.toList fields, prefix `isPrefixOf` key]
+
+pairOptions :: [OptDescr (String, String)]
+pairOptions = NativeCodec.options ++ concatMap (`O.prefixed` inputOptions) ["left-", "right-"]
+
+traceOptions :: [OptDescr (String, String)]
+traceOptions = Training.settingsOptions ++ O.descriptions [("tasks", "Frozen workload file"), ("log", "Complete training stdout"), ("sessions", "Declared physical inference owner count"), ("inference-mode", "Declared serial/batch (finite default), resident or shared inference lifetime"), ("learning-mode", "Declared process (default), resident or shared learner lifetime"), ("output", "Declared training output directory"), ("publication", "Declared rename or reference publication method"), ("exit-code", "Independently observed training process exit status")]
+
+options :: [OptDescr (String, String)]
+options = inputOptions ++ NativeCodec.options
+
+inputOptions :: [OptDescr (String, String)]
+inputOptions = traceOptions ++ InferenceInput.optionsWith "final-" ++ initialInputOptions ++ O.descriptions [("reference", "Fixed reference adapter file"), ("profile-mode", "unreported, uniform across all processes, or roles with complete profiles uniform within inference, learning and shared owners separately"), ("final-log", "Complete independent final inference stdout"), ("final-exit-code", "Independently observed final inference process exit status")]
+
+initialInputOptions :: [OptDescr (String, String)]
+initialInputOptions = O.descriptions [("checkpoint", "Complete initial checkpoint directory"), ("rng-profile", "torch (default) or native mlx"), ("cuda-rng-vectors", "Declared CUDA RNG vector count in initial and successor learners"), ("initial-source", "provided or initializer"), ("initial-log", "Complete actual initializer stdout"), ("initial-exit-code", "Independently observed initializer process exit status"), ("initial-seed", "Declared initializer seed")]
+
+initialOptions :: [OptDescr (String, String)]
+initialOptions = Training.settingsOptions ++ initialInputOptions ++ NativeCodec.options
