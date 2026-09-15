@@ -1,0 +1,43 @@
+--- a/vllm/lora/ops/triton_ops/lora_shrink_op.py
++++ b/vllm/lora/ops/triton_ops/lora_shrink_op.py
+@@ -25,7 +25,7 @@
+ 
+ @triton.jit
+ def _lora_shrink_rows(tensors, layout: tl.constexpr, arithmetic: tl.constexpr):
+-    input_ptr, lora_ptr, out_ptr, token_slots = tensors
++    input_ptr, lora_ptr, out_ptr, token_slots, token_counts = tensors
+     K: tl.constexpr = layout[0]
+     input_row: tl.constexpr = layout[1]
+     input_column: tl.constexpr = layout[2]
+@@ -35,10 +35,17 @@
+     output_row: tl.constexpr = layout[6]
+     output_rank: tl.constexpr = layout[7]
+     slices: tl.constexpr = layout[8]
++    capacity: tl.constexpr = layout[9]
+     scaling: tl.constexpr = arithmetic[0]
+     BLOCK: tl.constexpr = arithmetic[1]
+     USE_GDC: tl.constexpr = arithmetic[2]
++    COUNT_BLOCK: tl.constexpr = arithmetic[3]
+     rank, row, slice_id = tl.program_id(0), tl.program_id(1), tl.program_id(2)
++    counts = tl.load(token_counts + tl.arange(0, COUNT_BLOCK),
++                     tl.arange(0, COUNT_BLOCK) < capacity, 0)
++    # Native metadata leaves physical padding routes stale across graph replays.
++    if row >= tl.sum(counts, 0):
++        return
+     slot = tl.load(token_slots + row)
+     if slot == -1:
+         return
+@@ -251,10 +258,10 @@
+     use_gdc = supports_pdl(inputs.device) and envs.VLLM_LORA_ENABLE_DUAL_STREAM
+     if fp32_lora and envs.VLLM_BATCH_INVARIANT:
+         _lora_shrink_rows[(N, M, NUM_SLICES)](
+-            tensors=(inputs, lora_ptr_tensor, output_tensor, token_lora_mapping),
++            tensors=(inputs, lora_ptr_tensor, output_tensor, token_lora_mapping, num_tokens_per_lora),
+             layout=(K, *inputs.stride(), lora_strides_d0, lora_strides_d1,
+-                    lora_strides_d2, *output_tensor.stride()[1:], NUM_SLICES),
+-            arithmetic=(scaling, FP32_REDUCTION_COLUMNS, use_gdc),
++                    lora_strides_d2, *output_tensor.stride()[1:], NUM_SLICES, MAX_LORAS),
++            arithmetic=(scaling, FP32_REDUCTION_COLUMNS, use_gdc, triton.next_power_of_2(MAX_LORAS)),
+             num_warps=FP32_REDUCTION_WARPS, launch_pdl=use_gdc,
+         )
+         return

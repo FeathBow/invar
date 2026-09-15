@@ -1,0 +1,273 @@
+--- a/vllm/config/lora.py
++++ b/vllm/config/lora.py
+@@ -23,7 +23,7 @@
+ 
+ logger = init_logger(__name__)
+ 
+-LoRADType = Literal["auto", "float16", "bfloat16"]
++LoRADType = Literal["auto", "float16", "bfloat16", "float32"]
+ MaxLoRARanks = Literal[1, 8, 16, 32, 64, 128, 256, 320, 512]
+ LoRAExtraVocabSize = Literal[256, 512]
+ 
+--- a/vllm/lora/ops/triton_ops/kernel_utils.py
++++ b/vllm/lora/ops/triton_ops/kernel_utils.py
+@@ -74,7 +74,10 @@
+             tiled_a = tl.load(a_ptr)
+             if CAST_TYPE:
+                 tiled_a = tiled_a.to(b_dtype)
+-            accumulator += tl.dot(tiled_a, tiled_b)
++            accumulator += tl.dot(
++                tiled_a, tiled_b,
++                input_precision="ieee" if b_dtype == tl.float32 else None,
++            )
+         else:
+             # Check if we need element-wise masking
+             if iter_k >= K:
+@@ -88,7 +91,10 @@
+                 tiled_a = tl.load(a_ptr)
+                 if CAST_TYPE:
+                     tiled_a = tiled_a.to(b_dtype)
+-                accumulator += tl.dot(tiled_a, tiled_b)
++                accumulator += tl.dot(
++                    tiled_a, tiled_b,
++                    input_precision="ieee" if b_dtype == tl.float32 else None,
++                )
+             else:
+                 # Partial block, need masking (only last iteration)
+                 k_offsets = tl.arange(0, BLOCK_K)
+@@ -99,7 +105,10 @@
+                 tiled_a = tl.load(a_ptr, mask=mask[None, :], other=0.0)
+                 if CAST_TYPE:
+                     tiled_a = tiled_a.to(b_dtype)
+-                accumulator += tl.dot(tiled_a, tiled_b)
++                accumulator += tl.dot(
++                    tiled_a, tiled_b,
++                    input_precision="ieee" if b_dtype == tl.float32 else None,
++                )
+ 
+         a_ptr += STEP_K * ak_stride
+         b_ptr += STEP_K * bk_stride
+@@ -141,6 +150,7 @@
+     CAST_TYPE: tl.constexpr,
+     ADD_INPUTS: tl.constexpr,
+     USE_GDC: tl.constexpr,
++    FP32_LORA: tl.constexpr = False,
+ ):
+     """
+     Given an array of integers that identifies the rows of A, ram,
+@@ -170,7 +180,7 @@
+     else:
+         cur_input_ptr = input_ptr + slice_id * input_d0_stride
+         cur_lora_ptr = tl.load(lora_ptr + slice_id).to(
+-            tl.pointer_type(out_ptr.dtype.element_ty)
++            tl.pointer_type(tl.float32 if FP32_LORA else out_ptr.dtype.element_ty)
+         )
+ 
+     # Identify the column indices of B to process.
+@@ -212,7 +222,10 @@
+         base_k=0,
+     )
+ 
+-    tiled_c = accumulator.to(cur_lora_ptr.dtype.element_ty)
++    # Round the adapter delta to the base output type before addition.
++    tiled_c = accumulator.to(
++        out_ptr.dtype.element_ty if FP32_LORA else cur_lora_ptr.dtype.element_ty
++    )
+     if SLICE_NUM == 1:
+         cur_slice_start = slice_start_loc
+     else:
+@@ -266,6 +279,7 @@
+     SPLIT_K: tl.constexpr,
+     SLICE_NUM: tl.constexpr,
+     USE_GDC: tl.constexpr,
++    FP32_LORA: tl.constexpr = False,
+ ):
+     """
+     Given an array of integers that identifies the rows of A, ram,
+@@ -281,7 +295,7 @@
+     else:
+         # current lora ptr
+         cur_lora_ptr = tl.load(lora_ptr + slice_id).to(
+-            tl.pointer_type(input_ptr.dtype.element_ty)
++            tl.pointer_type(tl.float32 if FP32_LORA else input_ptr.dtype.element_ty)
+         )
+ 
+     # Identify the column indices of B to process.
+@@ -313,7 +327,7 @@
+         BLOCK_K,
+         EVEN_K,
+         SPLIT_K,
+-        False,
++        FP32_LORA,
+         cur_lora_ptr.dtype.element_ty,
+         False,  # USE_GDC is always False in shrink kernel
+         base_k=pid_sk * BLOCK_K,
+--- a/vllm/lora/ops/triton_ops/lora_shrink_op.py
++++ b/vllm/lora/ops/triton_ops/lora_shrink_op.py
+@@ -18,6 +18,50 @@
+ )
+ from vllm.triton_utils import tl, triton
+ from vllm.utils.torch_utils import direct_register_custom_op
++
++FP32_REDUCTION_COLUMNS = 1024
++FP32_REDUCTION_WARPS = 4
++
++
++@triton.jit
++def _lora_shrink_rows(tensors, layout: tl.constexpr, arithmetic: tl.constexpr):
++    input_ptr, lora_ptr, out_ptr, token_slots = tensors
++    K: tl.constexpr = layout[0]
++    input_row: tl.constexpr = layout[1]
++    input_column: tl.constexpr = layout[2]
++    lora_slot: tl.constexpr = layout[3]
++    lora_rank: tl.constexpr = layout[4]
++    lora_column: tl.constexpr = layout[5]
++    output_row: tl.constexpr = layout[6]
++    output_rank: tl.constexpr = layout[7]
++    slices: tl.constexpr = layout[8]
++    scaling: tl.constexpr = arithmetic[0]
++    BLOCK: tl.constexpr = arithmetic[1]
++    USE_GDC: tl.constexpr = arithmetic[2]
++    rank, row, slice_id = tl.program_id(0), tl.program_id(1), tl.program_id(2)
++    slot = tl.load(token_slots + row)
++    if slot == -1:
++        return
++    if slices == 1:
++        weight = lora_ptr
++    else:
++        weight = tl.load(lora_ptr + slice_id).to(tl.pointer_type(tl.float32))
++    columns = tl.arange(0, BLOCK)
++    accumulator = tl.zeros((BLOCK,), dtype=tl.float32)
++    # Every row uses the same FP32 FMA sequence and reduction tree.
++    for start in range(tl.cdiv(K, BLOCK)):
++        selected = start * BLOCK + columns
++        inputs = tl.load(input_ptr + row * input_row + selected * input_column,
++                         selected < K, 0).to(tl.float32)
++        weights = tl.load(weight + slot * lora_slot + rank * lora_rank + selected * lora_column,
++                          selected < K, 0).to(tl.float32)
++        accumulator = tl.fma(inputs, weights, accumulator)
++    result = tl.sum(accumulator, 0) * scaling
++    if USE_GDC:
++        tl.extra.cuda.gdc_launch_dependents()
++    # Contiguous slice offsets depend on the runtime grid, not specialization.
++    output_slice = tl.num_programs(1) * output_row
++    tl.store(out_ptr + slice_id * output_slice + row * output_row + rank * output_rank, result)
+ 
+ 
+ @triton.jit
+@@ -50,6 +94,7 @@
+     SLICE_NUM: tl.constexpr,
+     USE_GDC: tl.constexpr,
+     launch_pdl: tl.constexpr,
++    FP32_LORA: tl.constexpr = False,
+ ):
+     cta_n_num = tl.cdiv(N, BLOCK_N)
+     cta_m_num = tl.cdiv(M, BLOCK_M)
+@@ -125,6 +170,7 @@
+         SPLIT_K,
+         SLICE_NUM,
+         USE_GDC,
++        FP32_LORA=FP32_LORA,
+     )
+ 
+ 
+@@ -173,10 +219,13 @@
+         # None of the inputs require LoRA.
+         return
+ 
+-    assert inputs.dtype == lora_a_weights[0].dtype
+-    assert inputs.dtype in [torch.float16, torch.bfloat16]
++    fp32_lora = lora_a_weights[0].dtype == torch.float32
++    assert inputs.dtype in [torch.float16, torch.bfloat16, torch.float32]
++    assert fp32_lora or inputs.dtype == lora_a_weights[0].dtype
+     for weight in lora_a_weights:
+-        assert weight.dtype in [torch.float16, torch.bfloat16]
++        assert weight.dtype == lora_a_weights[0].dtype
++        assert weight.dtype in [torch.float16, torch.bfloat16, torch.float32]
++    assert not fp32_lora or output_tensor.dtype == torch.float32
+ 
+     assert inputs.size(1) == lora_a_weights[0].size(-1)
+     assert inputs.is_contiguous()
+@@ -197,6 +246,18 @@
+     N, K = lora_a_weights[0].shape[-2:]  # K=hidden_size,N=rank
+     NUM_SLICES = len(lora_a_weights)
+     MAX_LORAS = lora_ids.size(0)
++
++    # PDL only works when dual-stream is being used.
++    use_gdc = supports_pdl(inputs.device) and envs.VLLM_LORA_ENABLE_DUAL_STREAM
++    if fp32_lora and envs.VLLM_BATCH_INVARIANT:
++        _lora_shrink_rows[(N, M, NUM_SLICES)](
++            tensors=(inputs, lora_ptr_tensor, output_tensor, token_lora_mapping),
++            layout=(K, *inputs.stride(), lora_strides_d0, lora_strides_d1,
++                    lora_strides_d2, *output_tensor.stride()[1:], NUM_SLICES),
++            arithmetic=(scaling, FP32_REDUCTION_COLUMNS, use_gdc),
++            num_warps=FP32_REDUCTION_WARPS, launch_pdl=use_gdc,
++        )
++        return
+ 
+     # Triton kernel configs
+     kernel_config = get_lora_op_configs(
+@@ -226,8 +287,6 @@
+         num_active_loras.item(),
+     )
+ 
+-    # PDL only works when dual-stream is being used.
+-    use_gdc = supports_pdl(inputs.device) and envs.VLLM_LORA_ENABLE_DUAL_STREAM
+     _lora_shrink_kernel[grid](
+         inputs,
+         lora_ptr_tensor,
+@@ -260,6 +319,7 @@
+         num_ctas=NUM_CTAS,
+         num_stages=NUM_STAGES,
+         launch_pdl=use_gdc,
++        FP32_LORA=fp32_lora,
+     )
+ 
+     return
+--- a/vllm/lora/ops/triton_ops/lora_expand_op.py
++++ b/vllm/lora/ops/triton_ops/lora_expand_op.py
+@@ -52,6 +52,7 @@
+     SAME_STRIDE: tl.constexpr,
+     USE_GDC: tl.constexpr,
+     launch_pdl: tl.constexpr,
++    FP32_LORA: tl.constexpr = False,
+ ):
+     cta_n_num = tl.cdiv(N, BLOCK_N)
+     cta_m_num = tl.cdiv(M, BLOCK_M)
+@@ -129,6 +130,7 @@
+         CAST_TYPE,
+         ADD_INPUTS,
+         USE_GDC,
++        FP32_LORA=FP32_LORA,
+     )
+ 
+ 
+@@ -179,8 +181,10 @@
+         return
+ 
+     assert inputs.dtype in [torch.float16, torch.bfloat16, torch.float32]
++    fp32_lora = lora_b_weights[0].dtype == torch.float32
+     for weight in lora_b_weights:
+-        assert weight.dtype in [torch.float16, torch.bfloat16]
++        assert weight.dtype == lora_b_weights[0].dtype
++        assert weight.dtype in [torch.float16, torch.bfloat16, torch.float32]
+ 
+     assert inputs.size(0) == len(lora_b_weights)
+     assert output_tensor.is_contiguous()
+@@ -232,6 +236,8 @@
+         torch.float16,
+         torch.bfloat16,
+     ]:
++        CAST_TYPE = True
++    if fp32_lora and inputs.dtype != torch.float32:
+         CAST_TYPE = True
+ 
+     # TODO (varun): This grid formulation maximizes parallelization at the
+@@ -279,6 +285,7 @@
+         num_ctas=NUM_CTAS,
+         num_stages=NUM_STAGES,
+         launch_pdl=use_gdc,
++        FP32_LORA=fp32_lora,
+     )
+ 
+     return

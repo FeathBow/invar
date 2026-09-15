@@ -1,0 +1,20 @@
+--- a/vllm_bnb_plugin/bitsandbytes_loader.py
++++ b/vllm_bnb_plugin/bitsandbytes_loader.py
+@@ -6,7 +6,7 @@
+ import math
+ import os
+ from collections.abc import Callable, Generator
+-from dataclasses import dataclass, field
++from dataclasses import dataclass, field, replace
+ from typing import Any, ClassVar
+ 
+ import numpy as np
+@@ -622,7 +622,7 @@
+         # For some models like Molmo, we need to use hf_to_vllm_mapper
+         # to ensure correct loading of weights.
+         if hf_to_vllm_mapper := getattr(model, "hf_to_vllm_mapper", None):
+-            rename_mapper = hf_to_vllm_mapper.get_rename_mapper()
++            rename_mapper = replace(hf_to_vllm_mapper, orig_to_new_stacked={})
+             self.weight_mapper = lambda name, m=rename_mapper: m._map_name(name)
+ 
+         self._get_bnb_target_modules(model)
