@@ -90,20 +90,11 @@ def sampler_controls(metadata, temperatures):
     assert_equal(metadata.temperature, torch.tensor(temperatures, dtype=torch.float32))
 
 
-class ObservedModel:
-    def __init__(self, inner, monitor):
-        self.inner, self.monitor = inner, monitor
-
-    def __call__(self, *args, **kwargs):
-        if args:
-            raise ValueError("Approved native model calls pass their inputs by keyword")
-        self.monitor.before_model(kwargs)
-        output = self.inner(**kwargs)
-        self.monitor.after_model(output)
-        return output
-
-    def __getattr__(self, name):
-        return getattr(self.inner, name)
+def observed_forward(inner, monitor, **arguments):
+    monitor.before_model(arguments)
+    output = inner(**arguments)
+    monitor.after_model(output)
+    return output
 
 
 def before_logits(module, args, kwargs, *, monitor):
@@ -171,10 +162,9 @@ class Monitor:
             handle = self.runner.sampler.register_forward_hook(partial(after_sampler, monitor=self))
             hooks.callback(handle.remove)
             # Full CUDA graph replays never call the model module, so the step
-            # is observed where the runner calls whatever executes the model.
-            inner = self.runner.model
-            self.runner.model = ObservedModel(inner, self)
-            hooks.callback(setattr, self.runner, "model", inner)
+            # is observed at the runner's own forward helper.
+            self.runner._model_forward = partial(observed_forward, self.runner._model_forward, self)
+            hooks.callback(delattr, self.runner, "_model_forward")
             self.hooks = hooks.pop_all()
 
     def before_model(self, arguments):
