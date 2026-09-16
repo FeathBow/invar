@@ -90,12 +90,20 @@ def sampler_controls(metadata, temperatures):
     assert_equal(metadata.temperature, torch.tensor(temperatures, dtype=torch.float32))
 
 
-def before_model(module, args, kwargs, *, monitor):
-    monitor.before_model(module, kwargs)
+class ObservedModel:
+    def __init__(self, inner, monitor):
+        self.inner, self.monitor = inner, monitor
 
+    def __call__(self, *args, **kwargs):
+        if args:
+            raise ValueError("Approved native model calls pass their inputs by keyword")
+        self.monitor.before_model(kwargs)
+        output = self.inner(**kwargs)
+        self.monitor.after_model(output)
+        return output
 
-def after_model(module, args, output, *, monitor):
-    monitor.after_model(output)
+    def __getattr__(self, name):
+        return getattr(self.inner, name)
 
 
 def before_logits(module, args, kwargs, *, monitor):
@@ -158,18 +166,21 @@ class Monitor:
                 raise ValueError("Native model must expose one actual logits row consumer")
             handle = processors[0].register_forward_pre_hook(partial(before_logits, monitor=self), with_kwargs=True)
             hooks.callback(handle.remove)
-            for module, before, after in ((self.native.model, before_model, after_model),
-                                          (self.runner.sampler, before_sampler, after_sampler)):
-                handle = module.register_forward_pre_hook(partial(before, monitor=self), with_kwargs=True)
-                hooks.callback(handle.remove)
-                handle = module.register_forward_hook(partial(after, monitor=self))
-                hooks.callback(handle.remove)
+            handle = self.runner.sampler.register_forward_pre_hook(partial(before_sampler, monitor=self), with_kwargs=True)
+            hooks.callback(handle.remove)
+            handle = self.runner.sampler.register_forward_hook(partial(after_sampler, monitor=self))
+            hooks.callback(handle.remove)
+            # Full CUDA graph replays never call the model module, so the step
+            # is observed where the runner calls whatever executes the model.
+            inner = self.runner.model
+            self.runner.model = ObservedModel(inner, self)
+            hooks.callback(setattr, self.runner, "model", inner)
             self.hooks = hooks.pop_all()
 
-    def before_model(self, module, arguments):
+    def before_model(self, arguments):
         if not self.permitted:
             raise RuntimeError("Native request execution has not been approved")
-        if module is not self.native.model or self.pending is not None:
+        if self.pending is not None:
             raise RuntimeError("Native model execution overlaps another owned step")
         if arguments["input_ids"] is None or arguments.get("inputs_embeds") is not None:
             raise ValueError("Approved native text requests require their actual token IDs")
