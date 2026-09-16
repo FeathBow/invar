@@ -8,7 +8,7 @@ from mlx_lm.tuner.lora import LoRALinear
 
 from worker.mlx import cache as mlx_cache
 from worker.mlx.attention import QUERY_TOKENS, QueryAttention
-from worker.mlx.projection import BITS, GROUP_SIZE, MINIMUM_COLUMNS, MODE, ColumnLoRALinear, RowLinear
+from worker.mlx.projection import BITS, GROUP_SIZE, MINIMUM_COLUMNS, MODE, PHYSICAL_ROWS, ColumnLoRALinear, RowLinear
 from worker.mlx import recurrence as mlx_recurrence
 
 
@@ -86,6 +86,8 @@ class Profile:
                                     "roles": ["proximal", "reference", "current", "objective_vjp", "reward_vjp"],
                                     "lifetime": "owned numerical operation; inference classes restored before state observation"}}
         return {"format": "invar-mlx-numerics/v1", "name": self.name, "modules": observed, **learning,
+                "projection_rows": PHYSICAL_ROWS if self.linear is RowLinear else None,
+                "projection_row_padding": "zero rows to the fixed block; discard padded outputs" if self.linear is RowLinear else None,
                 "lora_minimum_columns": MINIMUM_COLUMNS if self.lora is ColumnLoRALinear else None,
                 "lora_column_padding": "repeat single column; discard repeated output" if self.lora is ColumnLoRALinear else None,
                 "attention_query_tokens": QUERY_TOKENS if self.attention is QueryAttention else None,
@@ -97,6 +99,6 @@ class Profile:
                 "packages": {name: version(name) for name in ("mlx", "mlx-lm")}}
 
 
-PRIMARY = Profile(name="independent-native-rows/v3", linear=RowLinear, lora=ColumnLoRALinear,
+PRIMARY = Profile(name="independent-native-rows/v4", linear=RowLinear, lora=ColumnLoRALinear,
                   attention=QueryAttention, learning_linear=nn.QuantizedLinear)
 NATIVE = Profile(name="native-library-arithmetic/v1", linear=nn.QuantizedLinear, lora=LoRALinear, attention=Qwen3NextAttention)

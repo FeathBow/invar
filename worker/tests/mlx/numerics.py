@@ -20,7 +20,7 @@ from worker.tests.mlx.rollout import model
 INPUT_WIDTH = 5120
 OUTPUT_WIDTH = 48
 ROW_COUNT = 134
-ROW_COUNTS = (1, 2, 5, 13, 32, 67, ROW_COUNT)
+ROW_COUNTS = (1, 2, 5, 7, 8, 9, 13, 31, 32, 33, 67, ROW_COUNT)
 PARAMETER_SCALE = 0.01
 
 
