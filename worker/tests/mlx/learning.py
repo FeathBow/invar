@@ -124,6 +124,19 @@ def report(directory, result, logical, *, binding, input_state, reference):
 
 
 class LearningTests(unittest.TestCase):
+    def test_identical_reference_adapter_reuses_the_proximal_observation(self):
+        live = learner()
+        trajectories = tuple(item.trajectory for item in batch(live.model).samples)
+        current = mlx_learning.adapter(live.model)
+        proximal, fixed = mlx_learning.probabilities(live.model, trajectories, current, evaluate=evaluate)
+        self.assertIs(fixed, proximal)
+        shifted = {name: value + mx.arange(1, value.size + 1, dtype=mx.float32).reshape(value.shape)
+                   if name.endswith("lora_b") else value for name, value in current.items()}
+        repeated, distinct = mlx_learning.probabilities(live.model, trajectories, shifted, evaluate=evaluate)
+        self.assertEqual([mlx_probability.words(value) for value in repeated], [mlx_probability.words(value) for value in proximal])
+        self.assertTrue(all(mlx_probability.words(old) != mlx_probability.words(new) for old, new in zip(proximal, distinct, strict=True)))
+        self.assertTrue(mlx_tensors.equal(current, mlx_learning.adapter(live.model)))
+
     def test_actual_parameter_vjp_and_saved_two_step_continuation(self):
         mx.random.seed(17)
         mx.eval(mx.random.uniform(shape=(3,)))

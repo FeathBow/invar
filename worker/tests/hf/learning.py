@@ -13,7 +13,7 @@ from itertools import permutations
 import torch
 from peft import LoraConfig, get_peft_model
 
-from worker.hf.learning import Batch, Learner, Sample, parameters, update
+from worker.hf.learning import Batch, Learner, Sample, parameters, probabilities, update
 from worker.hf.objective import Profile
 from worker.hf.probe import ADAM_BETAS, ADAM_EPSILON, LEARNING_RATE, adapter_state, assert_equal, digest
 from worker.hf.rollout import Request, Trajectory
@@ -62,6 +62,19 @@ def run(delivered):
 
 
 class LearningTests(unittest.TestCase):
+    def test_identical_reference_adapter_reuses_the_proximal_observation(self):
+        learner = make_learner()
+        trajectories = tuple(item.trajectory for item in batch().samples)
+        current = adapter_state(learner.model)
+        proximal, fixed = probabilities(learner.model, trajectories, current, evaluate=evaluate)
+        self.assertIs(fixed, proximal)
+        shifted = {name: value + torch.arange(1, value.numel() + 1, dtype=value.dtype).reshape(value.shape)
+                   if "lora_B" in name else value for name, value in current.items()}
+        repeated, distinct = probabilities(learner.model, trajectories, shifted, evaluate=evaluate)
+        self.assertTrue(all(torch.equal(old, new) for old, new in zip(proximal, repeated, strict=True)))
+        self.assertTrue(all(not torch.equal(old, new) for old, new in zip(proximal, distinct, strict=True)))
+        assert_equal(current, adapter_state(learner.model))
+
     def test_scalar_failure_cannot_reach_model_backward_or_optimizer_step(self):
         learner = make_learner()
         before = adapter_state(learner.model)

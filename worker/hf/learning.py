@@ -5,6 +5,7 @@ from peft import set_peft_model_state_dict
 from worker.hf.objective import Tokens
 from worker.hf.probe import adapter_state, assert_equal, digest
 from worker.hf.probability import checked, cotangents, loss
+from worker.hf.tensors import equal
 from worker.logical import Batch, Learner, Result, Sample, ordered
 from worker.scalar import number
 
@@ -13,6 +14,8 @@ def probabilities(model, trajectories, reference, *, evaluate):
     current = adapter_state(model)
     with torch.no_grad():
         proximal = tuple(evaluate(model, item).cpu() for item in trajectories)
+        if equal(reference, current):
+            return proximal, proximal
         set_peft_model_state_dict(model, reference)
         assert_equal(reference, adapter_state(model))
         fixed = tuple(evaluate(model, item).cpu() for item in trajectories)

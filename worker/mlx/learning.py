@@ -28,6 +28,8 @@ def probabilities(model, trajectories, reference, *, evaluate):
     model.eval()
     current = adapter(model)
     proximal = evaluate_many(model, trajectories, evaluate=evaluate)
+    if mlx_tensors.equal(reference, current):
+        return proximal, proximal
     install(model, reference)
     fixed = evaluate_many(model, trajectories, evaluate=evaluate)
     install(model, current)

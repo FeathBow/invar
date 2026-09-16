@@ -119,7 +119,8 @@ class LearnerResidentTests(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "state differs from the saved checkpoint"):
             execute(runtime, call, paths, observations, permit=changed)
-        self.assertEqual(len(evaluated), 2 * len(call.request.samples))
+        self.assertEqual(call.request.reference, call.request.policy)
+        self.assertEqual(len(evaluated), len(call.request.samples))
         self.assertEqual(list(paths.output.iterdir()), [])
         self.assertNotIn('"stage": "reward_update"', observations[0].getvalue())
         self.assertNotIn('"stage": "result"', observations[0].getvalue())

@@ -39,6 +39,12 @@ def content(value):
     raise TypeError(f"Unsupported checkpoint fingerprint value: {type(value).__name__}")
 
 
+def equal(first, second):
+    return first.keys() == second.keys() and all(
+        first[name].dtype == second[name].dtype and first[name].shape == second[name].shape
+        and torch.equal(tensor_bytes(first[name]), tensor_bytes(second[name])) for name in first)
+
+
 def assert_equal(first, second):
     if type(first) is not type(second):
         raise RuntimeError("Checkpoint type mismatch")
