@@ -16,7 +16,7 @@ def group(child, update, *, checkpoint, output, envelope, permission):
     process.through(child, "consumed", allowed=("loading", "profile", "load", "activation", "loaded_learner",
                                                "probability_roles", "roles"), digest=digest)
     process.send(child, permission(update))
-    result = process.through(child, "result", allowed=("reward_update",), digest=digest)
+    result = process.through(child, "result", allowed=("reward_update", "artifacts", "checkpoint"), digest=digest)
     process.release(child, [update.consumed["load"]], digest=digest)
     return result
 

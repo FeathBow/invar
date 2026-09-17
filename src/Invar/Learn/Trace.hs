@@ -36,13 +36,16 @@ validateObserved report events = do
 
 validateWith :: Image.Image -> Report.Report -> [Object] -> Either String ()
 validateWith selected report events = case reverse events of
-    result : updated : preceding -> do
+    result : remaining | (staged, updated : preceding) <- span staging remaining -> do
         pair <- readiness (Report.request report) (reverse preceding)
         bindings selected report pair
         stage "reward_update" updated
+        mapM_ (\fields -> when (Fields.member "phase" fields) (Left "Unexpected learner observation stage")) staged
         completion (Report.request report) result
         unless (Object result == Report.result report) (Left "Update trace result differs from the admitted report")
     _ -> Left "Incomplete learner execution trace"
+  where
+    staging fields = Fields.lookup "stage" fields `elem` map (Just . String) ["checkpoint", "artifacts"]
 
 readiness :: Value -> [Object] -> Either String (Object, Object)
 readiness request events = case events of

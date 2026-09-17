@@ -40,7 +40,7 @@ observe expected status encoded = do
     unless (status == 0) (Left "Replayed update process did not exit successfully")
     unless ("\n" `Bytes.isSuffixOf` encoded) (Left "Incomplete replayed update stream")
     frames <- traverse frame (Bytes.lines encoded)
-    let allowed = ["loading", "profile", "load", "loaded_learner", "probability_roles", "roles", "consumed", "reward_update", "result"]
+    let allowed = ["loading", "profile", "load", "loaded_learner", "probability_roles", "roles", "consumed", "reward_update", "artifacts", "checkpoint", "result"]
     unless (all (\(Frame _ fields) -> not (Fields.member "phase" fields) && stage fields `elem` map Just allowed) frames) (Left "Unknown replayed update stage")
     input <- exactly "consumed" frames
     output <- exactly "result" frames

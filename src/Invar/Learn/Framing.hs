@@ -25,10 +25,13 @@ completion :: Value -> ByteString -> Either String ()
 completion request encoded = do
     records <- Frame.decode encoded
     case dropWhile ((/= Just (String "consumed")) . stage) records of
-        [_consumed, updated, result] -> do
+        _consumed : updated : remaining@(_ : _) -> do
             unless (stage updated == Just (String "reward_update")) (Left "Expected one actual reward update measurement")
-            timing updated
-            Trace.completion request (Frame.fields result)
+            let (staging, ending) = span (\record -> stage record `elem` map (Just . String) ["artifacts", "checkpoint"]) remaining
+            mapM_ timing (updated : staging)
+            case ending of
+                [result] -> Trace.completion request (Frame.fields result)
+                _ -> Left "Expected one measured and completed resident update"
         _ -> Left "Expected one measured and completed resident update"
 
 stage :: Frame.Frame -> Maybe Value

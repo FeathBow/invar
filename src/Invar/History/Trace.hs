@@ -65,7 +65,7 @@ advance run (current, offset, accepted, state, remaining) (index, workload) = do
     parseEither (publish (run, index, offset) (workload, observed)) published
     policy <- Report.artifact "adapter" (Cohort.update observed)
     learner <- Report.artifact "learner" (Cohort.update observed)
-    let diagnostic = [observedFrame | observedFrame@(Frame _ fields) <- body, Fields.lookup "stage" fields `elem` map (Just . String) ["loading", "profile", "load", "activation", "released", "loaded_learner", "inference", "probability_roles", "roles", "reward_update"]]
+    let diagnostic = [observedFrame | observedFrame@(Frame _ fields) <- body, Fields.lookup "stage" fields `elem` map (Just . String) ["loading", "profile", "load", "activation", "released", "loaded_learner", "inference", "probability_roles", "roles", "reward_update", "artifacts", "checkpoint"]]
     pure (current {Learn.policy, Learn.learner}, call + 1, Generation observed published finished diagnostic groups modelProfiles : accepted, next, rest)
 
 phase :: Text -> Frame -> Bool

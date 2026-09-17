@@ -96,15 +96,20 @@ def execute(runtime, learner, call, output, *, admitted, actual, measure):
     if result.summary["before"] != request.policy:
         raise RuntimeError("Native update input differs from the declared policy")
     bound = call.invocation.binding()
-    probability = save_probabilities(output / "probabilities.json", result.probabilities,
-                                     invocation={"binding": bound, "program": call.invocation.program}, request=actual)
     gradients = output / "gradients.safetensors"
-    with gradients.open("xb") as target:
-        mx.save_safetensors(target, result.gradients, metadata={"binding": json.dumps(bound, sort_keys=True),
-                            "program": call.invocation.program, "policy": request.policy,
-                            "observation": "objective and reward gradients before AdamW"})
+
+    def artifacts():
+        digest = save_probabilities(output / "probabilities.json", result.probabilities,
+                                    invocation={"binding": bound, "program": call.invocation.program}, request=actual)
+        with gradients.open("xb") as target:
+            mx.save_safetensors(target, result.gradients, metadata={"binding": json.dumps(bound, sort_keys=True),
+                                "program": call.invocation.program, "policy": request.policy,
+                                "observation": "objective and reward gradients before AdamW"})
+        return digest, file_digest(gradients)
+
+    probability, gradient_digest = measure("artifacts", artifacts)
     expected = {"adapter": result.summary["after"], **{name: getattr(request, name) for name in ("base", "assembly", "tokenizer")}}
-    saved = save(runtime, learner, output, expected=expected)
+    saved = measure("checkpoint", partial(save, runtime, learner, output, expected=expected))
     return {"binding": bound, "request": actual, "update": result.summary,
-            "gradients": file_digest(gradients), "probabilities": probability,
+            "gradients": gradient_digest, "probabilities": probability,
             "adapter": saved["policy"], "learner": saved["learner"], "storage": "staged; not published"}

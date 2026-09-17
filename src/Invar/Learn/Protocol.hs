@@ -174,7 +174,7 @@ identity value = length value == digestLength && all (`elem` (['0' .. '9'] ++ ['
 diagnostic :: String -> Progress -> Either Error Progress
 diagnostic stage progress@(Awaiting _ _) | stage `elem` ["loading", "profile", "load"] = Right progress
 diagnostic stage progress@Loaded {} | stage `elem` ["probability_roles", "roles"] = Right progress
-diagnostic "reward_update" progress@Consumed {} = Right progress
+diagnostic stage progress@Consumed {} | stage `elem` ["reward_update", "artifacts", "checkpoint"] = Right progress
 diagnostic stage _ = Left (Unexpected ("Unknown or misplaced worker stage: " ++ stage))
 
 matching :: V.Binding -> Object -> Either Error V.Binding
