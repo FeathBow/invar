@@ -10,7 +10,7 @@ FORMAT = b"invar-frozen-state-v1\0"
 
 def blocks(value):
     if value.numel() * value.element_size() <= HASH_CHUNK_BYTES:
-        yield value.detach().cpu().contiguous().reshape(-1).view(torch.uint8).numpy().tobytes()
+        yield value.detach().cpu().contiguous().reshape(-1).view(torch.uint8).numpy()
         return
     axis = next(index for index, size in enumerate(value.shape) if size > 1)
     for part in value.split(max(1, value.shape[axis] // 2), dim=axis):

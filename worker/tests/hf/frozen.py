@@ -47,7 +47,7 @@ class FrozenTests(unittest.TestCase):
         pieces = list(blocks(value))
         self.assertGreater(len(pieces), 1)
         self.assertLessEqual(max(map(len, pieces)), HASH_CHUNK_BYTES)
-        self.assertEqual(b"".join(pieces), value.contiguous().view(torch.uint8).numpy().tobytes())
+        self.assertEqual(b"".join(map(bytes, pieces)), value.contiguous().view(torch.uint8).numpy().tobytes())
 
 
 if __name__ == "__main__":

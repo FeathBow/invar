@@ -12,7 +12,7 @@ from worker.hf.frozen import blocks
 LOCATION_FIELDS = frozenset(("_name_or_path", "base_model_name_or_path"))
 QUANT_STATE_FIELDS = ("absmax", "shape", "code", "dtype", "blocksize", "quant_type", "offset", "state2", "nested")
 PARAMETER_STATE_FIELDS = ("bnb_quant_state", "bnb_shard_offsets", "quant_state", "pack_factor")
-IDENTITY_WORKERS = 4
+IDENTITY_WORKERS = 16
 
 
 def kind(value):
