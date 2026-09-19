@@ -56,6 +56,7 @@ def identified(worker, *, receipt, adapter_id):
     policy = worker._invar_lora_bindings[adapter_id]
     models, profile = inspection(worker.model_runner, manager(worker), policies={adapter_id: policy})
     model, = models
+    worker._invar_observed = (frozenset({adapter_id}), models)
     return {"resident": resident, "model": asdict(model), "source": dict(policy[0].source), "profile": profile}
 
 
@@ -68,9 +69,11 @@ def begin(worker, *, bindings):
     native = manager(worker)
     selected = {value["selection"]["adapter"] for value in bindings}
     policies = {key: value for key, value in worker._invar_lora_bindings.items() if key in selected}
+    observed = getattr(worker, "_invar_observed", None)
     monitor = Monitor(worker.model_runner, native, bindings=tuple(binding(value) for value in bindings),
                       verify=partial(consumed, worker),
-                      observe_model=partial(observe, worker.model_runner, native, policies=policies))
+                      observe_model=partial(observe, worker.model_runner, native, policies=policies),
+                      models=observed[1] if observed is not None and observed[0] == frozenset(policies) else None)
     monitor.attach()
     worker._invar_execution = monitor
     return {"resident": monitor.resident, "models": tuple(asdict(value) for value in monitor.models)}

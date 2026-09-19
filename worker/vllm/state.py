@@ -111,7 +111,7 @@ def after_sampler(module, args, output, *, monitor):
 
 
 class Monitor:
-    def __init__(self, runner, native, *, bindings, verify, observe_model):
+    def __init__(self, runner, native, *, bindings, verify, observe_model, models=None):
         self.runner, self.native, self.verify = runner, native, verify
         self.observe_model = observe_model
         self.bindings = MappingProxyType({value.internal: value for value in bindings})
@@ -133,7 +133,7 @@ class Monitor:
         self.permitted = False
         self.hooks = ExitStack()
         self.resident = self.verify_policies()
-        self.models = self.observe_model()
+        self.models = self.observe_model() if models is None else models
         self.slot_layout = tuple(native.lora_index_to_id)
 
     def verify_policies(self):
@@ -141,13 +141,12 @@ class Monitor:
 
     def verify_model(self):
         if self.observe_model() != self.models:
-            raise RuntimeError("Native base or assembly changed after preparation")
+            raise RuntimeError("Native base or assembly changed after it was observed")
 
     def allow(self):
         if self.permitted:
             raise RuntimeError("Native execution permission was already consumed")
         self.verify_policies()
-        self.verify_model()
         self.permitted = True
 
     def attach(self):
