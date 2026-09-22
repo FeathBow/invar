@@ -18,6 +18,7 @@ import Invar.Artifact qualified as Artifact
 import Invar.Infer qualified as Infer
 import Invar.Infer.Observation qualified as Observation
 import Invar.Infer.Result qualified as Result
+import Invar.Numerical qualified as Numerical
 import Invar.Score qualified as Score
 import Invar.Spec.Invocation qualified as V
 import Store (workspace)
@@ -141,6 +142,9 @@ batchMatching = do
         scoring <- evalEither (Score.prepare 0 observed planned)
         inspection <- evalEither (eitherDecodeStrict (Score.sourceInspection scoring))
         inspection === Observation.describe observed
+    compared <- evalEither (Numerical.observe (Numerical.BoundRun (Numerical.Run planned bound 0 (wire original)) (Numerical.Run planned bound 0 encoded)))
+    Numerical.tokensEqual (Numerical.path compared) === True
+    Numerical.behaviorBitsEqual (Numerical.path compared) === True
 
 batchBoundaries :: PropertyT IO ()
 batchBoundaries = do

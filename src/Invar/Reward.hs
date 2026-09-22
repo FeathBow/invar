@@ -1,6 +1,6 @@
 {-# LANGUAGE Safe #-}
 
-module Invar.Reward (Rule, Scored, Error (..), decimal, score, value, rule, program, inputs, emission) where
+module Invar.Reward (Rule, Scored, Error (..), decimal, expected, score, value, rule, program, inputs, emission) where
 
 import Data.ByteString (ByteString)
 import Data.Char (ord)
@@ -30,10 +30,13 @@ data Error = InvalidAnswer | ProgramError A.LoadError | EvaluationError E.Error 
 decimal :: String -> Either Error Rule
 decimal = maybe (Left InvalidAnswer) (Right . Rule) . Decimal.parse
 
+expected :: Rule -> Rational
+expected (Rule answer) = answer
+
 score :: Rule -> String -> Bool -> Either Error Scored
-score selected@(Rule expected) text truncated = do
+score selected@(Rule answer) text truncated = do
     checked <- either (Left . ProgramError) Right Program.checked
-    let supplied = Map.fromList [(P.Semantic "rule", Atom (Number expected)), (P.Semantic "response", characters text), (P.Semantic "truncated", Atom (Boolean truncated))]
+    let supplied = Map.fromList [(P.Semantic "rule", Atom (Number answer)), (P.Semantic "response", characters text), (P.Semantic "truncated", Atom (Boolean truncated))]
     outputs <- either (Left . EvaluationError) Right (A.run checked supplied)
     case outputs of
         [result@(E.Emission "score" "exact-decimal/v1" (Atom (Number reward)))] ->

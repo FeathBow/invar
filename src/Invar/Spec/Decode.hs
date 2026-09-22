@@ -1,6 +1,6 @@
 {-# LANGUAGE Safe #-}
 
-module Invar.Spec.Decode (document) where
+module Invar.Spec.Decode (document, value) where
 
 import Control.Monad (foldM, unless)
 import Data.Map.Strict (Map)

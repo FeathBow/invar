@@ -15,6 +15,7 @@ module Invar.Spec.Evidence (
     assumptions,
     methods,
     Counterexample,
+    Witness (..),
     refuted,
     witness,
     check,
@@ -26,24 +27,18 @@ import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Invar.Spec.Invocation qualified as I
+import Invar.Spec.Numerical qualified as N
+import Invar.Spec.Obligation (Obligation (..))
+import Invar.Spec.Use qualified as U
 import Numeric.Natural (Natural)
 
 newtype EvidenceId = EvidenceId Natural
     deriving (Eq, Ord, Show)
 
-data Obligation = Obligation
-    { predicate :: String
-    , specification :: ByteString
-    , observation :: String
-    , domain :: ByteString
-    , binding :: ByteString
-    }
+data Claim = External Obligation | OutputEqual I.Completion ByteString | Numerical N.Claim | TaskLoss U.Claim | All [Claim] | Implies Claim Claim
     deriving (Eq, Show)
 
-data Claim = External Obligation | OutputEqual I.Completion ByteString | All [Claim] | Implies Claim Claim
-    deriving (Eq, Show)
-
-data Rule = Assume | Compare | Conjoin [EvidenceId] | Discharge EvidenceId [EvidenceId] | Apply EvidenceId EvidenceId
+data Rule = Assume | Compare | Observe N.Observed | ObserveTaskLoss U.Observed | Conjoin [EvidenceId] | Discharge EvidenceId [EvidenceId] | Apply EvidenceId EvidenceId
     deriving (Eq, Show)
 
 data Node = Node {claim :: Claim, rule :: Rule}
@@ -51,7 +46,7 @@ data Node = Node {claim :: Claim, rule :: Rule}
 
 type Graph = Map EvidenceId Node
 
-data Method = Hypothesis | ReportComparison | Conjunction | AssumptionDischarge | ImplicationElimination
+data Method = Hypothesis | ReportComparison | NumericalObservation | TaskLossObservation | HoeffdingBound | EmpiricalBernsteinBound | Conjunction | AssumptionDischarge | ImplicationElimination
     deriving (Eq, Show)
 
 data Problem
@@ -62,12 +57,18 @@ data Problem
     | UnmatchedDischarge Claim
     | UnsupportedApplication Claim
     | RefutedPremise Claim
+    | UnsupportedObservation Claim
+    | NumericalProblem N.Problem
+    | TaskLossProblem U.Problem
     deriving (Eq, Show)
 
 data Certificate = Certificate Claim [Claim] [Method]
     deriving (Eq, Show)
 
-data Counterexample = Counterexample Claim I.Completion ByteString
+data Witness = OutputWitness I.Completion ByteString | NumericalWitness N.Observed | TaskLossWitness U.Observed
+    deriving (Eq, Show)
+
+data Counterexample = Counterexample Claim Witness
     deriving (Eq, Show)
 
 data Verdict = Accept Certificate | Refute Counterexample | Unknown Problem
@@ -83,10 +84,10 @@ methods :: Certificate -> [Method]
 methods (Certificate _ _ used) = used
 
 refuted :: Counterexample -> Claim
-refuted (Counterexample target _ _) = target
+refuted (Counterexample target _) = target
 
-witness :: Counterexample -> (I.Completion, ByteString)
-witness (Counterexample _ actual expected) = (actual, expected)
+witness :: Counterexample -> Witness
+witness (Counterexample _ actual) = actual
 
 check :: Graph -> EvidenceId -> Verdict
 check graph root = fst (visit Set.empty Map.empty root)
@@ -136,6 +137,8 @@ evaluate node children () = case firstProblem children of
     Nothing -> case rule node of
         Assume -> Accept (Certificate (claim node) [claim node] [Hypothesis])
         Compare -> compareOutput (claim node)
+        Observe observed -> compareNumerical (claim node) observed
+        ObserveTaskLoss observed -> compareTaskLoss (claim node) observed
         Conjoin _ -> conjunction (claim node) children
         Discharge _ _ -> discharge (claim node) children
         Apply _ _ -> application (claim node) children
@@ -148,12 +151,34 @@ firstProblem (_ : rest) = firstProblem rest
 compareOutput :: Claim -> Verdict
 compareOutput target@(OutputEqual actual expected)
     | I.completedOutput actual == expected = Accept (Certificate target [] [ReportComparison])
-    | otherwise = Refute (Counterexample target actual expected)
+    | otherwise = Refute (Counterexample target (OutputWitness actual expected))
 compareOutput target = Unknown (UnsupportedComparison target)
+
+compareNumerical :: Claim -> N.Observed -> Verdict
+compareNumerical target@(Numerical expected) observed = case N.judge expected observed of
+    N.Satisfied -> Accept (Certificate target obligations [NumericalObservation])
+    N.Violated -> Refute (Counterexample target (NumericalWitness observed))
+    N.Insufficient problem -> Unknown (NumericalProblem problem)
+  where
+    obligations = map External (N.premises observed)
+compareNumerical target _ = Unknown (UnsupportedObservation target)
+
+compareTaskLoss :: Claim -> U.Observed -> Verdict
+compareTaskLoss target@(TaskLoss expected) observed = case U.judge expected observed of
+    U.Satisfied -> Accept (Certificate target (map External (U.claimPremises expected observed)) used)
+    U.Violated -> Refute (Counterexample target (TaskLossWitness observed))
+    U.Insufficient problem -> Unknown (TaskLossProblem problem)
+  where
+    used =
+        TaskLossObservation : case expected of
+            U.PopulationClaim {} -> [HoeffdingBound]
+            U.EmpiricalBernsteinClaim {} -> [EmpiricalBernsteinBound]
+            _ -> []
+compareTaskLoss target _ = Unknown (UnsupportedObservation target)
 
 conjunction :: Claim -> [Verdict] -> Verdict
 conjunction target children = case firstRefutation children of
-    Just (Counterexample _ actual expected) -> Refute (Counterexample target actual expected)
+    Just (Counterexample _ actual) -> Refute (Counterexample target actual)
     Nothing -> case certificates children of
         Left problem -> Unknown problem
         Right accepted ->

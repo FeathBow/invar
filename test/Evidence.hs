@@ -4,15 +4,19 @@ module Evidence (evidence) where
 
 import Control.Monad (forM_)
 import Data.ByteString (ByteString)
+import Data.List ((\\))
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Hedgehog
+import Hedgehog.Gen qualified as Gen
+import Hedgehog.Range qualified as Range
 import Invar.Spec.Artifact qualified as A
 import Invar.Spec.Evaluate qualified as E
 import Invar.Spec.Evidence qualified as C
 import Invar.Spec.Invocation qualified as I
 import Invar.Spec.Program
 import Invar.Spec.Value (Scalar (..), Value (..))
+import Properties (campaign)
 
 evidence :: Group
 evidence =
@@ -28,6 +32,7 @@ evidence =
         , ("unreachable invalid nodes do not change the root judgement", once localGraphs)
         , ("local refutation lifts only to the declared conjunction", once lifting)
         , ("shared proof nodes preserve assumptions", once shared)
+        , ("conjunction permutations preserve verdicts and certificate meaning", campaign conjunctionPermutations)
         , ("implication application retains its exact carried premises", once application)
         , ("application requires the declared antecedent and consequent", once applicationBindings)
         , ("a false premise does not refute an implication's conclusion", once falsePremise)
@@ -83,8 +88,8 @@ counterexample = do
     let goal = C.OutputEqual report "expected"
     result <- refuted (C.check (Map.singleton first (C.Node goal C.Compare)) first)
     C.refuted result === goal
-    C.witness result === (report, "expected")
-    assert (I.completedOutput report /= snd (C.witness result))
+    C.witness result === C.OutputWitness report "expected"
+    assert (I.completedOutput report /= "expected")
 
 hypotheses :: PropertyT IO ()
 hypotheses = do
@@ -167,7 +172,7 @@ lifting = do
     C.check (Map.insert second (C.Node external (C.Conjoin [first])) base) second === C.Unknown (C.WrongConclusion conjunction external)
     result <- refuted (C.check (Map.insert second (C.Node conjunction (C.Conjoin [first])) base) second)
     C.refuted result === conjunction
-    C.witness result === (report, "other")
+    C.witness result === C.OutputWitness report "other"
 
 shared :: PropertyT IO ()
 shared = do
@@ -178,6 +183,59 @@ shared = do
     empty <- accepted (C.check (Map.singleton first (C.Node (C.All []) (C.Conjoin []))) first)
     C.conclusion empty === C.All []
     C.assumptions empty === []
+
+conjunctionPermutations :: PropertyT IO ()
+conjunctionPermutations = do
+    report <- completed "actual"
+    let different = C.External obligation {C.observation = "another-observation"}
+        equal = C.OutputEqual report "actual"
+        pair = C.All [external, equal]
+        graph =
+            Map.fromList
+                [ (first, C.Node external C.Assume)
+                , (second, C.Node different C.Assume)
+                , (third, C.Node equal C.Compare)
+                , (fourth, C.Node pair (C.Conjoin [first, third]))
+                , (C.EvidenceId 4, C.Node (C.OutputEqual report "other") C.Compare)
+                , (C.EvidenceId 5, C.Node (C.OutputEqual report "different") C.Compare)
+                , (C.EvidenceId 6, C.Node external C.Compare)
+                , (C.EvidenceId 7, C.Node different C.Compare)
+                ]
+        acceptedNames = [first, second, third, fourth]
+        refutations = map C.EvidenceId [4, 5]
+        unknowns = map C.EvidenceId [6, 7]
+        root = C.EvidenceId 8
+        judge names = do
+            nodes <- traverse (evalMaybe . (`Map.lookup` graph)) names
+            let target = C.All (map C.claim nodes)
+            pure (C.check (Map.insert root (C.Node target (C.Conjoin names)) graph) root)
+    repeated <- forAll (Gen.list (Range.linear 0 8) (Gen.element acceptedNames))
+    let names = acceptedNames ++ repeated
+    forM_ [[], names, names ++ refutations, names ++ unknowns, names ++ refutations ++ unknowns] $ \original -> do
+        reordered <- forAll (Gen.shuffle original)
+        before <- judge original
+        after <- judge reordered
+        sameConjunctionVerdict before after
+
+-- All preserves multiplicity; certificate premises and methods have set meaning.
+-- First diagnostics and counterexample witnesses may change with traversal order.
+sameConjunctionVerdict :: C.Verdict -> C.Verdict -> PropertyT IO ()
+sameConjunctionVerdict (C.Accept before) (C.Accept after) = do
+    sameConjunction (C.conclusion before) (C.conclusion after)
+    assert (sameSet (C.assumptions before) (C.assumptions after))
+    assert (sameSet (C.methods before) (C.methods after))
+sameConjunctionVerdict (C.Refute before) (C.Refute after) = sameConjunction (C.refuted before) (C.refuted after)
+sameConjunctionVerdict (C.Unknown _) (C.Unknown _) = pure ()
+sameConjunctionVerdict before after = annotateShow (before, after) >> failure
+
+sameConjunction :: C.Claim -> C.Claim -> PropertyT IO ()
+sameConjunction (C.All before) (C.All after) = do
+    before \\ after === []
+    after \\ before === []
+sameConjunction before after = annotateShow (before, after) >> failure
+
+sameSet :: (Eq value) => [value] -> [value] -> Bool
+sameSet before after = all (`elem` after) before && all (`elem` before) after
 
 application :: PropertyT IO ()
 application = do

@@ -1,6 +1,6 @@
 {-# LANGUAGE Safe #-}
 
-module Invar.Spec.Encode (document) where
+module Invar.Spec.Encode (document, value) where
 
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map

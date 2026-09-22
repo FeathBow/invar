@@ -11,6 +11,7 @@ import Invar.Learn.Observation qualified as Observation
 import Invar.Learn.Report qualified as Report
 import Invar.Learn.State qualified as State
 import NativeCodec qualified
+import Numerical qualified
 import Options qualified as O
 import System.Console.GetOpt (OptDescr, usageInfo)
 import System.Exit (die)
@@ -18,6 +19,7 @@ import Training qualified
 
 run :: [String] -> IO ()
 run ["--help"] = putStrLn usage
+run ("numerical" : supplied) = Numerical.run supplied
 run ("histories" : supplied) = HistoryInput.compareHistories supplied
 run ["initial", "--help"] = putStrLn (usageInfo "Usage: invar compare initial OPTIONS" initialOptions)
 run ("initial" : supplied) = do
@@ -91,4 +93,4 @@ emit :: Value -> IO ()
 emit = Lazy.putStrLn . encode
 
 usage :: String
-usage = usageInfo "Usage: invar compare gradients|probabilities|states|initial|histories OPTIONS\n       invar inspect update|updates|probabilities OPTIONS\nCompare conditional, bound artifact observations; a successful comparison emits an equal Boolean." (pairOptions "gradients" ++ pairOptions "probabilities" ++ pairOptions "checkpoint" ++ comparisonOptions "states")
+usage = usageInfo "Usage: invar compare gradients|probabilities|states|initial|histories OPTIONS\n       invar compare numerical OPTIONS\n       invar inspect update|updates|probabilities OPTIONS\nCompare conditional, bound artifact observations. Numerical comparisons emit finite accept/refute/unknown findings; see compare numerical --help." (pairOptions "gradients" ++ pairOptions "probabilities" ++ pairOptions "checkpoint" ++ comparisonOptions "states")
