@@ -165,14 +165,24 @@ def execute(call, options, *, services, index):
 
 def run(options, services):
     if options.mode == "resident":
-        observed = reference(options, mode=options.mode, core_executable=options.core)
-        owners = tuple((owner["owner"], decode_calls(owner["calls"])) for owner in observed["residence"]["owners"])
-        return direct_resident.run(options, services, reference=observed, planned=decode_calls(observed["calls"]),
-                                   owners=owners, command=session_command(options), grouped=cohorts, serialized=serialized,
-                                   queued=partial(batch_input, adapter=options.adapter))
+        return resident(options, services, runner=direct_resident.run)
     if options.devices is not None:
         raise ValueError("Direct --devices requires resident mode")
     return finite(options, services)
+
+
+def resident_execute(options, services):
+    if options.mode != "resident":
+        raise ValueError("Execution-only direct inference requires resident mode")
+    return resident(options, services, runner=direct_resident.run_execution)
+
+
+def resident(options, services, *, runner):
+    observed = reference(options, mode=options.mode, core_executable=options.core)
+    owners = tuple((owner["owner"], decode_calls(owner["calls"])) for owner in observed["residence"]["owners"])
+    return runner(options, services, reference=observed, planned=decode_calls(observed["calls"]),
+                  owners=owners, command=session_command(options), grouped=cohorts, serialized=serialized,
+                  queued=partial(batch_input, adapter=options.adapter))
 
 
 def finite(options, services):
@@ -230,6 +240,11 @@ def arguments():
     return Options(**vars(parser.parse_args()))
 
 
+def main(*, execution_only=False):
+    selected = resident_execute if execution_only else run
+    print(json.dumps(selected(arguments(), Services(run=subprocess.run, clock=time.perf_counter, spawn=subprocess.Popen,
+                                                    environment=dict(os.environ))), sort_keys=True))
+
+
 if __name__ == "__main__":
-    print(json.dumps(run(arguments(), Services(run=subprocess.run, clock=time.perf_counter, spawn=subprocess.Popen,
-                                               environment=dict(os.environ))), sort_keys=True))
+    main()

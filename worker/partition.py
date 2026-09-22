@@ -50,7 +50,7 @@ def execute(children, planned, *, services, origin, queued, grouped):
         pool.shutdown(wait=True)
 
 
-def run(options, services, *, reference, planned, owners, command, queued, grouped, serialized):
+def execution(options, services, *, reference, planned, owners, command, queued, grouped):
     if services.spawn is None or services.environment is None:
         raise ValueError("Resident direct replay requires injected process creation and environment")
     environments = placements(options, len(owners), environment=services.environment)
@@ -67,21 +67,37 @@ def run(options, services, *, reference, planned, owners, command, queued, group
         finally:
             process.stop(children)
             process.finish(children, services=services, origin=origin)
+    measured = {"reference_log_sha256": reference["reference_log_sha256"], "tasks_sha256": reference["tasks_sha256"],
+                "policy": options.policy, "mode": "resident", "sessions": len(children),
+                "cohorts": len(intervals), "loads": sum(bool(child.calls) for child in children),
+                "process_seconds": sum(completed[child.owner.session]["process_seconds"] for child in children),
+                "cohort_intervals": intervals, "close_intervals": closing}
+    return measured, children, completed, origin
+
+
+def run_execution(options, services, *, reference, planned, owners, command, queued, grouped, serialized):
+    measured, children, completed, origin = execution(options, services, reference=reference, planned=planned,
+                                                     owners=owners, command=command, queued=queued, grouped=grouped)
+    report = {**measured, "wall_seconds": services.clock() - origin, "planned_calls": len(planned),
+              "owners": [{"owner": child.owner.session, "calls": [serialized(call) for call in child.calls],
+                          "process": completed[child.owner.session]} for child in children],
+              "scope": "direct resident execution of the reference physical owners and finite groups, with cohort barriers and ordered final closes; retained owner calls and raw process outputs require separate offline comparison"}
+    with (options.output / "execution.json").open("x") as stream:
+        json.dump(report, stream, sort_keys=True, allow_nan=False)
+    return report
+
+
+def run(options, services, *, reference, planned, owners, command, queued, grouped, serialized):
+    measured, children, _, origin = execution(options, services, reference=reference, planned=planned,
+                                              owners=owners, command=command, queued=queued, grouped=grouped)
     outputs = [inspect(child, options, serialized=serialized) for child in children]
     rows = [row for cohort, _ in grouped(planned) for output in outputs for row in output["calls"] if row["cohort"] == cohort]
     with (options.output / "calls.jsonl").open("x") as stream:
         for row in rows:
             stream.write(json.dumps(row, sort_keys=True, allow_nan=False) + "\n")
-    seconds = 0.0
-    for child in children:
-        seconds += completed[child.owner.session]["process_seconds"]
-    report = {"reference_log_sha256": reference["reference_log_sha256"], "tasks_sha256": reference["tasks_sha256"],
-              "policy": options.policy, "mode": "resident", "sessions": len(children), "calls": len(rows),
-              "cohorts": len(intervals), "loads": sum(bool(child.calls) for child in children),
-              "wall_seconds": services.clock() - origin, "process_seconds": seconds,
+    report = {**measured, "calls": len(rows), "wall_seconds": services.clock() - origin,
               "response_tokens": sum(row["response_tokens"] for row in rows),
               "equal_results": sum(row["result_equal"] for row in rows),
-              "cohort_intervals": intervals, "close_intervals": closing,
               "scope": "direct resident replay of the reference physical owners and finite groups, with cohort barriers and ordered final closes; original raw output and supplied process statuses are checked offline; no Invar execution or publication authority"}
     with (options.output / "complete.json").open("x") as stream:
         json.dump(report, stream, sort_keys=True, allow_nan=False)

@@ -17,6 +17,7 @@ import tempfile
 import time
 import unittest
 from dataclasses import replace
+from unittest.mock import patch
 
 from worker import direct
 from worker.tests.hf.performance import summarize
@@ -85,6 +86,10 @@ class ResidentDirectChecks(unittest.TestCase):
                 reference(options, count=count)
                 cls.reports[count, index] = direct.run(options, cls.services)
                 cls.paths[count].append(options)
+
+    @classmethod
+    def tearDownClass(cls):
+        print(f"Resident direct protocol artifacts: {cls.root}", file=sys.stderr)
 
     def report(self, count):
         options = self.paths[count][0]
@@ -213,6 +218,66 @@ class ResidentDirectChecks(unittest.TestCase):
         paths = [options, self.paths[1][1]]
         with self.assertRaisesRegex(ValueError, "profile"):
             summarize(manifest(options, paths), options.tasks, options.policy)
+
+    def test_execution_only_preserves_offline_inputs_without_running_comparison(self):
+        selected = replace(self.paths[2][0], output=self.root / "execution-only")
+        with patch("worker.partition.inspect", side_effect=AssertionError("offline comparison ran")):
+            report = direct.resident_execute(selected, self.services)
+        self.assertEqual(report, json.loads((selected.output / "execution.json").read_text()))
+        self.assertEqual((report["sessions"], report["planned_calls"], report["cohorts"]), (2, 6, COHORTS))
+        for name in ("complete.json", "calls.jsonl", "observations.json"):
+            self.assertFalse((selected.output / name).exists())
+        for name in ("equal", "equal_results", "response_tokens", "comparison_seconds"):
+            self.assertNotIn(name, report)
+        self.assertEqual(report["reference_log_sha256"], hashlib.sha256(selected.reference_log.read_bytes()).hexdigest())
+        count = 0
+        for owner in report["owners"]:
+            prefix = selected.output / f"owner-{owner['owner']:04d}"
+            status = json.loads(prefix.with_suffix(".status.json").read_text())
+            self.assertEqual(owner["process"], status)
+            result = direct.core.invoke(["inspect", "replay-output", "--mode", "resident", "--owner", owner["owner"],
+                                         "--log", prefix.with_suffix(".stdout.jsonl"), "--exit-code", status["exit_code"]],
+                                        executable=selected.core, stdin=json.dumps(owner["calls"]))
+            self.assertTrue(all(row["result_equal"] for row in result["calls"]))
+            count += len(result["calls"])
+        self.assertEqual(count, 6)
+        values = {"core": selected.core, "python": selected.python, "worker": selected.worker,
+                  "cache": selected.cache, "adapter": selected.adapter, "policy": selected.policy,
+                  "tasks": selected.tasks, "reference-log": selected.reference_log, "reference-exit-code": 0,
+                  "mode": "resident", "worker-config": selected.worker_config, "devices": "0,1",
+                  "output": self.root / "execution-cli"}
+        entry = Path(__file__).resolve().parents[3] / "entries" / "directexecute.py"
+        command = [sys.executable, "-B", str(entry),
+                   *[str(item) for name, value in values.items() for item in ("--" + name, value)]]
+        (self.root / "execution-cli.command.json").write_text(json.dumps(command) + "\n")
+        result = subprocess.run(command, capture_output=True, text=True, timeout=20)
+        (self.root / "execution-cli.stdout").write_text(result.stdout)
+        (self.root / "execution-cli.stderr").write_text(result.stderr)
+        (self.root / "execution-cli.status.json").write_text(json.dumps({"exit_code": result.returncode}) + "\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), json.loads((values["output"] / "execution.json").read_text()))
+        self.assertFalse((values["output"] / "complete.json").exists())
+
+    def test_execution_only_requires_resident_and_retains_failed_child_statuses(self):
+        options = self.paths[1][0]
+        for mode in ("process", "session", "batch"):
+            selected = replace(options, mode=mode, output=self.root / ("execution-invalid-" + mode))
+            with self.assertRaisesRegex(ValueError, "resident"):
+                direct.resident_execute(selected, self.services)
+            self.assertFalse(selected.output.exists())
+        configuration = options.worker_config.read_bytes()
+        try:
+            options.worker_config.write_text(json.dumps({"fault": "late_exit"}))
+            selected = replace(options, output=self.root / "execution-failed")
+            with self.assertRaises(subprocess.CalledProcessError):
+                direct.resident_execute(selected, self.services)
+            self.assertFalse((selected.output / "execution.json").exists())
+            self.assertFalse((selected.output / "complete.json").exists())
+            statuses = [json.loads(path.read_text()) for path in selected.output.glob("*.status.json")]
+            self.assertEqual([row["exit_code"] for row in statuses], [fixture.FAILURE_STATUS])
+            self.check_reaped(statuses)
+        finally:
+            options.worker_config.write_bytes(configuration)
 
     def changed_output(self, fault):
         options = self.paths[1][0]

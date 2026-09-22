@@ -94,7 +94,7 @@ def admit(options, services, settings):
     return {name: observed}
 
 
-def run(options, services):
+def execution(options, services):
     validate_mode(options)
     settings = core.decode(options.settings.read_text())
     planned = services.invoke(["replay", "native-plan", *flags({**settings, "tasks": options.tasks})], executable=options.core)
@@ -123,6 +123,20 @@ def run(options, services):
                 product_policy.check_loaded(selected, backend)
                 generate(backend, planned["workload"], options.output / "trained.jsonl")
         seconds = services.clock() - started
+    return settings, seconds
+
+
+def execute(options, services):
+    settings, seconds = execution(options, services)
+    result = {"backend": options.backend, "mode": options.mode, "execution_seconds": seconds,
+              "settings": settings,
+              "scope": "native generation through backend close; retained initial/trained logs require separate offline evaluation; no quality or numerical acceptance"}
+    write(options.output / "execution.json", result)
+    return result
+
+
+def run(options, services):
+    settings, seconds = execution(options, services)
     observed = admit(options, services, settings)
     result = {"backend": options.backend, "mode": options.mode, "execution_seconds": seconds, **observed,
               "scope": "independent native generation with no learner update; execution includes backend load through close; evaluation costs excluded from training-cycle timing; not numerical qualification or statistical generalization"}
@@ -144,8 +158,10 @@ def arguments():
     return Options(**vars(parser.parse_args()))
 
 
-def main():
-    print(json.dumps(run(arguments(), Services(backend=native_backend, invoke=core.invoke, clock=time.perf_counter)), allow_nan=False))
+def main(*, execution_only=False):
+    selected = execute if execution_only else run
+    print(json.dumps(selected(arguments(), Services(backend=native_backend, invoke=core.invoke,
+                                                    clock=time.perf_counter)), allow_nan=False))
 
 
 if __name__ == "__main__":

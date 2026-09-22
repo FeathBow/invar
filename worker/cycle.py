@@ -58,7 +58,7 @@ def declaration(path):
     return value
 
 
-def run(options, services):
+def execution(options, services):
     trace = declaration(options.trace)
     reference = ["--initial", options.initial, *flags(trace)]
     planned = core.invoke(["replay", "plan", *reference], executable=options.core)
@@ -75,11 +75,24 @@ def run(options, services):
     started = services.clock()
     measured = cycle_process.execute(options, services, planned=planned, tasks=trace["tasks"],
                                       placements=placements, flags=flags)
+    return {"mode": planned["mode"], **measured}, reference, started
+
+
+def execute(options, services):
+    measured, _, started = execution(options, services)
+    report = {**measured, "wall_seconds": services.clock() - started,
+              "scope": "direct numerical cycle execution with actual semantic input preparation, original physical lifetimes, durable publication and own-successor consumption; offline output comparison has not run"}
+    write(options.output / "execution.json", report)
+    return report
+
+
+def run(options, services):
+    measured, reference, started = execution(options, services)
     checking = services.clock()
     observed = core.invoke(["replay", "inspect", *reference, *flags({"replay-output": options.output / "checkpoints",
                            "replay-log": options.output / "training.jsonl", "replay-exit-code": 0})], executable=options.core)
     write(options.output / "observations.json", observed)
-    report = {"mode": planned["mode"], **measured, "equal": observed["equal"],
+    report = {**measured, "equal": observed["equal"],
               "comparison_seconds": services.clock() - checking, "wall_seconds": services.clock() - started,
               "scope": "direct complete numerical cycles with actual semantic input preparation, original physical lifetimes, durable publication and own-successor consumption; offline output comparison is reported separately; no live Invar execution or qualification authority"}
     write(options.output / "complete.json", report)
@@ -99,7 +112,12 @@ def arguments():
     return Options(**vars(parser.parse_args()))
 
 
-if __name__ == "__main__":
+def main(*, execution_only=False):
     services = direct.Services(run=subprocess.run, spawn=subprocess.Popen, clock=time.perf_counter,
                                environment=dict(os.environ))
-    print(json.dumps(run(arguments(), services), allow_nan=False))
+    selected = execute if execution_only else run
+    print(json.dumps(selected(arguments(), services), allow_nan=False))
+
+
+if __name__ == "__main__":
+    main()
