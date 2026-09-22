@@ -2,7 +2,6 @@ import unittest
 
 try:
     import torch  # noqa: F401
-    import vllm  # noqa: F401
 except ImportError as missing:
     raise unittest.SkipTest(f"{missing.name} is not installed") from missing
 
