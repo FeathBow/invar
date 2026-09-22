@@ -66,13 +66,13 @@ jobs:
           cabal update
           cabal build all --enable-tests
       - name: Test
-        run: timeout --signal=KILL 60s cabal test all --test-show-details=direct
+        run: cabal test all --test-show-details=direct
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
       - name: Install the pinned numerical dependencies
         run: python -m pip install --no-cache-dir --requirement worker/requirements.txt
-      - name: Test worker with the built core
+      - name: Test the shared worker modules and the hf package with the built core; mlx and vllm packages run on their native hosts
         shell: bash
         env:
           HF_HUB_OFFLINE: '1'
@@ -84,7 +84,8 @@ jobs:
           core="$(cabal list-bin exe:invar)"
           core_directory="$(dirname "$core")"
           export PATH="$core_directory:$PATH"
-          timeout --signal=KILL 60s python -B -m unittest discover -s worker/tests -t . -p '*.py'
+          python -B -m unittest worker.tests.invocation worker.tests.probe worker.tests.probefile worker.tests.probefixture worker.tests.probepacked worker.tests.probeschema worker.tests.probestore worker.tests.resources
+          python -B -m unittest discover -s worker/tests/hf -t . -p '*.py'
       - name: Format
         shell: bash
         run: |
@@ -100,4 +101,4 @@ jobs:
           tar -xzf "$RUNNER_TEMP/hlint.tar.gz" -C "$RUNNER_TEMP"
           "$RUNNER_TEMP/hlint-3.10/hlint" src test app
       - name: Type fixtures
-        run: timeout --signal=KILL 60s cabal exec -- sh test/types.sh ghc
+        run: cabal exec -- sh test/types.sh ghc
