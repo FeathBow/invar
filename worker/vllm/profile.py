@@ -1,5 +1,6 @@
 from dataclasses import asdict, dataclass
 import hashlib
+from importlib import import_module
 import inspect
 import json
 from pathlib import Path
@@ -35,16 +36,20 @@ MODULE_FIELDS = ("eps", "epsilon", "variance_epsilon", "hidden_size", "intermedi
                  "sliding_window", "is_causal", "rotary_dim", "max_position_embeddings", "base",
                  "mrope_section", "mrope_interleaved", "activation", "use_bias", "input_size", "output_size",
                  "output_sizes", "output_partition_sizes", "output_slices", "tp_rank", "tp_size")
-METHOD_FIELDS = ("forward", "_forward_method", "forward_qkv", "forward_core", "apply")
+METHOD_FIELDS = ("forward", "_forward_method", "forward_qkv", "forward_core", "apply", "sample")
 SOURCE_MODULES = ("worker.vllm.identity", "worker.vllm.profile", "worker.vllm.quantization", "worker.vllm.lora",
                   "worker.vllm.rollout", "worker.vllm.worker", "worker.vllm.mapping", "worker.vllm.execution",
-                  "worker.vllm.state", "worker.vllm.gdn", "worker.vllm.recurrence",
+                  "worker.vllm.state", "worker.vllm.context", "worker.vllm.prescribed", "worker.vllm.probes", "worker.vllm.distribution",
+                  "worker.distribution", "worker.probepacked", "worker.scalar", "worker.probeschema", "worker.vllm.resources",
+                  "torch.overrides", "worker.vllm.gdn", "worker.vllm.recurrence",
+                  "vllm.v1.sample.ops.topk_topp_sampler", "vllm.model_executor.layers.batch_invariant",
                   "vllm.v1.engine.core_client", "vllm.v1.engine.core", "vllm.v1.engine.llm_engine",
                   "vllm.v1.core.sched.scheduler", "vllm.v1.core.kv_cache_manager",
                   "vllm.lora.model_manager", "vllm.lora.worker_manager",
                   "vllm.config.lora", "vllm.lora.ops.triton_ops.kernel_utils",
                   "vllm.lora.ops.triton_ops.lora_shrink_op", "vllm.lora.ops.triton_ops.lora_expand_op")
 ENTRY_FILES = (
+    "probeoutput.py",
     "vllm/configuration.py",
     "vllm/runtime.py",
     "vllm/entry.py",
@@ -139,8 +144,12 @@ def numerical():
             "allow_fp16_reduced_precision_reduction": torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction}
 
 
+def declared_sources(names):
+    return {name: import_module(name) for name in names}
+
+
 def description(runner, native):
-    sources = {name: sys.modules[name] for name in SOURCE_MODULES}
+    sources = declared_sources(SOURCE_MODULES)
     result = {"format": "invar-native-assembly-v1", "configuration": configuration(runner),
               "numerical": numerical(), "modules": modules(native.model, sources),
               "quantization": quantization(native.model),

@@ -30,21 +30,29 @@ data Report = Report String V.Binding Result.Result Object
 admit :: Infer.Plan -> V.Binding -> ByteString -> Either String Report
 admit planned bound encoded = do
     unless ("\n" `Bytes.isSuffixOf` encoded) (Left "Incomplete final inference observation line")
-    records <- traverse record (Bytes.lines encoded)
-    (loaded, consumed, output, rawOutput) <- trace records
-    check planned bound (encoded, encoded) (loaded, consumed, output, rawOutput)
-  where
-    record bytes = (,) bytes <$> (Json.decode bytes >>= parseEither (withObject "inference observation" pure))
+    records <- Framing.decode encoded
+    case break Framing.grouped records of
+        (_, []) -> do
+            observed <- trace [(Framing.raw frame, Framing.fields frame) | frame <- records]
+            check planned bound (encoded, encoded) observed
+        (prefix, execution@(consumed : _)) -> do
+            _ <- Framing.readiness (prefix ++ [consumed])
+            (group, remaining) <- Framing.takeGroup execution
+            unless (null remaining) (Left "Unexpected records after the finite batch observation")
+            admitMember planned bound (encoded, group)
 
 admitGroup :: Infer.Plan -> V.Binding -> Framing.Group -> Either String Report
-admitGroup planned bound group = do
+admitGroup planned bound group = admitMember planned bound (Framing.source group, group)
+
+admitMember :: Infer.Plan -> V.Binding -> (ByteString, Framing.Group) -> Either String Report
+admitMember planned bound (source, group) = do
     let matching = filter ((== Just (Wire.bindingValue bound)) . Fields.lookup "binding" . Framing.fields . Framing.consumed) (Framing.members group)
     case matching of
         [member] -> do
             let loaded = Framing.fields (Framing.loaded member)
                 consumed = Framing.fields (Framing.consumed member)
                 output = Framing.result member
-            check planned bound (Framing.source group, Framing.memberBytes member) (loaded, consumed, Framing.fields output, Framing.raw output)
+            check planned bound (source, Framing.memberBytes member) (loaded, consumed, Framing.fields output, Framing.raw output)
         _ -> Left "Expected one declared member in the finite batch observation"
 
 check :: Infer.Plan -> V.Binding -> (ByteString, ByteString) -> (Object, Object, Object, ByteString) -> Either String Report
@@ -124,4 +132,22 @@ policyDescription (Report _ _ observed loaded) = do
     Policy.describe source (Infer.artifact requested, Infer.tokenizer requested, Infer.base requested, Infer.assembly requested)
 
 describe :: Report -> Value
-describe report@(Report _ _ observed loaded) = object ["log_sha256" .= logDigest report, "binding" .= Wire.bindingValue (binding report), "tokens" .= Result.tokens observed, "behavior_bits" .= Result.behaviorBits observed, "prompt_length" .= Result.promptLength observed, "text" .= Result.response observed, "truncated" .= Result.truncated observed, "model" .= Fields.lookup "model" loaded, "revision" .= Fields.lookup "revision" loaded]
+describe report@(Report _ _ observed loaded) =
+    object
+        [ "log_sha256" .= logDigest report
+        , "binding" .= Wire.bindingValue (binding report)
+        , "tokens" .= Result.tokens observed
+        , "behavior_bits" .= Result.behaviorBits observed
+        , "prompt_length" .= Result.promptLength observed
+        , "text" .= Result.response observed
+        , "truncated" .= Result.truncated observed
+        , "model" .= Fields.lookup "model" loaded
+        , "revision" .= Fields.lookup "revision" loaded
+        , "adapter" .= Infer.artifact requested
+        , "tokenizer" .= Infer.tokenizer requested
+        , "base" .= Infer.base requested
+        , "assembly" .= Infer.assembly requested
+        , "request" .= object ["prompt" .= Infer.prompt requested, "tokens" .= Infer.tokens requested, "temperature" .= Infer.temperature requested, "seed" .= Infer.seed requested]
+        ]
+  where
+    requested = Result.consumed observed

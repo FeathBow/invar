@@ -1,4 +1,4 @@
-module Invar.Json (decode, fields, identity, finite, floatingAt, floatingArrayAt) where
+module Invar.Json (decode, textField, fields, identity, finite, floatingAt, floatingArrayAt) where
 
 import Control.Monad (unless, when)
 import Data.Aeson (Object, Value, eitherDecodeStrict, parseJSON)
@@ -12,11 +12,23 @@ import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as Bytes
 import Data.Set (Set)
 import Data.Set qualified as Set
+import Data.Text (Text)
 
 decode :: ByteString -> Either String Value
 decode encoded = do
     _ <- value (bsToTokens encoded)
     eitherDecodeStrict encoded
+
+-- Validate the complete record before selecting a small protocol field. The
+-- token walk does not retain the unselected arrays as an Aeson value tree.
+textField :: Key -> ByteString -> Either String Text
+textField key encoded = do
+    remaining <- value (bsToTokens encoded)
+    unless (Bytes.null (space remaining)) (Left "Unexpected data after the JSON record")
+    selected <- select [key] encoded
+    case bsToTokens selected of
+        TkText result _ -> pure result
+        _ -> Left "Expected a text JSON field"
 
 fields :: [Key] -> Object -> Parser ()
 fields expected actual = unless (Set.fromList expected == Set.fromList (Fields.keys actual)) (fail "Unexpected or missing JSON fields")

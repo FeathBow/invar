@@ -10,6 +10,8 @@ import Data.Map.Strict qualified as Map
 import Data.Ratio (denominator, numerator)
 import Data.Set qualified as Set
 import Invar.Construct qualified as C
+import Invar.Infer.Schema (Inputs)
+import Invar.Infer.Schema qualified as Schema
 import Invar.Materialization qualified as Materialization
 import Invar.Policy.Description qualified as Policy
 import Invar.Spec.Artifact qualified as A
@@ -42,8 +44,6 @@ data Error
     | InvalidEmission String
     | InvocationError V.Error
     deriving (Eq, Show)
-
-type Inputs = C.Record '[ '("artifact", [Natural]), '("tokenizer", [Natural]), '("base", [Natural]), '("assembly", [Natural]), '("prompt", [Natural]), '("tokens", Natural), '("temperature", Rational)]
 
 prepare :: Request -> Either Error Plan
 prepare request = do
@@ -84,8 +84,8 @@ program :: Either C.BuildError A.Checked
 program = C.compile meaning [C.emit @"infer" @"categorical-inference/v1" @'[ 'C.Semantic "request", 'C.Semantic "policy", 'C.LogicalRandom "sample"] expression]
   where
     expression = C.record (C.field @"policy" (C.source @('C.Semantic "policy") @(C.Record '[ '("artifact", [Natural]), '("profile", [Natural])])) (C.field @"request" (C.source @('C.Semantic "request") @Inputs) (C.field @"seed" (C.numberSource @('C.LogicalRandom "sample")) C.emptyFields)))
-    inputs = P.RecordType (Map.fromList [("artifact", P.SequenceType P.TokenType), ("tokenizer", P.SequenceType P.TokenType), ("base", P.SequenceType P.TokenType), ("assembly", P.SequenceType P.TokenType), ("prompt", P.SequenceType P.TokenType), ("tokens", P.TokenType), ("temperature", P.NumberType)])
-    policy = P.RecordType (Map.fromList [("artifact", P.SequenceType P.TokenType), ("profile", P.SequenceType P.TokenType)])
+    inputs = Schema.inputs
+    policy = Schema.policy
     output = P.RecordType (Map.fromList [("policy", policy), ("request", inputs), ("seed", P.NumberType)])
     sources = Map.fromList [(P.Semantic "request", inputs), (P.Semantic "policy", policy), (P.LogicalRandom "sample", P.NumberType)]
     sink = P.Sink "categorical-inference/v1" output (Map.keysSet sources) Set.empty

@@ -1,8 +1,9 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Infer.Wire (request, binding, bindingValue, invocationValue, envelopeValue, batchValue) where
+module Invar.Infer.Wire (request, binding, bindingValue, invocationValue, envelopeValue, batchValue, batchFields) where
 
-import Data.Aeson (Object, Value, object, withObject, (.:), (.=))
+import Data.Aeson (Object, Value (..), object, withObject, (.:), (.=))
+import Data.Aeson.KeyMap qualified as Fields
 import Data.Aeson.Types (Parser)
 import Data.ByteString (ByteString)
 import Data.Text.Encoding (decodeUtf8)
@@ -34,8 +35,11 @@ envelopeValue :: (V.Binding, ByteString, ByteString) -> Value
 envelopeValue (bound, program, loadProgram) = object ["binding" .= bindingValue bound, "program" .= decodeUtf8 program, "load" .= invocationValue bound loadProgram]
 
 batchValue :: (V.Binding, ByteString, ByteString) -> I.Request -> Value
-batchValue (bound, program, loadProgram) requested =
-    object
+batchValue bound = Object . batchFields bound
+
+batchFields :: (V.Binding, ByteString, ByteString) -> I.Request -> Object
+batchFields (bound, program, loadProgram) requested =
+    Fields.fromList
         [ "binding" .= bindingValue bound
         , "program" .= decodeUtf8 program
         , "load" .= invocationValue bound loadProgram

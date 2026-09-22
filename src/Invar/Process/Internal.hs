@@ -2,10 +2,10 @@
 
 module Invar.Process.Internal (Launch (..), Exchange (..), Failure (..), Session (..), Pipes, withLaunch, send, line, response, reject, finish, stage) where
 
-import Data.Aeson (eitherDecodeStrict, (.:))
-import Data.Aeson.Types (parseEither)
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as Bytes
+import Data.Text qualified as Text
+import Invar.Json qualified as Json
 import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..))
 import System.IO (Handle, hClose, hFlush, hIsEOF)
@@ -102,4 +102,4 @@ finish session = do
         else reject session (Protocol "Output follows the final batch response")
 
 stage :: ByteString -> Either String String
-stage encoded = eitherDecodeStrict encoded >>= parseEither (.: "stage")
+stage encoded = Text.unpack <$> Json.textField "stage" encoded

@@ -2,9 +2,12 @@ from dataclasses import asdict
 from functools import partial
 from pathlib import Path
 
+import torch
+
 from worker.hf.artifact import read, read_checkpoint
 from worker.vllm.lora import Target, activate, verify
 from worker.vllm.rollout import LOGPROBS_MODE
+from worker.vllm.resources import Interval
 
 
 def manager(worker):
@@ -60,7 +63,7 @@ def identified(worker, *, receipt, adapter_id):
     return {"resident": resident, "model": asdict(model), "source": dict(policy[0].source), "profile": profile}
 
 
-def begin(worker, *, bindings):
+def begin(worker, *, bindings, paths=None, probes=None):
     from worker.vllm.state import Monitor, binding
     from worker.vllm.profile import observe
 
@@ -71,7 +74,8 @@ def begin(worker, *, bindings):
     policies = {key: value for key, value in worker._invar_lora_bindings.items() if key in selected}
     observed = getattr(worker, "_invar_observed", None)
     monitor = Monitor(worker.model_runner, native, bindings=tuple(binding(value) for value in bindings),
-                      verify=partial(consumed, worker),
+                      verify=partial(consumed, worker), paths=paths, probes=probes,
+                      probe_resources=None if probes is None else Interval(torch.cuda, device=worker.model_runner.device),
                       observe_model=partial(observe, worker.model_runner, native, policies=policies),
                       models=observed[1] if observed is not None and observed[0] == frozenset(policies) else None)
     monitor.attach()

@@ -10,7 +10,9 @@ from vllm.model_executor.layers.logits_processor import LogitsProcessor
 
 from worker.hf.rollout import Request
 from worker.hf.tensors import assert_equal
+from worker.vllm.context import response_history
 from worker.vllm.mapping import Selection, observe
+from worker.vllm.prescribed import Prescribed
 from worker.vllm.rollout import parameters
 
 SAMPLING_FIELDS = ("n", "temperature", "seed", "max_tokens", "min_tokens", "top_k", "top_p", "min_p",
@@ -41,19 +43,20 @@ def binding(value):
                        "selection": Selection(**value["selection"]), "prompt": tuple(value["prompt"])})
 
 
-def sampling(state, bound):
+def sampling(state, bound, *, response, asynchronous):
     expected = parameters(bound.request, eos=bound.eos)
     if any(getattr(state.sampling_params, name) != getattr(expected, name) for name in SAMPLING_FIELDS):
         raise ValueError("Native cached sampling parameters differ from the approved request")
     if tuple(state.prompt_token_ids or ()) != bound.prompt:
         raise ValueError("Native cached prompt differs from the approved request")
+    response_history(state.output_token_ids, response, asynchronous=asynchronous)
 
 
 def model_inputs(runner, step, *, bindings, tokens, arguments):
     expected_tokens, expected_positions, sampling_requests = [], [], []
     for row in step.rows:
         bound, state = bindings[row.request], runner.requests[row.request]
-        sampling(state, bound)
+        sampling(state, bound, response=tokens[row.request], asynchronous=runner.use_async_scheduling)
         known = (*bound.prompt, *tokens[row.request])
         start, end = state.num_computed_tokens, state.num_computed_tokens + row.tokens
         if not 0 <= start < end <= len(known):
@@ -110,17 +113,38 @@ def after_sampler(module, args, output, *, monitor):
     monitor.after_sampler(output)
 
 
+def approved_policies(bindings):
+    policies = {value.selection.adapter: value.receipt for value in bindings}
+    if any(policies[value.selection.adapter] != value.receipt for value in bindings):
+        raise ValueError("One native adapter ID cannot bind different approved packages")
+    return MappingProxyType(policies)
+
+
+def prescribed_paths(bindings, paths, probes):
+    if paths is None:
+        if probes is not None:
+            raise ValueError("Native mass probes require prescribed response paths")
+        return None
+    return Prescribed(bindings, paths, probes=probes)
+
+
+def probe_measurement(probes, resources):
+    if (probes is None) != (resources is None):
+        raise ValueError("Native mass probes and worker resource measurement must be declared together")
+    return resources
+
+
 class Monitor:
-    def __init__(self, runner, native, *, bindings, verify, observe_model, models=None):
+    def __init__(self, runner, native, *, bindings, verify, observe_model, models=None, paths=None, probes=None, probe_resources=None):
         self.runner, self.native, self.verify = runner, native, verify
         self.observe_model = observe_model
         self.bindings = MappingProxyType({value.internal: value for value in bindings})
         if not self.bindings or len(self.bindings) != len(bindings):
             raise ValueError("Native execution requires distinct owned request identities")
+        self.prescribed = prescribed_paths(self.bindings, paths, probes)
+        self.resources = probe_measurement(probes, probe_resources)
         self.selections = MappingProxyType({key: value.selection for key, value in self.bindings.items()})
-        self.policies = MappingProxyType({value.selection.adapter: value.receipt for value in bindings})
-        if any(self.policies[value.selection.adapter] != value.receipt for value in bindings):
-            raise ValueError("One native adapter ID cannot bind different approved packages")
+        self.policies = approved_policies(bindings)
         self.tokens = {key: [] for key in self.bindings}
         self.behavior = {key: [] for key in self.bindings}
         self.generators_seen = set()
@@ -147,10 +171,14 @@ class Monitor:
         if self.permitted:
             raise RuntimeError("Native execution permission was already consumed")
         self.verify_policies()
+        if self.resources is not None:
+            self.resources.start()
         self.permitted = True
 
     def attach(self):
         with ExitStack() as hooks:
+            if self.prescribed is not None:
+                self.prescribed.attach(self, hooks)
             processors = [module for module in self.native.model.modules() if isinstance(module, LogitsProcessor)]
             if len(processors) != 1:
                 raise ValueError("Native model must expose one actual logits row consumer")
@@ -224,8 +252,11 @@ class Monitor:
         token_ids, logprobs = output.sampled_token_ids, output.logprobs_tensors.logprobs
         if token_ids.shape != (count, 1) or logprobs.shape != (count, 1) or logprobs.dtype != torch.float32:
             raise ValueError("Native sampler observations have a different row or probability representation")
-        if not logprobs.isfinite().all() or (logprobs > 0).any():
+        invalid = not logprobs.isfinite().all() if self.prescribed is None else logprobs.isnan().any()
+        if invalid or (logprobs > 0).any():
             raise ValueError("Native sampler returned invalid behavior probabilities")
+        if self.prescribed is not None:
+            self.prescribed.observe(token_ids, logprobs)
         for row, token, probability in zip(self.pending.rows, token_ids.flatten().tolist(), logprobs.flatten().tolist(), strict=True):
             if row.request in self.sampling_requests:
                 self.tokens[row.request].append(token)
@@ -235,12 +266,22 @@ class Monitor:
         self.model_finished = False
         self.logits_finished = False
 
+    def completed(self):
+        if self.pending is not None or not all(self.tokens.values()):
+            raise ValueError("Native execution did not complete all owned sampling observations")
+        if self.prescribed is not None:
+            self.prescribed.completed(self.tokens)
+        resources = self.resources.finish() if self.resources is not None else None
+        self.verify_policies()
+        self.verify_model()
+        return resources
+
     def close(self, *, completed):
         self.hooks.close()
-        if completed:
-            if self.pending is not None or not all(self.tokens.values()):
-                raise ValueError("Native execution did not complete all owned sampling observations")
-            self.verify_policies()
-            self.verify_model()
-        return {"requests": {key: {"tokens": self.tokens[key], "behavior": self.behavior[key]}
-                              for key in self.bindings}, "steps": self.steps}
+        resources = self.completed() if completed else None
+        result = {"requests": {key: {"tokens": self.tokens[key], "behavior": self.behavior[key],
+                                    **(self.prescribed.accounting(key, completed=completed) if self.prescribed is not None else {})}
+                               for key in self.bindings}, "steps": self.steps}
+        if resources is not None:
+            result["probe_resources"] = resources
+        return result

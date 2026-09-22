@@ -57,12 +57,21 @@ def bindings(engine, requests, *, prefixes, loras, receipts, eos):
         raise
 
 
+def monitor_arguments(queued, *, paths, probes):
+    result = {"bindings": [asdict(value) for value in queued]}
+    if paths is not None:
+        result["paths"] = paths
+    if probes is not None:
+        result["probes"] = probes
+    return result
+
+
 @contextmanager
-def owned(engine, queued):
+def owned(engine, queued, *, paths=None, probes=None):
     started = False
     completed = False
     try:
-        workers = engine.collective_rpc(begin, kwargs={"bindings": [asdict(value) for value in queued]})
+        workers = engine.collective_rpc(begin, kwargs=monitor_arguments(queued, paths=paths, probes=probes))
         started = True
         observations = []
         prepared = Prepared(bindings=queued,

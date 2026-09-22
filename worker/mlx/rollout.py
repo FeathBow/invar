@@ -28,28 +28,40 @@ class Sampler:
         self.key = mx.random.key(request.seed)
         self.pending = deque()
 
+    def process_logits(self, tokens, logits):
+        return fp32_logits(tokens, logits)
+
     def __call__(self, logprobs):
         if logprobs.dtype != mx.float32 or logprobs.ndim != 2 or logprobs.shape[0] != 1:
             raise ValueError("The request sampler requires one FP32 native distribution")
         weights = mx.softmax(logprobs / self.temperature, axis=-1, precise=True)
         total = mx.sum(weights, axis=-1, keepdims=True)
         distribution = weights / total
-        self.key, draw = mx.random.split(self.key)
-        chosen = mx.random.categorical(mx.log(distribution), axis=-1, key=draw)
+        chosen = self.select(distribution)
         selected = mx.log(mx.take_along_axis(distribution, chosen[:, None], axis=-1)).reshape(())
         finite = mx.all(mx.isfinite(weights))
         mx.async_eval(chosen, selected, finite, total)
         self.pending.append((chosen, selected, finite, total))
         return chosen
 
+    def select(self, distribution):
+        self.key, draw = mx.random.split(self.key)
+        return mx.random.categorical(mx.log(distribution), axis=-1, key=draw)
+
     def consume(self, token):
-        if not self.pending:
-            raise RuntimeError("Native generator returned an unobserved sample")
-        chosen, selected, finite, total = self.pending.popleft()
-        mx.eval(chosen, selected, finite, total)
-        if chosen.item() != token or not finite.item() or total.item() <= 0 or not math.isfinite(selected.item()):
-            raise RuntimeError("Native token differs from its actual sampling distribution")
-        return selected
+        return consumed(self.pending, token, zero_support=False)
+
+
+def consumed(pending, token, *, zero_support):
+    if not pending:
+        raise RuntimeError("Native generator returned an unobserved sample")
+    chosen, selected, finite, total = pending.popleft()
+    mx.eval(chosen, selected, finite, total)
+    probability = selected.item()
+    valid = math.isfinite(probability) or (zero_support and probability == -math.inf)
+    if chosen.item() != token or not finite.item() or total.item() <= 0 or not valid:
+        raise RuntimeError("Native token differs from its actual sampling distribution")
+    return selected
 
 
 def fp32_logits(_tokens, logits):
@@ -57,16 +69,22 @@ def fp32_logits(_tokens, logits):
 
 
 def generate(model, tokenizer, requests, *, sampling):
+    return execute(model, tokenizer, requests, sampling=sampling, samplers=[Sampler(request) for request in requests])
+
+
+def execute(model, tokenizer, requests, *, sampling, samplers):
     if not requests:
         raise ValueError("Native generation requires a nonempty request group")
+    if len(samplers) != len(requests):
+        raise ValueError("Native decoding requires one sampler per request")
     model.eval()
     prefixes = [prompt(tokenizer, request.prompt)[0].tolist() for request in requests]
-    samplers = [Sampler(request) for request in requests]
     engine = BatchGenerator(model, completion_batch_size=sampling.batch_size,
                             prefill_batch_size=sampling.batch_size, prefill_step_size=sampling.prefill_step,
-                            stop_tokens=[[tokenizer.eos_token_id]], logits_processors=[fp32_logits])
+                            stop_tokens=[[tokenizer.eos_token_id]])
     try:
-        uids = engine.insert(prefixes, max_tokens=[request.limit for request in requests], samplers=samplers)
+        uids = engine.insert(prefixes, max_tokens=[request.limit for request in requests], samplers=samplers,
+                             logits_processors=[[sampler.process_logits] for sampler in samplers])
         return collect(engine, uids, (requests, prefixes, samplers), tokenizer=tokenizer)
     finally:
         engine.close()

@@ -44,6 +44,8 @@ import Results (results)
 import Rewards (rewards)
 import Rollouts (rollouts)
 import Schedules (schedules)
+import ScoreProbes (scoreProbes)
+import Scores (scores)
 import Sessions (sessions)
 import Store (store)
 import System.Exit (exitFailure)
@@ -53,5 +55,5 @@ import Workloads (workloads)
 
 main :: IO ()
 main = do
-    outcomes <- traverse checkSequential [fixtures, properties, arguments, values, dependencies, evaluation, artifacts, construction, collections, records, literals, invocations, evidence, loads, store, checkpoints, inference, results, calls, batchCalls, groupedCalls, batchedProtocol, residentCalls, residentDrivers, residentObservations, residentMeasurements, residentReplays, rewards, cohorts, rollouts, sessions, learning, advantages, objectives, updates, learnerCalls, loops, schedules, policies, probabilities, workloads, reports, quality, observations, inferenceObservations, measurements, batchedObservations]
+    outcomes <- traverse checkSequential [fixtures, properties, arguments, values, dependencies, evaluation, artifacts, construction, collections, records, literals, invocations, evidence, loads, store, checkpoints, inference, results, calls, batchCalls, groupedCalls, batchedProtocol, residentCalls, residentDrivers, residentObservations, residentMeasurements, residentReplays, rewards, cohorts, rollouts, sessions, learning, advantages, objectives, updates, learnerCalls, loops, schedules, policies, probabilities, workloads, reports, quality, observations, inferenceObservations, scores, scoreProbes, measurements, batchedObservations]
     unless (and outcomes) exitFailure

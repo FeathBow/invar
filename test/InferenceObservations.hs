@@ -1,25 +1,31 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module InferenceObservations (inferenceObservations) where
+module InferenceObservations (inferenceObservations, fixture, bound) where
 
+import BatchCalls qualified as Batch
 import Calls (change, field, request, setup, wire)
 import Control.Monad (forM_)
-import Data.Aeson (Value (..), object, toJSON, (.=))
+import Data.Aeson (Value (..), eitherDecodeStrict, object, toJSON, (.=))
 import Data.Aeson.Key (Key)
 import Data.Aeson.KeyMap qualified as Fields
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as Bytes
 import Data.Text qualified as Text
+import Data.Text.Encoding (decodeUtf8)
 import Data.Word (Word32)
 import Hedgehog
+import Invar.Artifact qualified as Artifact
 import Invar.Infer qualified as Infer
 import Invar.Infer.Observation qualified as Observation
 import Invar.Infer.Result qualified as Result
+import Invar.Score qualified as Score
 import Invar.Spec.Invocation qualified as V
+import Store (workspace)
+import System.FilePath ((</>))
 import Workloads (replace)
 
 inferenceObservations :: Group
-inferenceObservations = Group "Complete inference observations" [("complete observations retain bound results and exact source identity", once matching), ("repeated missing reordered and trailing records fail", once complete), ("loads programs bindings and model images must correspond", once correspondence), ("strict result field and raw JSON schemas apply", once malformed), ("behavior zero signs retain actual floating literals", once signedZero)]
+inferenceObservations = Group "Complete inference observations" [("complete observations retain bound results and exact source identity", once matching), ("repeated missing reordered and trailing records fail", once complete), ("loads programs bindings and model images must correspond", once correspondence), ("strict result field and raw JSON schemas apply", once malformed), ("behavior zero signs retain actual floating literals", once signedZero), ("batch members retain the complete source through numerical and score inputs", once batchMatching), ("complete batch sources require loading and one complete framed execution", once batchBoundaries), ("batch member selection rejects absent reused and mismatched peer bindings", once batchPeers)]
   where
     once = withTests 1 . property
 
@@ -44,6 +50,9 @@ matching = do
     original <- evalEither (observe (wire events))
     Result.response (Observation.result original) === "#### 12"
     Observation.binding original === bound
+    field "adapter" (Observation.describe original) === toJSON (Infer.artifact request)
+    field "tokenizer" (Observation.describe original) === toJSON (Infer.tokenizer request)
+    field "request" (Observation.describe original) === object ["prompt" .= Infer.prompt request, "tokens" .= Infer.tokens request, "temperature" .= Infer.temperature request, "seed" .= Infer.seed request]
     changed <- evalEither (observe (wire (object ["stage" .= String "load"] : events)))
     assert (Observation.logDigest original /= Observation.logDigest changed)
     Observation.result original === Observation.result changed
@@ -91,6 +100,81 @@ signedZero = do
         actual <- evalEither (observe (spelling text word))
         Result.behaviorBits (Observation.result actual) === [word, quarterWord]
     forM_ [("[0.0,-0.25]", negativeWord), ("[-0.0,-0.25]", 0), ("[-0,-0.25]", negativeWord)] $ \(text, word) -> reject (spelling text word)
+
+batchFixture :: PropertyT IO ([Value], [Value])
+batchFixture = do
+    original <- fixture
+    planned <- evalEither (Infer.prepare request)
+    (_, peer) <- Batch.prepared planned original 23 Nothing
+    pure (original, alter 3 (change "text" (String "peer result")) peer)
+
+batchFrames :: [[Value]] -> [Value]
+batchFrames members =
+    [ object ["stage" .= String "load", "cpu_seconds" .= Number 1]
+    , frame "consumed" (map (wire . take 2) members)
+    , object ["stage" .= String "inference", "cpu_seconds" .= Number 2]
+    , frame "result" (map (wire . pure . last) members)
+    ]
+  where
+    frame stage values = object ["stage" .= (stage :: Text.Text), "format" .= String "invar-inference-batch-v1", "calls" .= map decodeUtf8 values]
+
+batchMatching :: PropertyT IO ()
+batchMatching = do
+    (original, peer) <- batchFixture
+    planned <- evalEither (Infer.prepare request)
+    root <- workspace
+    let events = batchFrames [original, peer]
+        encoded = wire events
+        peerBound = V.Binding (V.CallId 23) (V.AttemptId 23) (V.Instance 23)
+        source = root </> "complete-batch.jsonl"
+    evalIO (Bytes.writeFile source encoded)
+    digest <- evalIO (Artifact.identity "complete batch fixture" source)
+    forM_ [(bound, original), (peerBound, peer)] $ \(selected, standalone) -> do
+        observed <- evalEither (Observation.admit planned selected encoded)
+        expected <- evalEither (Observation.admit planned selected (wire standalone))
+        Observation.binding observed === selected
+        Observation.result observed === Observation.result expected
+        Observation.logDigest observed === digest
+        changed <- evalEither (Observation.admit planned selected (wire (alter 0 (change "cpu_seconds" (Number 3)) events)))
+        Observation.result changed === Observation.result observed
+        assert (Observation.logDigest changed /= Observation.logDigest observed)
+        scoring <- evalEither (Score.prepare 0 observed planned)
+        inspection <- evalEither (eitherDecodeStrict (Score.sourceInspection scoring))
+        inspection === Observation.describe observed
+
+batchBoundaries :: PropertyT IO ()
+batchBoundaries = do
+    (original, peer) <- batchFixture
+    let events = batchFrames [original, peer]
+    forM_ [[], drop 1 events, take 3 events, reverse events, events ++ events, events ++ take 1 events] (reject . wire)
+    forM_ [0 .. length events - 1] $ \index -> do
+        reject (wire (take index events ++ drop (index + 1) events))
+        reject (wire (take index events ++ [events !! index] ++ drop index events))
+        reject (wire (alter index (change "phase" (String "other")) events))
+    forM_ [1, 3] $ \index -> do
+        reject (wire (alter index (change "format" (String "unknown")) events))
+        reject (wire (alter index (omit "format") events))
+    forM_ [0, 2] $ \index -> reject (wire (alter index (change "cpu_seconds" (Number (-1))) events))
+    reject (Bytes.init (wire events))
+
+batchPeers :: PropertyT IO ()
+batchPeers = do
+    (original, peer) <- batchFixture
+    planned <- evalEither (Infer.prepare request)
+    let events = batchFrames [original, peer]
+        absent = V.Binding (V.CallId 99) (V.AttemptId 99) (V.Instance 99)
+    case Observation.admit planned absent (wire events) of
+        Left _ -> success
+        Right _ -> failure
+    reject (wire (batchFrames [original, original]))
+    forM_ [0, 1, 3] $ \index ->
+        forM_ ["call", "attempt", "instance"] $ \axis -> do
+            let wrong = alter index (\value -> change "binding" (change axis (Number 99) (field "binding" value)) value) peer
+            reject (wire (batchFrames [original, wrong]))
+    let reversed = last (batchFrames [peer, original])
+        missing = last (batchFrames [original])
+    reject (wire (take 3 events ++ [reversed]))
+    reject (wire (take 3 events ++ [missing]))
 
 alter :: Int -> (value -> value) -> [value] -> [value]
 alter selected changeValue = zipWith (\index value -> if index == selected then changeValue value else value) [0 ..]

@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 import hashlib
+from itertools import chain
 import json
 
 from worker.cohort import fields
@@ -60,8 +61,15 @@ class Transcript:
 
     def emit(self, stage, values):
         raw = encoded({"stage": stage, **values})
-        self.digest.update(raw.encode("utf-8"))
-        self.output.write(raw)
+        self._write((raw,))
+
+    def emit_stream(self, stage, values, *, encode):
+        self._write(chain(encode({"stage": stage, **values}), ("\n",)))
+
+    def _write(self, chunks):
+        for raw in chunks:
+            self.digest.update(raw.encode("utf-8"))
+            self.output.write(raw)
         self.output.flush()
 
     def acknowledge(self, stage, values, *, measurement):
