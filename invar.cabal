@@ -49,7 +49,7 @@ executable invar
   import: defaults
   hs-source-dirs: app
   main-is: Main.hs
-  other-modules: CycleReplay, Options, InferenceInput, PolicyInput, NativeCodec, HistoryInput, ReplayInput, UpdateReplayInput, Dataset, Training, Evaluation, Quality, Performance, Inspection, Comparison
+  other-modules: CycleReplay, Options, InferenceInput, InferenceBatch, PolicyInput, NativeCodec, HistoryInput, ReplayInput, UpdateReplayInput, Dataset, Training, Evaluation, Quality, Performance, Inspection, Comparison
   build-depends: invar, text >= 2.1 && < 2.2, aeson >= 2.3.1 && < 2.4, cryptohash-sha256 >= 0.11.102.1 && < 0.12, directory >= 1.3 && < 1.4, filepath >= 1.5 && < 1.6
 
 source-repository head
