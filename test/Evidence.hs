@@ -217,8 +217,6 @@ conjunctionPermutations = do
         after <- judge reordered
         sameConjunctionVerdict before after
 
--- All preserves multiplicity; certificate premises and methods have set meaning.
--- First diagnostics and counterexample witnesses may change with traversal order.
 sameConjunctionVerdict :: C.Verdict -> C.Verdict -> PropertyT IO ()
 sameConjunctionVerdict (C.Accept before) (C.Accept after) = do
     sameConjunction (C.conclusion before) (C.conclusion after)

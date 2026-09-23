@@ -120,7 +120,7 @@ residentGroups :: Generation -> [Resident.Group]
 residentGroups (Generation _ _ _ _ groups _) = groups
 
 describe :: Checked -> Value
-describe (Checked digest accepted closed) = object ["log_sha256" .= digest, "generations" .= map generation accepted, "closed" .= [Object fields | Frame _ fields <- closed], "scope" .= ("complete declared training log and supplied process exit; artifact contents and actual publication entries require separate admission" :: Text)]
+describe (Checked digest accepted closed) = object ["log_sha256" .= digest, "generations" .= map generation accepted, "closed" .= [Object fields | Frame _ fields <- closed]]
   where
     generation (Generation observed published finished diagnostic groups _) = object ["cohort" .= Cohort.describe observed, "publication" .= Object published, "cycle" .= Object finished, "diagnostics" .= [Object fields | Frame _ fields <- diagnostic], "resident_groups" .= map Resident.describe groups]
 

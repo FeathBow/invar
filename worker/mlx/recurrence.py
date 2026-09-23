@@ -23,8 +23,6 @@ def segmented(q, k, v, g, beta, state=None, mask=None):
 def bind(function, *, name, operation):
     if name not in function.__code__.co_names:
         raise ValueError("The pinned native call no longer exposes its declared recurrent operation")
-    # Give the pinned call a private operator namespace. Its original library
-    # globals and code remain untouched; only this owned model uses the binding.
     namespace = {**function.__globals__, name: operation}
     return FunctionType(function.__code__, namespace, function.__name__, function.__defaults__, function.__closure__)
 

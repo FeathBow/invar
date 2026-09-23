@@ -49,7 +49,6 @@ exchange resident@(Resident _ _ _ state) transaction = serialized resident $ do
 channel :: Resident scope -> Process.Session problem
 channel (Resident pipes emit _ _) = Process.Session pipes (const (pure (Right ""))) emit
 
--- Permission callbacks read this while exchange holds the physical owner gate.
 groups :: Resident scope -> IO Natural
 groups (Resident _ _ _ state) = do
     current <- readIORef state

@@ -1,7 +1,5 @@
 {-# LANGUAGE Safe #-}
 
--- Outward fixed-point logarithms of positive integer ratios. Callers validate
--- positivity at their observation/claim boundary before using logarithm.
 module Invar.Numerical.Logarithm (Fixed (..), scale, add, times, logarithm) where
 
 import Data.Bits (shiftL)
@@ -45,8 +43,6 @@ logarithm numerator denominator = reduce numerator denominator 0
 logTwo :: Fixed
 logTwo = series 1 3
 
--- ln((1+z)/(1-z)) = 2 sum z^(2j+1)/(2j+1), 0 <= z <= 1/3.
--- After N terms its tail is at most 9/(4*(2N+1)*3^(2N+1)).
 series :: Integer -> Integer -> Fixed
 series 0 _ = Fixed 0 0
 series numerator denominator = finish (go 0 z (Fixed 0 0))

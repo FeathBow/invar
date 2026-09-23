@@ -19,8 +19,6 @@ decode encoded = do
     _ <- value (bsToTokens encoded)
     eitherDecodeStrict encoded
 
--- Validate the complete record before selecting a small protocol field. The
--- token walk does not retain the unselected arrays as an Aeson value tree.
 textField :: Key -> ByteString -> Either String Text
 textField key encoded = do
     remaining <- value (bsToTokens encoded)
@@ -47,8 +45,6 @@ finite encoded = do
     when (isNaN decoded || isInfinite decoded) (fail "Expected a finite JSON number")
     pure decoded
 
--- Scientific JSON values erase the sign of literal zero. Observed floating
--- results retain it; integer spellings such as -0 still denote an integer zero.
 floatingAt :: [Key] -> ByteString -> Either String Double
 floatingAt path encoded = do
     _ <- decode encoded

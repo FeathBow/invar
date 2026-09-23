@@ -19,8 +19,6 @@ legacy values = case values of
             hoeffding (rangeNumerator % rangeDenominator) (alphaNumerator % alphaDenominator) (fromInteger count)
     _ -> Nothing
 
--- bernstein rangeNumerator rangeDenominator alphaNumerator alphaDenominator
--- followed by one numerator/denominator pair per independent sampling unit.
 bernstein :: [Integer] -> Maybe Rational
 bernstein (rangeNumerator : rangeDenominator : alphaNumerator : alphaDenominator : values) = do
     range <- ratio rangeNumerator rangeDenominator

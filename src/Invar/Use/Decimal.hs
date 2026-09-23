@@ -22,8 +22,6 @@ import Invar.Workload qualified as Workload
 data Error = EmptyWorkload | InconsistentQuestion String | RepeatedSeed String Integer | InvalidMethod M.Error
     deriving (Eq, Show)
 
--- This adapter owns the numeric answer format and prompt/seed grouping.
--- The generic observer and evidence rules have neither dependency.
 domain :: Workload.Document -> Either Error D.Domain
 domain document = do
     let tasks = [(D.Key cohort (Workload.name task), task) | (cohort, declaredCycle) <- zip [0 ..] (Workload.cycles document), task <- Workload.tasks declaredCycle]

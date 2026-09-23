@@ -79,6 +79,4 @@ def restore_random(keys):
     seed = (high << KEY_WORD_BITS) | low
     if not mlx_tensors.equal({"key": mx.random.key(seed)}, {"key": keys[0]}):
         raise ValueError("Native PRNG key differs from the declared two-word seed representation")
-    # MLX exposes a read-only global state view. Seed with the saved current
-    # key's inverse representation, rather than the original experiment seed.
     mx.random.seed(seed)

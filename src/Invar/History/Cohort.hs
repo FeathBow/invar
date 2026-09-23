@@ -95,4 +95,4 @@ rewards :: Checked -> [Rational]
 rewards (Checked _ _ values) = values
 
 describe :: Checked -> Value
-describe checked = object ["log_sha256" .= Report.logDigest (update checked), "inferences" .= map Observation.describe (inferences checked), "rewards" .= map (toJSON . (fromRational :: Rational -> Double)) (rewards checked), "update" .= Report.describe (update checked), "scope" .= ("selected declared cohort and observed numerical input; not a complete history or execution permission" :: String)]
+describe checked = object ["log_sha256" .= Report.logDigest (update checked), "inferences" .= map Observation.describe (inferences checked), "rewards" .= map (toJSON . (fromRational :: Rational -> Double)) (rewards checked), "update" .= Report.describe (update checked)]

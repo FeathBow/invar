@@ -49,7 +49,6 @@ number = P.Constant P.NumberType . Atom . Number
 
 fixture :: PropertyT IO U.BoundRun
 fixture = do
-    -- F.run constructs bound inference reports; its answer field is unused.
     let trial = F.Trial "input" "Unlabelled input" 7 "unused" "free output" "another free output" False
     before <- F.run 50 N.Reference trial
     after <- F.run 51 N.Candidate trial {F.truncated = True}

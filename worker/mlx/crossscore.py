@@ -40,8 +40,6 @@ class PathSampler(Sampler):
         return super().process_logits(tokens, logits)
 
     def select(self, distribution):
-        # Keep the native local RNG transition. The engine computes exactly one
-        # unused lookahead draw before it delivers the final prescribed token.
         position = self.position
         if self.capture is not None:
             self.capture.observe(position, distribution)
@@ -94,8 +92,6 @@ def score(model, tokenizer, requests, *, paths, sampling, probes=None, stores=No
         validate(request, path, tokenizer)
     samplers = [PathSampler(request, path, probe=probe, store=store)
                 for request, path, probe, store in zip(requests, paths, selected, retained, strict=True)]
-    # No cache argument is exposed: the same native engine as generation creates
-    # new caches for these model executions, never accepting reference caches.
     actual = execute(model, tokenizer, requests, sampling=sampling, samplers=samplers)
     result = []
     for trajectory, sampler, path in zip(actual, samplers, paths, strict=True):

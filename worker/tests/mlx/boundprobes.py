@@ -1,19 +1,15 @@
 import json
-import math
 import sys
 import unittest
 
-from worker import probe
 from worker.mlx import scoring
 from worker.tests.mlx.scoring import BoundScoreFixture, SCORE_ENTRY, flags
-from worker.tests.probe import RELATIVE_CHECK_TOLERANCE, decimal_kl
 
 
 class BoundProbeTests(BoundScoreFixture, unittest.TestCase):
     def test_actual_full_vectors_execute_and_reinspect_on_both_targets(self):
         steps = [0, len(self.source_result["behavior_bits"]) - 1]
         self.assertLess(*steps)
-        artifacts = []
         for index, (cache, checkpoint, identity) in enumerate(self.targets):
             selected = {**self.inputs(identity, call=50 + index), "probe-steps": json.dumps(steps)}
             result = self.command("probe-" + str(index), ["score", *flags({**selected, "python": sys.executable,
@@ -34,17 +30,8 @@ class BoundProbeTests(BoundScoreFixture, unittest.TestCase):
             self.assertEqual(admitted["observation"], observed)
             self.assertEqual(admitted["strength"], "finite_full_vocabulary_observation")
             self.assertEqual(admitted["use_admission"], "not_evaluated")
-            encoded = json.dumps(observed, allow_nan=False).encode()
-            artifacts.append(probe.read(encoded))
             if index == 0:
                 self.assertEqual(observed["log_probability_bits"], self.source_result["behavior_bits"])
-        compared = probe.compare(*artifacts)
-        for row, left, right in zip(compared["observations"], artifacts[0].vectors.snapshots,
-                                   artifacts[1].vectors.snapshots, strict=True):
-            for name, p, q in (("kl_reference_candidate", left, right), ("kl_candidate_reference", right, left)):
-                expected = decimal_kl(p.probability_bits, q.probability_bits)
-                self.assertTrue(math.isclose(row[name]["value"], float(expected),
-                                rel_tol=RELATIVE_CHECK_TOLERANCE, abs_tol=0), (name, row, expected))
 
     def test_steps_are_validated_before_execution(self):
         identity = self.targets[0][2]

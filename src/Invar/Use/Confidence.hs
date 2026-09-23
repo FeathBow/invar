@@ -14,7 +14,6 @@ hoeffding range alpha count
   where
     Fixed _ upper = logarithm (denominator alpha) (numerator alpha)
 
--- Maurer-Pontil (2009), Theorem 4, scaled to a declared population range.
 empiricalBernstein :: Rational -> Rational -> [Rational] -> Maybe Rational
 empiricalBernstein range alpha samples
     | range <= 0 || alpha <= 0 || alpha >= 1 = Nothing

@@ -59,8 +59,6 @@ sum64 values = do
     foldM_ accumulate [] operands
     finite "exact sum" (fromRational (sum (map toRational operands)))
   where
-    -- Partials expose the executor profile's intermediate overflow; the result
-    -- is rounded independently from the exact sum of the binary64 operands.
     accumulate partials operand = merge operand [] partials
     merge operand kept [] = Right (reverse kept ++ [operand | operand /= 0])
     merge operand kept (partial : remaining) = do

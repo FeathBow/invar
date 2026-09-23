@@ -16,11 +16,9 @@ import Invar.Infer qualified as Infer
 import Invar.Infer.Observation qualified as Observation
 import Invar.Workload qualified as Workload
 import Options qualified as O
-import ReplayInput qualified
 import System.Console.GetOpt (OptDescr, usageInfo)
 import System.Exit (die)
 import Training qualified
-import UpdateReplayInput qualified
 
 run :: [String] -> IO ()
 run ["--help"] = putStrLn usage
@@ -29,8 +27,6 @@ run ["cohort", "--help"] = putStrLn (usageInfo "Usage: invar inspect cohort OPTI
 run ["trace", "--help"] = putStrLn (usageInfo "Usage: invar inspect trace OPTIONS" HistoryInput.traceOptions)
 run ("history" : supplied) = HistoryInput.inspect supplied
 run ("initial" : supplied) = HistoryInput.inspectInitial supplied
-run (kind : supplied) | kind `elem` ["update-calls", "update-output"] = UpdateReplayInput.run kind supplied
-run (kind : supplied) | kind `elem` ["replay-calls", "replay-output", "measurements"] = ReplayInput.run kind supplied
 run ("trace" : supplied) = do
     fields <- either die pure (O.parse HistoryInput.traceOptions supplied)
     (declaredRun, declared, encoded) <- HistoryInput.trace fields
@@ -102,4 +98,4 @@ cohortOptions :: [OptDescr (String, String)]
 cohortOptions = Training.settingsOptions ++ O.descriptions [("tasks", "Frozen workload file"), ("cohort", "Zero-based declared cohort index"), ("call", "Selected update call"), ("log", "Training log snapshot")]
 
 usage :: String
-usage = usageInfo "Usage: invar inspect tasks --input FILE\n       invar inspect evaluation OPTIONS\n       invar inspect inference OPTIONS\n       invar inspect cohort OPTIONS\n       invar inspect trace OPTIONS\n       invar inspect history OPTIONS\n       invar inspect initial OPTIONS\n       invar inspect replay-calls OPTIONS\n       invar inspect replay-output OPTIONS\n       invar inspect measurements OPTIONS\n       invar inspect update-calls OPTIONS\n       invar inspect update-output OPTIONS\nValidate complete input snapshots and emit their checked observations." evaluationOptions
+usage = usageInfo "Usage: invar inspect tasks --input FILE\n       invar inspect evaluation OPTIONS\n       invar inspect inference OPTIONS\n       invar inspect cohort OPTIONS\n       invar inspect trace OPTIONS\n       invar inspect history OPTIONS\n       invar inspect initial OPTIONS\nValidate complete input snapshots and emit their checked observations." evaluationOptions

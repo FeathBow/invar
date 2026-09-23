@@ -41,7 +41,7 @@ compareInitial decoder left@(leftSettings, leftPath) right@(rightSettings, right
                 distinctReferences [originalValue, changedValue]
                 policies <- policyChanges (before, after)
                 learners <- Changes.compare session [toJSON ("learner" :: Text)] (originalValue, changedValue)
-                pure (object ["comparison" .= ("initial checkpoint values and tensor bytes" :: Text), "equal" .= (null policies && null learners), "policy_equal" .= null policies, "learner_equal" .= null learners, "left_policy" .= Learn.policy leftSettings, "right_policy" .= Learn.policy rightSettings, "left_learner" .= Learn.learner leftSettings, "right_learner" .= Learn.learner rightSettings, "left_rng" .= object (Checkpoint.rngSummary original), "right_rng" .= object (Checkpoint.rngSummary changed), "differences" .= (policies ++ learners), "scope" .= ("initial checkpoint contents; not execution, restoration or numerical qualification" :: Text)])
+                pure (object ["comparison" .= ("initial checkpoint values and tensor bytes" :: Text), "equal" .= (null policies && null learners), "policy_equal" .= null policies, "learner_equal" .= null learners, "left_policy" .= Learn.policy leftSettings, "right_policy" .= Learn.policy rightSettings, "left_learner" .= Learn.learner leftSettings, "right_learner" .= Learn.learner rightSettings, "left_rng" .= object (Checkpoint.rngSummary original), "right_rng" .= object (Checkpoint.rngSummary changed), "differences" .= (policies ++ learners)])
 
 initialCheckpoint :: (Codec.Session, Map Text [Integer]) -> (Learn.Settings, FilePath) -> IO Checkpoint.Checked
 initialCheckpoint (session, parameters) (settings, directory) = do
@@ -129,7 +129,7 @@ summary :: (Report.Report, Report.Report) -> ((String, String), (String, String)
 summary (first, second) ((firstPolicy, firstLearner), (secondPolicy, secondLearner)) (policies, learners) = do
     leftBinding <- binding first
     rightBinding <- binding second
-    pure (object ["comparison" .= ("checkpoint values and tensor bytes" :: Text), "equal" .= (null policies && null learners), "policy_equal" .= null policies, "learner_equal" .= null learners, "left_policy" .= firstPolicy, "right_policy" .= secondPolicy, "left_learner" .= firstLearner, "right_learner" .= secondLearner, "left_binding" .= leftBinding, "right_binding" .= rightBinding, "differences" .= (policies ++ learners), "scope" .= ("reported checkpoint contents; not execution, restoration or numerical qualification" :: Text)])
+    pure (object ["comparison" .= ("checkpoint values and tensor bytes" :: Text), "equal" .= (null policies && null learners), "policy_equal" .= null policies, "learner_equal" .= null learners, "left_policy" .= firstPolicy, "right_policy" .= secondPolicy, "left_learner" .= firstLearner, "right_learner" .= secondLearner, "left_binding" .= leftBinding, "right_binding" .= rightBinding, "differences" .= (policies ++ learners)])
   where
     binding report = either invalid pure (parseEither (withObject "invocation" (.: "binding")) (Report.invocation report)) :: IO Value
 

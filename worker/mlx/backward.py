@@ -17,8 +17,6 @@ def checkpoints(model, trajectory):
     masks = (create_attention_mask(hidden, None), create_ssm_mask(hidden, None))
     states = [hidden]
     for index, layer in enumerate(model.layers):
-        # The native compiler can round its VJP primal differently from a plain
-        # forward. Retain the actual differentiated primal at each boundary.
         hidden = transform(layer, hidden, mask=masks[int(layer.is_linear)], cotangent=mx.zeros_like(hidden),
                            input_gradient=index != 0)[0][0]
         mx.eval(hidden)

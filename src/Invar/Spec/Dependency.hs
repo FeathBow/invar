@@ -203,7 +203,6 @@ foldResult checked = do
         local = scope {bindings = Map.insert (accumulator checked) acc (bindings scope)}
     value <- infer local (body checked)
     expect (valueType seed) value
-    -- With union-only support rules, body(T) is C or C <> T, so this is the fixed point.
     pure seed {dependencies = base <> dependencies value}
 
 checkSchema :: Schema -> Either Error ()

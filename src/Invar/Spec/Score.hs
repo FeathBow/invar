@@ -17,8 +17,6 @@ data Source = Source
     }
     deriving (Eq, Show)
 
--- The numerator is the finite measured probability of the generating source.
--- A zero target probability therefore gives positive infinity, never NaN.
 data LogRatio = Finite Rational | PositiveInfinity
     deriving (Eq, Show)
 

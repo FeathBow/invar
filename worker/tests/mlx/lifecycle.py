@@ -88,7 +88,6 @@ class LifecycleTests(unittest.TestCase):
                    "rng-profile": "mlx", "initial-source": "initializer", "initial-log": log, "initial-exit-code": 0,
                    "initial-seed": 17, "profile-mode": "roles", "final-log": root / "final.jsonl", "final-exit-code": 0,
                    **{"final-" + key: value for key, value in final.items()}}
-        # Equal rewards and unchanged parameters form a legal history.
         complete = core.exchange(["inspect", "history", "--codec-mode", "stdio", *flags(history)],
                                  executable=CORE, handler=mlx_codec.Session().handle)
         self.assertEqual(len(complete["artifacts"]), 2)

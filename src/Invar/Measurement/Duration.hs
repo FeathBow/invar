@@ -72,7 +72,6 @@ nativeMemory :: Duration -> Maybe (Natural, Natural)
 nativeMemory (Metal _ active cached) = Just (active, cached)
 nativeMemory _ = Nothing
 
--- Neumaier compensation preserves the retained CPython measurement sums.
 total :: [Double] -> Either String Double
 total values = checkedSeconds (if correction /= 0 && not (isInfinite correction || isNaN correction) then high + correction else high)
   where

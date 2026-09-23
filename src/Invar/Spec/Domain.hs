@@ -11,8 +11,6 @@ import Numeric.Natural (Natural)
 data Key = Key {cohort :: Natural, task :: String}
     deriving (Eq, Ord, Show)
 
--- An input declaration is known before execution. Parameter values have no
--- built-in task semantics; an identified measurement method binds their roles.
 data Input = Input
     { inputKey :: Key
     , unitId :: String

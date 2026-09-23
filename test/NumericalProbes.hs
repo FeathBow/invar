@@ -102,7 +102,6 @@ directions = do
     (left, right, original, other) <- fixture
     probes <- pair original [0.125, 0.125, 0.25, 0.5]
     observed <- evalEither (N.observe (N.ProbedRun left right [] probes))
-    -- The second pair has distinct forward and reverse KL values.
     unequal <- pair original [0.0625, 0.0625, 0.0625, 0.8125]
     asymmetric <- evalEither (N.observe (N.ProbedRun left right [] unequal))
     _ <- accepted (judge (N.Reference, N.CandidateToReference) (7 / 10) asymmetric)

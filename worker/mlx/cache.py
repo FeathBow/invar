@@ -36,8 +36,6 @@ class BoundedArraysCache(ArraysCache):
         super().advance(count)
         dependencies = [value for value in (self.lengths, self.left_padding) if value is not None]
         if dependencies:
-            # Every recurrent state consumer also evaluates its metadata. The
-            # model reads a shared mask from just one recurrent layer's cache.
             self.cache = [mx.depends(value, dependencies) if value is not None else None for value in self.cache]
 
     def make_mask(self, length):

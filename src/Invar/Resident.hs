@@ -62,7 +62,6 @@ request = Lazy.toStrict . encode . releaseValue "release"
 released :: Release -> ByteString -> Either String Duration.Duration
 released expected = acknowledgement "released" (releaseValue "release" expected)
 
--- Callers admit the invocations independently.
 observeRelease :: (Owner, [Value], ByteString) -> ByteString -> Either String Duration.Duration
 observeRelease (owner, loads, source) = acknowledgement "released" (releaseFields ("release", owner, Artifact.hex (SHA256.hash source)) loads)
 

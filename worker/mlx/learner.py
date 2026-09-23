@@ -70,8 +70,6 @@ def verify(runtime):
 def activate(runtime, request, paths):
     if (request.policy, request.learner, request.reference, request.optimizer) != (runtime.saved.policy, runtime.saved.learner, runtime.reference_identity, runtime.settings):
         raise ValueError("Native resident update must consume its completed successor with the original optimizer")
-    # The publication path must still name the actual completed bytes; retain
-    # live optimizer and PRNG values rather than restoring them on activation.
     if snapshot(paths.checkpoint / "learner.pt")[0] != request.learner:
         raise ValueError("Native successor path differs from the published learner bytes")
     mlx_tensors.policy(paths.checkpoint / "adapter.safetensors", request.policy)

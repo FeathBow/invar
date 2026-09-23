@@ -84,7 +84,7 @@ jobs:
           core="$(cabal list-bin exe:invar)"
           core_directory="$(dirname "$core")"
           export PATH="$core_directory:$PATH"
-          python -B -m unittest worker.tests.invocation worker.tests.probe worker.tests.probefile worker.tests.probefixture worker.tests.probepacked worker.tests.probeschema worker.tests.probestore worker.tests.resources
+          python -B -m unittest worker.tests.invocation worker.tests.probefixture worker.tests.probepacked worker.tests.probestore
           python -B -m unittest discover -s worker/tests/hf -t . -p '*.py'
       - name: Format
         shell: bash
@@ -102,3 +102,8 @@ jobs:
           "$RUNNER_TEMP/hlint-3.10/hlint" src test app
       - name: Type fixtures
         run: cabal exec -- sh test/types.sh ghc
+      - name: Confidence bounds against decimal arithmetic
+        run: |
+          mkdir -p "$RUNNER_TEMP/confidence"
+          cabal exec -- ghc -XGHC2021 -Wall -Werror -package invar -outputdir "$RUNNER_TEMP/confidence" -o "$RUNNER_TEMP/confidence/reference" test/confidence/Main.hs
+          python3 test/confidence/check.py "$RUNNER_TEMP/confidence/reference"

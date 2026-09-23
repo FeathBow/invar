@@ -13,7 +13,6 @@ import Numeric.Natural (Natural)
 data Profiles = Unreported | Uniform | Roles deriving (Eq, Show)
 data Observation = Observation Resident.Role (Maybe Value)
 
--- Execution framing has already admitted this actual loading prefix.
 fromPrefix :: Resident.Role -> [Object] -> [Observation]
 fromPrefix role records = [Observation role reported | fields <- records, stage fields == Just "load"]
   where

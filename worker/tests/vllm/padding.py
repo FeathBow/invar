@@ -34,7 +34,6 @@ def fixture():
 
 
 def prepare(meta, count):
-    # Deliberately retain valid but wrong routes in the unused physical tail.
     meta.token_lora_mapping.fill_(ADAPTERS - 1)
     meta.token_indices_sorted_by_lora_ids.fill_(PHYSICAL_ROWS - 1)
     slots = torch.arange(count, device="cuda") % ADAPTERS

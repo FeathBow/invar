@@ -115,7 +115,6 @@ def update(learner, batch, *, linearize):
                 raise RuntimeError("Native differentiation produced invalid FP32 parameter gradients")
             accumulated[role] = {name: value + contribution[name] for name, value in accumulated[role].items()}
             mx.eval(accumulated[role])
-        # Release this trajectory's retained decoder inputs before preparing the next one.
         del differentiate, contribution
     gradient_norm, reward_norm = (norm(accumulated[role]) for role in ("objective", "reward"))
     optimizer.update(model, tree_unflatten(list(accumulated["objective"].items())))

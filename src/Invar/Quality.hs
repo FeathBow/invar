@@ -13,7 +13,7 @@ compare first second = do
     unless (Evaluation.inputDigest first == Evaluation.inputDigest second) (Left "Compared evaluations must use the same frozen input")
     unless (Evaluation.model first == Evaluation.model second) (Left "Compared evaluations must have the same reported model and tokenizer bindings")
     measured <- Summary.compare (map sample (Evaluation.samples first)) (map sample (Evaluation.samples second))
-    pure (object (["comparison" .= ("paired evaluation summaries" :: String), "tasks_sha256" .= Evaluation.inputDigest first, "initial" .= source first, "trained" .= source second, "scope" .= ("complete reported evaluations and supplied process exit status; not report authenticity, numerical qualification, or statistical generalization" :: String)] ++ measured))
+    pure (object (["comparison" .= ("paired evaluation summaries" :: String), "tasks_sha256" .= Evaluation.inputDigest first, "initial" .= source first, "trained" .= source second] ++ measured))
 
 source :: Evaluation.Report -> Value
 source report = object ["policy" .= Evaluation.policy report, "log_sha256" .= Evaluation.logDigest report, "exit_code" .= (0 :: Int)]

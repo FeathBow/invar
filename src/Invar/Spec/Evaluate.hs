@@ -60,7 +60,6 @@ runCommands meaning inputs commands = do
     execute <- either (Left . InvalidProgram) Right (prepareCommands meaning commands)
     execute inputs
 
--- The returned function binds this checked program; every call still checks its world.
 prepareCommands :: Semantics -> [Command] -> Either D.Error (World -> Either Error [Emission])
 prepareCommands meaning commands = do
     _ <- D.checkCommands (schema meaning) commands

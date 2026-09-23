@@ -88,8 +88,6 @@ consume (file, remaining) context = do
     unless (finite chunk) (invalid "Policy adapter contains a non-finite FP32 tensor")
     consume (file, remaining - count) (SHA256.update context chunk)
 
--- Retain descriptor offsets and metadata values while ignoring JSON key order
--- and padding in the serialized header. Every payload word is still checked.
 sameRepresentation :: File -> File -> IO Bool
 sameRepresentation first second = do
     let left = tensors first

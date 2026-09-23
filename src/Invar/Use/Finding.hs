@@ -33,8 +33,6 @@ establish target observed = Finding target (Evidence.check graph root)
             pure (identity, Evidence.Node claim (Evidence.Observe actual))
         _ -> Nothing
     U.Scope _ _ _ samples = U.scope observed
-    -- Full scope equality is still checked by Observe. This map merely locates
-    -- the actual observation; it cannot establish equality from a digest.
     numericalByScope = Map.fromList [(scopeBytes (Numerical.scopeId (Numerical.scope actual)), actual) | sample <- toList samples, actual <- U.numerical sample : U.invariance sample]
     scopeBytes (Numerical.ScopeId bytes) = bytes
 

@@ -90,7 +90,6 @@ zeroVariance = do
     reference <- boundFor observed U.ReferenceLoss
     U.unitCount regression === fromIntegral unitTotal
     U.alpha regression === 1 % 20
-    -- Independently evaluated 14 * log(40) / 93; reference range is half.
     assert (U.width regression > 555315186 % 1000000000 && U.width regression < 555315187 % 1000000000)
     U.width regression === 2 * U.width reference
     U.upper regression === U.width regression
@@ -129,7 +128,6 @@ groupedVariance = do
     duplicated <- boundFor replicated U.LossIncrease
     U.unitCount original === fromIntegral unitTotal
     duplicated === original
-    -- Unit means are sixteen 0s and sixteen 1/2s: sample variance is 2/31.
     assert (U.width original > 677276303 % 1000000000 && U.width original < 677276304 % 1000000000)
     U.upper original === 1 % 4 + U.width original
 

@@ -21,8 +21,6 @@ enclose left right = do
         then pure (FiniteBounds 0 0, FiniteBounds 0 0)
         else pure (finish (totalP, totalQ) (foldl' accumulate empty (zip left right)))
 
--- Validate every word before a proportional or zero-support shortcut. Strict
--- totals avoid retaining expanded Integer vectors alongside the input words.
 total :: [Word32] -> Either String Integer
 total = foldM addMass 0
   where
@@ -51,13 +49,11 @@ finish (totalP, totalQ) (Reduction sumP sumQ forwardInfinite backwardInfinite) =
     backward = if backwardInfinite then InfiniteKL else bounds totalQ (add sumQ (times (-totalQ) normalization))
     bounds size (Fixed lower upper) = FiniteBounds (lower % (size * scale)) (upper % (size * scale))
 
--- Every nonnegative FP32 mass is an exact integer multiple of 2^-149.
 mass :: Word32 -> Either String Integer
 mass encoded
     | encoded > 0x3f800000 && encoded /= 0x80000000 = Left "Expected a finite FP32 mass in [0,1]"
     | otherwise = pure (magnitude encoded)
 
--- Decode validated words again without retaining an expanded mass vector.
 magnitude :: Word32 -> Integer
 magnitude encoded
     | encoded == 0x80000000 = 0

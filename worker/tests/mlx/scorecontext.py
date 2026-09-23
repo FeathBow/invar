@@ -30,8 +30,6 @@ class NativeContextTests(unittest.TestCase):
         request, selected = self.requests[0], self.paths[0]
         wrong = replace(selected, prefix=((selected.prefix[0] + 1) % len(self.runtime.tokenizer), *selected.prefix[1:]))
         sampler = PathSampler(request, wrong)
-        # Exercise the consumer directly: the real engine sees the request's
-        # prompt while the owned sampler has a different declared source path.
         with self.assertRaisesRegex(ValueError, "context"):
             execute(self.runtime.model, self.runtime.tokenizer, (request,), sampling=SAMPLING, samplers=(sampler,))
         self.assertEqual(sampler.position, 0)

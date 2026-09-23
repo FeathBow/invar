@@ -44,8 +44,6 @@ def fixed_query_block(queries, keys, values, *, mask, scale):
     length = queries.shape[2]
     padding = QUERY_TOKENS - length
     if padding:
-        # Native dispatch changes for a short tail. Discard repeated slots;
-        # their cotangents are zero and every logical query remains present.
         queries = mx.concatenate((queries, mx.repeat(queries[:, :, -1:], padding, axis=2)), axis=2)
         mask = mx.concatenate((mask, mx.repeat(mask[:, :, -1:], padding, axis=2)), axis=2)
     return query_block(queries, keys, values, mask=mask, scale=scale)[:, :, :length]
@@ -53,7 +51,6 @@ def fixed_query_block(queries, keys, values, *, mask, scale):
 
 def query_block(queries, keys, values, *, mask, scale):
     batch, heads, length, dimension = queries.shape
-    # Head-major packing preserves the original grouped-query key-head mapping.
     queries = queries.reshape(batch, heads * length, 1, dimension)
     mask = mask.reshape(batch, heads * length, 1, keys.shape[-2])
     result = mx.fast.scaled_dot_product_attention(queries, keys, values, mask=mask, scale=scale)

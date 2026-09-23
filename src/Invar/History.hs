@@ -146,7 +146,7 @@ compare decoder (left, right) = do
         same = and [initialEqual, generationEqual, taskEqual, settingsEqual, finalEqual, modelEqual]
         scheduling declared = ((Trace.sessions (training declared), Trace.inferenceMode (training declared), Trace.learningMode (training declared)), map (\workload -> (Workload.order workload, Workload.delivery workload)) (Workload.cycles (tasks declared)), finalBinding declared)
         diagnostic checked = (initializationDiagnostics checked, map Trace.diagnostics (Trace.generations (trainingTrace checked)), Trace.closing (trainingTrace checked), standaloneDiagnostics checked)
-    pure (object ["comparison" .= ("complete histories: semantic inputs and artifact values" :: Text), "equal" .= same, "tasks_equal" .= taskEqual, "settings_equal" .= settingsEqual, "models_equal" .= modelEqual, "schedule_equal" .= (scheduling first == scheduling second), "publication_method_equal" .= (Trace.method (training first) == Trace.method (training second)), "diagnostics_equal" .= (diagnostic left == diagnostic right), "initial" .= initial, "generations" .= generations, "final_equal" .= finalEqual, "left" .= describe left, "right" .= describe right, "scope" .= ("all admitted generations are compared, including differing successor inputs; scheduling and diagnostic observations are reported separately from semantic and artifact equality" :: Text)])
+    pure (object ["comparison" .= ("complete histories: semantic inputs and artifact values" :: Text), "equal" .= same, "tasks_equal" .= taskEqual, "settings_equal" .= settingsEqual, "models_equal" .= modelEqual, "schedule_equal" .= (scheduling first == scheduling second), "publication_method_equal" .= (Trace.method (training first) == Trace.method (training second)), "diagnostics_equal" .= (diagnostic left == diagnostic right), "initial" .= initial, "generations" .= generations, "final_equal" .= finalEqual, "left" .= describe left, "right" .= describe right])
 
 initialization :: Initial.Source -> Maybe Integer
 initialization Initial.Provided = Nothing
@@ -192,7 +192,7 @@ field :: Key -> Value -> IO Value
 field key = either invalid pure . parseEither (withObject "artifact observation" (.: key))
 
 describe :: Checked -> Value
-describe checked = object ["tasks_sha256" .= Workload.digest (tasks (declaration checked)), "initial" .= initialObservation checked, "initial_diagnostics" .= initializationDiagnostics checked, "training" .= Trace.describe (trainingTrace checked), "artifacts" .= map generationArtifacts (generationObservations checked), "final" .= Inference.describe (independentObservation checked), "final_diagnostics" .= standaloneDiagnostics checked, "profiles" .= profileObservation checked, "scope" .= ("complete declared history and actual artifact snapshots under report, process-observation, immutable-input and native-codec correspondence premises; not a durability, restoration or numerical qualification proof" :: Text)]
+describe checked = object ["tasks_sha256" .= Workload.digest (tasks (declaration checked)), "initial" .= initialObservation checked, "initial_diagnostics" .= initializationDiagnostics checked, "training" .= Trace.describe (trainingTrace checked), "artifacts" .= map generationArtifacts (generationObservations checked), "final" .= Inference.describe (independentObservation checked), "final_diagnostics" .= standaloneDiagnostics checked, "profiles" .= profileObservation checked]
 
 invalid :: String -> IO value
 invalid = ioError . userError

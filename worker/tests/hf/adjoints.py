@@ -26,7 +26,6 @@ class BatchedRoleTests(unittest.TestCase):
         objective, reward = parameter_vjps(current, (first, second),
                                           objective=torch.tensor((0.25, -0.5)),
                                           reward=torch.tensor((0.75, 0.125)))
-        # d(a²+b)/d(a,b)=(2a,1); d(ab+b²)/d(a,b)=(b,a+2b).
         assert_equal(torch.stack(objective), torch.tensor((1.0, 0.375)))
         assert_equal(torch.stack(reward), torch.tensor((1.78125, 0.71875)))
         self.assertIsNone(first.grad)

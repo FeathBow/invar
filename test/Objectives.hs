@@ -29,7 +29,6 @@ equalRoles = do
 boundaries :: PropertyT IO ()
 boundaries = do
     let profile = O.Profile 0.5 0
-        -- These FP32 logarithms produce exactly the named ratios after exp.
         cases = [(-log 4, 0, 1, -0.25, -0.25), (-log 2, 0, 1, -0.5, -0.5), (0, 0, 1, -1, -1), (0, -log 1.5, 1, -1.5, -1.5), (0, -log 2, 1, -1.5, 0), (-log 4, 0, -1, 0.5, 0), (-log 2, 0, -1, 0.5, 0.5), (0, 0, -1, 1, 1), (0, -log 1.5, -1, 1.5, 1.5), (0, -log 2, -1, 2, 2)]
     forM_ cases $ \(p, old, a, value, slope) -> do
         [actual] <- evalEither (O.calculate profile 1 [inputs p old a])

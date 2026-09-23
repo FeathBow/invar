@@ -67,7 +67,6 @@ decodeDescription encoded = Json.decode encoded >>= parseEither parse
 readDescription :: FilePath -> IO Description
 readDescription path = bracket (Artifact.open "Policy description" path) hClose (Bytes.hGetContents >=> either (ioError . userError) pure . decodeDescription)
 
--- Staging is exclusive; durability belongs to the checkpoint store operation.
 stageDescription :: FilePath -> Description -> IO ()
 stageDescription path selected = bracket acquire hClose (\file -> Bytes.hPut file (encodeDescription selected))
   where

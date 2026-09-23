@@ -34,8 +34,6 @@ class ColumnLoRALinear(LoRALinear):
         columns = self.dropout(value).reshape(-1, shape[-1]).T
         count = columns.shape[-1]
         if count < MINIMUM_COLUMNS:
-            # Keep single-row calls on native matrix arithmetic. The discarded
-            # column has zero cotangent; no logical input is removed.
             columns = mx.repeat(columns, MINIMUM_COLUMNS, axis=-1)
         delta = self.lora_b.T @ (self.lora_a.T @ columns)
         delta = delta.T[:count].reshape(*shape[:-1], self.lora_b.shape[-1])

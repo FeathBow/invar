@@ -30,8 +30,7 @@ def run(options, *, loader=mlx_model.load):
         learner = Learner(model=loaded.model, optimizer=mlx_step.optimizer(INITIAL_OPTIMIZER), evaluate=logprobs)
         saved = measured("checkpoint", partial(mlx_step.save, loaded, learner, options.output))
         transcript.emit("initial", {name: saved[name] for name in ("policy", "learner", "tokenizer", "base", "assembly")} |
-                        {"seed": options.seed, "optimizer_steps": 0,
-                         "scope": "materialized native MLX initial learner; not publication or qualification"})
+                        {"seed": options.seed, "optimizer_steps": 0})
 
 
 def main():

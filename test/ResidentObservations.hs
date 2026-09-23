@@ -2,7 +2,6 @@
 
 module ResidentObservations (residentObservations, fixture, reseal) where
 
-import BatchedObservations qualified as Batch
 import Calls (change, field, request, wire)
 import Control.Monad (foldM, forM_)
 import Data.Aeson (Value (..), eitherDecodeStrict, object, toJSON, (.=))
@@ -17,6 +16,7 @@ import Invar.Evaluation qualified as Evaluation
 import Invar.Infer qualified as Infer
 import Invar.Workload qualified as Workload
 import Store (workspace)
+import Streams qualified
 import System.FilePath ((</>))
 import Updates (alter)
 import Workloads (array, encoded)
@@ -42,7 +42,7 @@ run = Evaluation.Run (Infer.artifact request) 0
 
 fixture :: Int -> PropertyT IO (Workload.Document, [Value])
 fixture owners = do
-    (original, events, _) <- Batch.fixture
+    (original, events, _) <- Streams.batched
     tasks <- evalEither (Workload.decode (encoded (toJSON (concat (replicate cohortCount (array (Workload.value original)))))))
     case events of
         [loading, profile, loaded, ready, timed, finished, summary, completed] -> do

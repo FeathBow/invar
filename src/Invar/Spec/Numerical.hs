@@ -1,7 +1,5 @@
 {-# LANGUAGE Safe #-}
 
--- Internal checked observation representation. Public constructors live only
--- at the untrusted input boundary in Invar.Numerical.
 module Invar.Spec.Numerical (
     Side (..),
     Source (..),
@@ -162,8 +160,6 @@ distributionBound (side, direction) budget observed = case lookup side (distribu
     within KL.InfiniteKL = False
     within (KL.FiniteBounds _ upper) = upper <= budget
 
--- The domain of each obligation names the checked scope and its binding retains
--- the actual source.
 premises :: Observed -> [Obligation]
 premises observed = generation ++ scoring ++ probing
   where

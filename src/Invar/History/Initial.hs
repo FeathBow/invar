@@ -63,12 +63,11 @@ observation settings (Executed run encoded) = do
 
 report :: Learn.Settings -> Run -> Object -> Parser ()
 report settings run fields = do
-    Json.fields ["stage", "policy", "learner", "tokenizer", "base", "assembly", "seed", "optimizer_steps", "scope"] fields
+    Json.fields (["stage", "policy", "learner", "tokenizer", "base", "assembly", "seed", "optimizer_steps"] ++ ["scope" | Fields.member "scope" fields]) fields
     mapM_ identity [("policy", Learn.policy settings), ("learner", Learn.learner settings), ("tokenizer", Learn.tokenizer settings), ("base", Learn.base settings), ("assembly", Learn.assembly settings)]
     actualSeed <- fields .: "seed"
     steps <- fields .: "optimizer_steps" :: Parser Integer
-    scope <- fields .: "scope"
-    unless (actualSeed == seed run && steps == 0 && not (Text.null scope)) (fail "Initialization seed, optimizer steps or scope differs from its declaration")
+    unless (actualSeed == seed run && steps == 0) (fail "Initialization seed or optimizer steps differ from the declaration")
   where
     identity (key, expected) = do
         actual <- fields .: key >>= Json.identity

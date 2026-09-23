@@ -5,7 +5,6 @@ module Invar.History.Publication (Observed, observe, source, directory, describe
 import Control.Monad (unless)
 import Data.Aeson (Value, object, withObject, (.:), (.=))
 import Data.Aeson.Types (Parser, parseEither)
-import Data.Text (Text)
 import Invar.Artifact qualified as Artifact
 import Invar.History.Cohort qualified as Cohort
 import Invar.History.Trace qualified as Trace
@@ -48,7 +47,7 @@ observe generation = do
     selected <- Policy.readDescription (path </> "policy.json")
     expected <- either invalid pure (source generation >>= Policy.successor policy)
     unless (selected == expected) (invalid "Published policy description differs from the consumed behavior model and updated adapter")
-    pure (Observed path (object ["checkpoint" .= path, "publication" .= method, "retained" .= target, "policy" .= policy, "learner" .= learner, "scope" .= ("observed filesystem entries and checkpoint identities; not a durable publication receipt" :: Text)]))
+    pure (Observed path (object ["checkpoint" .= path, "publication" .= method, "retained" .= target, "policy" .= policy, "learner" .= learner]))
   where
     location = withObject "checked publication" $ \fields -> (,) <$> fields .: "checkpoint" <*> (fields .: "publication" :: Parser String)
 

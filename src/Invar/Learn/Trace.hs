@@ -20,8 +20,6 @@ import Invar.Load qualified as Load
 import Invar.Materialization qualified as Materialization
 import Invar.Spec.Load qualified as Image
 
--- The caller supplies the complete load-to-result segment, without diagnostics
--- preceding the load.
 validate :: Learn.Settings -> Report.Report -> [Object] -> Either String ()
 validate settings = validateWith (Materialization.learning (Learn.policy settings, Learn.learner settings, Learn.tokenizer settings, Learn.base settings, Learn.assembly settings, Learn.reference settings))
 

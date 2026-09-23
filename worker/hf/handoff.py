@@ -57,8 +57,7 @@ def export(model, output, *, tokenizer, expected):
         raise RuntimeError("Exported PEFT configuration differs from the source")
     receipt = {"format": FORMAT, "source": asdict(expected),
                "producer": file_digest(Path(__file__).resolve()),
-               "files": {name: file_digest(output / name) for name in (WEIGHTS, CONFIG)},
-               "scope": "Unmerged FP32 adapter export; not publication or engine qualification"}
+               "files": {name: file_digest(output / name) for name in (WEIGHTS, CONFIG)}}
     with (output / "handoff.json").open("x") as stream:
         json.dump(receipt, stream, sort_keys=True, indent=2, allow_nan=False)
         stream.write("\n")

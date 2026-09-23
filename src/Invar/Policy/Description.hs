@@ -2,8 +2,6 @@
 
 module Invar.Policy.Description (Description (..), bindings) where
 
--- The public policy reader validates these references before constructing a
--- description. Source provenance and numerical assembly remain separate fields.
 data Description = Description
     { model :: String
     , revision :: String

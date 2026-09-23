@@ -58,8 +58,6 @@ observe supplied = do
     let identity = SHA256.hash (Text.encodeUtf8 (Text.pack (show (document, measurement supplied, samples))))
         selected = U.Scope (U.ScopeId identity) document (measurement supplied) samples
         groups = Map.elems (Map.fromListWith (<>) [(U.unitId sample, sample :| []) | sample <- matched])
-    -- Group directly from the checked nonempty inventory; Map traversal makes
-    -- identity and weighting independent of artifact delivery order.
     case NonEmpty.nonEmpty (map aggregate groups) of
         Nothing -> Left EmptyDomain
         Just values -> pure (U.Observed selected values)
