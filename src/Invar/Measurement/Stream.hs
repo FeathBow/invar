@@ -24,7 +24,6 @@ data Measurement = Serial Duration.Duration Sample | Batched Duration.Duration [
 data Sample = Sample {call :: Call.Call, profile :: String}
 data Frame = Frame ByteString Object
 
--- A measurement session is an offline observation, never a live load fact.
 admit :: Natural -> ByteString -> Either String [Session]
 admit cohort encoded = do
     unless ("\n" `Bytes.isSuffixOf` encoded) (Left "Incomplete measurement record stream")

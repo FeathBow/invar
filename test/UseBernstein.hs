@@ -124,7 +124,6 @@ groupedVariance = do
     losses replicated === expected
     U.mean U.LossIncrease observed === Just (1 % 4)
     assert (length expanded > length values)
-    -- Unequal unit sizes retain outcome proportions with distinct seeds.
     assert (any ((/= seedTotal) . length . U.members) (U.units replicated))
     original <- boundFor observed U.LossIncrease
     duplicated <- boundFor replicated U.LossIncrease

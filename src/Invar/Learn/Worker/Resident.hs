@@ -1,5 +1,4 @@
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE RoleAnnotations #-}
 
 module Invar.Learn.Worker.Resident (Options (..), Paths (..), Resident, Receipt, withResident, withBorrowed, run, report, plan, staged, loaded, acknowledgement) where

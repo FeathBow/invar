@@ -162,8 +162,8 @@ distributionBound (side, direction) budget observed = case lookup side (distribu
     within KL.InfiniteKL = False
     within (KL.FiniteBounds _ upper) = upper <= budget
 
--- Separate external observation obligations, not numerical theorems. Their
--- domain names the checked scope and their binding retains the actual source.
+-- The domain of each obligation names the checked scope and its binding retains
+-- the actual source.
 premises :: Observed -> [Obligation]
 premises observed = generation ++ scoring ++ probing
   where

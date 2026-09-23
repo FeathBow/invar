@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Workloads (workloads, declared, encoded, array, replace) where
+module Workloads (workloads, declared, encoded, array, replace, everywhere) where
 
 import Control.Monad (forM_)
 import Data.Aeson (Value (..), encode, object, toJSON, (.=))
@@ -36,6 +36,11 @@ array _ = error "Expected a fixture array"
 
 replace :: ByteString -> ByteString -> ByteString -> ByteString
 replace old new original = let (prefix, suffix) = Bytes.breakSubstring old original in prefix <> new <> Bytes.drop (Bytes.length old) suffix
+
+everywhere :: ByteString -> ByteString -> ByteString -> ByteString
+everywhere old new original = case Bytes.breakSubstring old original of
+    (prefix, suffix) | Bytes.null suffix -> prefix
+    (prefix, suffix) -> prefix <> new <> everywhere old new (Bytes.drop (Bytes.length old) suffix)
 
 identity :: PropertyT IO ()
 identity = do

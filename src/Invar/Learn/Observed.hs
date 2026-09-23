@@ -9,8 +9,6 @@ import Invar.Infer.Result qualified as Result
 import Invar.Learn qualified as Learn
 import Invar.Workload qualified as Workload
 
--- Share reward scoring and numerical lowering across history admission and
--- native observations. Neither path creates a live invocation.
 input :: Learn.Settings -> Workload.Cycle -> [Result.Result] -> Either String (ByteString, ByteString, [Rational])
 input settings workload observed = do
     let tasks = Workload.tasks workload

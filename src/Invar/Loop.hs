@@ -1,4 +1,3 @@
-{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE RoleAnnotations #-}
 
 module Invar.Loop (Backend (..), Config (..), Cycle (..), Checkpoint (..), Driver, Generation, Status (..), Error (..), withDriver, run, status, current, result, plan, receipt) where

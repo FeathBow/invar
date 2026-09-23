@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 import subprocess
 import sys
@@ -21,13 +20,9 @@ def seal(root, initial, *, observed, configuration, executable):
               **{name: BOOTSTRAP_BINDING for name in ("call", "attempt", "instance")}}
     command = [executable, "infer", *flags({**inputs, "python": sys.executable, "worker": ENTRY,
                "worker-config": configuration, "cache": root, "adapter": initial / "adapter.safetensors"})]
-    (root / "bootstrap-command.json").write_text(json.dumps(command) + "\n")
     completed = subprocess.run(command, capture_output=True, text=True, timeout=CHILD_SECONDS)
     log = root / "bootstrap.jsonl"
     log.write_text(completed.stdout)
-    (root / "bootstrap.stderr").write_text(completed.stderr)
-    (root / "bootstrap-status.json").write_text(json.dumps({"exit_code": completed.returncode}) + "\n")
     completed.check_returncode()
     command = ["policy", *flags({**inputs, "checkpoint": initial, "log": log, "exit-code": completed.returncode})]
-    (root / "policy-command.json").write_text(json.dumps([executable, *command]) + "\n")
     return core.invoke(command, executable=executable)

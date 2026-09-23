@@ -62,8 +62,6 @@ compare decoder policy (left, right) = do
     either invalid pure (Report.paired first second)
     compareObserved decoder (first, policy, Observation.artifact left) (second, policy, Observation.artifact right)
 
--- Each side supplies its own consumed policy and output checkpoint. Numerical
--- input equality is a separate observation in a complete history comparison.
 compareObserved :: Decoder -> (Report.Report, FilePath, FilePath) -> (Report.Report, FilePath, FilePath) -> IO Value
 compareObserved decoder (first, leftPolicy, left) (second, rightPolicy, right) = do
     leftSchema <- inputSchema first leftPolicy

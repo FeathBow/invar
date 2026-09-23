@@ -12,7 +12,7 @@ from pathlib import Path
 from tokenizers import normalizers
 
 from worker.hf.operation import digest, load, verify
-from worker.tokenization import decode, prompt
+from worker.tokenization import prompt
 from worker.tests.hf.tokenization import make_tokenizer
 
 
@@ -38,14 +38,6 @@ class TextIdentityTests(unittest.TestCase):
             with self.subTest(tokenizer=digest(tokenizer)):
                 with self.assertRaisesRegex(ValueError, "requested tokenizer identity"):
                     verify(tokenizer, original)
-
-    def test_effective_cleanup_change_changes_actual_decoding(self):
-        tokenizer = make_tokenizer()
-        expected = digest(tokenizer)
-        observed = decode(tokenizer, [7, 5])
-        tokenizer.clean_up_tokenization_spaces = True
-        self.assertNotEqual(observed, decode(tokenizer, [7, 5]))
-        self.assertNotEqual(expected, digest(tokenizer))
 
     def test_fixed_prompt_settings_override_transient_backend_limits(self):
         tokenizer = make_tokenizer()

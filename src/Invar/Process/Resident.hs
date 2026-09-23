@@ -1,5 +1,4 @@
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE RoleAnnotations #-}
 
 module Invar.Process.Resident (Resident, Handshake (..), Transaction (..), withResident, exchange, groups) where

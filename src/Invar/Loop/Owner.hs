@@ -1,5 +1,3 @@
-{-# LANGUAGE RankNTypes #-}
-
 module Invar.Loop.Owner (validate, withShared) where
 
 import Control.Monad (unless, void)

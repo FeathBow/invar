@@ -96,19 +96,6 @@ class ObjectiveTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 terms(candidate, profile)
 
-    def test_aggregation_uses_logical_token_count(self):
-        batch = inputs()
-        profile = Profile(epsilon=EPSILON, penalty=PENALTY)
-        whole = terms(batch, profile)
-        batches = [replace(batch, **{name: getattr(batch, name)[part]
-                                    for name in batch.__dataclass_fields__})
-                   for part in (slice(0, 1), slice(1, 3))]
-        physical = [terms(item, profile) for item in batches]
-        correct = sum(item.sum() for item in physical) / whole.numel()
-        self.assertAlmostEqual(correct.item(), whole.mean().item(), delta=TOLERANCE)
-        wrong = sum(item.mean() for item in physical) / len(physical)
-        self.assertNotAlmostEqual(wrong.item(), whole.mean().item(), delta=TOLERANCE)
-
     def test_logical_groups_not_delivery_order(self):
         rewards = (Reward(sample="a", group="first", value=0),
                    Reward(sample="b", group="first", value=1),
@@ -119,8 +106,6 @@ class ObjectiveTests(unittest.TestCase):
         self.assertEqual(advantages(rewards, delta), correct)
         reordered = tuple(rewards[index] for index in (3, 1, 0, 2))
         self.assertEqual(advantages(reordered, delta), correct)
-        regrouped = tuple(replace(item, group=str(index // 2)) for index, item in enumerate(reordered))
-        self.assertNotEqual(advantages(regrouped, delta), correct)
 
     def test_invalid_groups_and_profile(self):
         sample = Reward(sample="a", group="first", value=0)

@@ -58,8 +58,6 @@ prepare settings batch = do
     (checked, sources, command, payload) <- compileInput settings samples
     pure Plan {planBatch = batch, planChecked = checked, planWorld = sources, planEmission = command, planInput = payload}
 
--- Reconstruct the numerical input from an admitted cohort observation. This
--- returns program/input bytes, without an invocation or execution permission.
 observedInput :: Settings -> Cohort.Batch scope -> Either Error (ByteString, ByteString)
 observedInput settings batch = do
     let samples = [InputSample (Cohort.group (Cohort.source sample)) (Cohort.observed sample) (Cohort.reward sample) | sample <- Cohort.observations batch]

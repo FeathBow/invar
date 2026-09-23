@@ -148,7 +148,6 @@ summary actual value = do
     validateStats actual update
     pure (Artifacts policy checkpoint (observation, probability))
 
--- This predicate shares result validation without constructing lifecycle facts.
 validateSummary :: Value -> Object -> Either Error ()
 validateSummary actual value = void (summary actual value)
 

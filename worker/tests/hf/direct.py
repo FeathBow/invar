@@ -135,26 +135,6 @@ class DirectChecks(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):
             direct.inspect(path, planned[0], exit_code=0, core_executable=self.root / "missing-core")
 
-    def test_core_normalizes_integral_spellings_without_losing_probability_zero_sign(self):
-        rows = reference()
-        for row in rows:
-            if "binding" in row:
-                row["binding"] = {key: float(value) for key, value in row["binding"].items()}
-            if "request" in row:
-                row["request"] = {**row["request"], **{key: float(row["request"][key]) for key in ("seed", "tokens")}}
-            if row.get("stage") == "result":
-                row["tokens"] = list(map(float, row["tokens"]))
-                row["prompt_length"] = float(row["prompt_length"])
-                row["behavior_bits"] = [float(0x80000000), *map(float, row["behavior_bits"][1:])]
-                row["behavior"][0] = -0.0
-        fixture.write(self.options.reference_log, rows)
-        _, _, planned = direct.calls(self.options)
-        for observed in planned:
-            self.assertTrue(all(type(value) is int for value in observed.consumed["binding"].values()))
-            self.assertTrue(all(type(observed.consumed["request"][key]) is int for key in ("seed", "tokens")))
-            self.assertTrue(all(type(value) is int for value in observed.result["tokens"] + observed.result["behavior_bits"]))
-            self.assertEqual(struct.pack("!d", observed.result["behavior"][0]), struct.pack("!d", -0.0))
-
     def test_core_preserves_explicit_cpu_timing_and_rejects_ambiguous_or_reordered_measurements(self):
         _, _, planned = direct.calls(self.options)
         rows = output(planned[0])

@@ -1,6 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- A conditional report observation, not execution lifecycle evidence.
 module Invar.Learn.Report (Report, admit, paired, sameInput, describe, invocation, request, result, output, gradient, artifact, logDigest) where
 
 import Control.Monad (unless, when)

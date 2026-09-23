@@ -105,8 +105,6 @@ settings chosen =
   where
     optimizer = Learn.optimizer chosen
 
--- Raw worker observations and physical publication entries are admitted here.
--- Reconstructed transcripts remain observations, not live execution evidence.
 inspect :: Reference -> (FilePath, Int, ByteString) -> IO Value
 inspect (Reference run tasks expected _) (directory, status, encoded) = do
     actual <- either invalid pure (Trace.admit run {Trace.output = directory, Trace.exitCode = status} tasks encoded)

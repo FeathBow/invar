@@ -11,7 +11,6 @@ from functools import partial
 import io
 import os
 from pathlib import Path
-import sys
 import tempfile
 import time
 from types import SimpleNamespace
@@ -33,7 +32,6 @@ CORE = os.environ.get("INVAR_CORE", "invar")
 class ProductTests(unittest.TestCase):
     def test_native_shared_model_retains_optimizer_and_consumes_two_publications(self):
         root = Path(tempfile.mkdtemp(prefix="invar-mlx-product-"))
-        print(f"Actual native Metal composition artifacts: {root}", file=sys.stderr, flush=True)
         configuration = root / "configuration.json"
         product.write(configuration, {"format": "invar-mlx-runtime-v1", "batch_size": 2,
                                       "prefill_step": 16, "cache_bytes": 1048576})

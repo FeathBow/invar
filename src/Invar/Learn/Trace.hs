@@ -21,12 +21,10 @@ import Invar.Materialization qualified as Materialization
 import Invar.Spec.Load qualified as Image
 
 -- The caller supplies the complete load-to-result segment, without diagnostics
--- preceding the load. Report admission and this check grant no execution permit.
+-- preceding the load.
 validate :: Learn.Settings -> Report.Report -> [Object] -> Either String ()
 validate settings = validateWith (Materialization.learning (Learn.policy settings, Learn.learner settings, Learn.tokenizer settings, Learn.base settings, Learn.assembly settings, Learn.reference settings))
 
--- Replay observes an already admitted request, without declaring a new training
--- configuration or acquiring permission to execute it.
 validateObserved :: Report.Report -> [Object] -> Either String ()
 validateObserved report events = do
     selected <- parseEither (withObject "observed update materialization" materialization) (Report.request report)

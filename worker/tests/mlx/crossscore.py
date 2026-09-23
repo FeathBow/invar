@@ -131,8 +131,6 @@ class ArtifactTests(unittest.TestCase):
         self.assertEqual([value["stage"] for value in result["measurements"]],
                          ["load", "verify_before", "cross_score", "verify_after"])
         self.assertEqual(result["source_inspection_sha256"], hashlib.sha256(self.encoded).hexdigest())
-        (root / "score.json").write_text(output.getvalue())
-        print(json.dumps({"actual_tiny_checkpoint_score": str(root), "measurements": result["measurements"]}))
 
     def test_source_rejects_malformed_or_incomplete_observations(self):
         modifications = [

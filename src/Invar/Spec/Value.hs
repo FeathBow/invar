@@ -1,5 +1,4 @@
 {-# LANGUAGE DeriveAnyClass #-}
-{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE Safe #-}
 
 module Invar.Spec.Value (
@@ -35,7 +34,6 @@ data Normal
 
 type Names key = Map key Natural
 
--- This is an evidence observation, not a primitive available to semantic programs.
 normalForm :: (Ord key) => Value key -> Normal
 normalForm = snd . normalize Map.empty
 

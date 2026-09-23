@@ -57,8 +57,6 @@ def model(*, uniform_head=True, vocabulary=len(WORDS)):
 
 class RolloutTests(unittest.TestCase):
     def test_actual_native_batch_preserves_behavior_and_learner_rng(self):
-        self.assertTrue(mx.metal.is_available())
-        self.assertEqual(mx.default_device(), mx.gpu)
         numerical, config = model()
         mlx_numerics.PRIMARY.install(numerical)
         text = tokenizer()

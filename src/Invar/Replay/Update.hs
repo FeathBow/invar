@@ -35,8 +35,7 @@ data Reference = Reference String Text [Update] (Maybe (Mode, [Resident.Group], 
 data Update = Update {report :: Report.Report, consumed :: Object, consumedBytes :: ByteString, checkpoint :: FilePath, published :: FilePath}
 data Frame = Frame {position :: Natural, raw :: ByteString, fields :: Object}
 
--- Directory observations are supplied by the filesystem boundary. This report
--- describes replay inputs; it is not a training-history or publication receipt.
+-- Directory observations are supplied by the filesystem boundary.
 admit :: (FilePath -> IO Bool) -> Run -> ByteString -> IO Reference
 admit = admitWith Finite
 

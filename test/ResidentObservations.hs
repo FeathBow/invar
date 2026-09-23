@@ -96,7 +96,6 @@ summaryFor index value = change "cohort" (toJSON index) (change "samples" (toJSO
   where
     samples = zipWith (\member -> change "binding" (bound (index * membersPerCohort + member))) [0 ..] (array (field "samples" value))
 
--- These explicit wire fixtures test offline readers, never process execution.
 reseal :: [Value] -> PropertyT IO [Value]
 reseal events = do
     root <- workspace

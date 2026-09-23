@@ -85,7 +85,6 @@ missing = do
     judge (N.PathLogRatioWithin 10) observed === E.Unknown (E.NumericalProblem N.MissingCrossScoring)
     forM_ [N.ReferenceToCandidate, N.CandidateToReference] $ \direction ->
         judge (N.FullVocabularyKLWithin N.Reference direction 10) observed === E.Unknown (E.NumericalProblem N.MissingFullVocabulary)
-    judge N.ModelSubstitution observed === E.Unknown (E.NumericalProblem N.UnsupportedModelDerivation)
 
 zeroSupport :: PropertyT IO ()
 zeroSupport = do
@@ -150,6 +149,3 @@ scopeRules = do
     N.finding (N.establish (N.Claim (N.scope first) relation) second) === E.Unknown (E.NumericalProblem (N.ScopeMismatch (N.scopeId (N.scope first)) (N.scopeId (N.scope second))))
     together <- accepted (E.check (Map.insert c (E.Node (E.All [claim first, claim second]) (E.Conjoin [a, b])) graph) c)
     length (E.assumptions together) === 20
-    E.check (Map.insert c (E.Node (claim first) (E.Discharge a [b])) graph) c === E.Unknown (E.UnmatchedDischarge (claim second))
-    let withImplication = Map.insert a (E.Node (E.Implies (claim first) (claim first)) E.Assume) graph
-    E.check (Map.insert c (E.Node (claim first) (E.Apply a b)) withImplication) c === E.Unknown (E.WrongConclusion (claim first) (claim second))

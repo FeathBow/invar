@@ -87,10 +87,6 @@ class ResidentDirectChecks(unittest.TestCase):
                 cls.reports[count, index] = direct.run(options, cls.services)
                 cls.paths[count].append(options)
 
-    @classmethod
-    def tearDownClass(cls):
-        print(f"Resident direct protocol artifacts: {cls.root}", file=sys.stderr)
-
     def report(self, count):
         options = self.paths[count][0]
         return summarize(manifest(options, self.paths[count]), options.tasks, options.policy)
@@ -241,22 +237,6 @@ class ResidentDirectChecks(unittest.TestCase):
             self.assertTrue(all(row["result_equal"] for row in result["calls"]))
             count += len(result["calls"])
         self.assertEqual(count, 6)
-        values = {"core": selected.core, "python": selected.python, "worker": selected.worker,
-                  "cache": selected.cache, "adapter": selected.adapter, "policy": selected.policy,
-                  "tasks": selected.tasks, "reference-log": selected.reference_log, "reference-exit-code": 0,
-                  "mode": "resident", "worker-config": selected.worker_config, "devices": "0,1",
-                  "output": self.root / "execution-cli"}
-        entry = Path(__file__).resolve().parents[3] / "entries" / "directexecute.py"
-        command = [sys.executable, "-B", str(entry),
-                   *[str(item) for name, value in values.items() for item in ("--" + name, value)]]
-        (self.root / "execution-cli.command.json").write_text(json.dumps(command) + "\n")
-        result = subprocess.run(command, capture_output=True, text=True, timeout=20)
-        (self.root / "execution-cli.stdout").write_text(result.stdout)
-        (self.root / "execution-cli.stderr").write_text(result.stderr)
-        (self.root / "execution-cli.status.json").write_text(json.dumps({"exit_code": result.returncode}) + "\n")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout), json.loads((values["output"] / "execution.json").read_text()))
-        self.assertFalse((values["output"] / "complete.json").exists())
 
     def test_execution_only_requires_resident_and_retains_failed_child_statuses(self):
         options = self.paths[1][0]

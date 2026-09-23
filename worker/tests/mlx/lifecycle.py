@@ -88,8 +88,7 @@ class LifecycleTests(unittest.TestCase):
                    "rng-profile": "mlx", "initial-source": "initializer", "initial-log": log, "initial-exit-code": 0,
                    "initial-seed": 17, "profile-mode": "roles", "final-log": root / "final.jsonl", "final-exit-code": 0,
                    **{"final-" + key: value for key, value in final.items()}}
-        # Equal rewards and unchanged parameters form a legal history. Their
-        # acceptance supplies no nondegenerate reward-learning evidence.
+        # Equal rewards and unchanged parameters form a legal history.
         complete = core.exchange(["inspect", "history", "--codec-mode", "stdio", *flags(history)],
                                  executable=CORE, handler=mlx_codec.Session().handle)
         self.assertEqual(len(complete["artifacts"]), 2)
@@ -121,7 +120,6 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(len(set((root / "loads.txt").read_text().splitlines())), 5)
         self.evaluate(root, observed, workload, configuration)
         self.cycle(root, initial, trace, configuration)
-        print(f"Native shared lifecycle artifacts: {root}", file=sys.stderr)
 
     def cycle(self, root, initial, trace, configuration):
         declaration = root / "cycle-reference.json"

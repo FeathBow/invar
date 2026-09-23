@@ -1,4 +1,3 @@
-{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE RoleAnnotations #-}
 
 module Invar.Cohort (

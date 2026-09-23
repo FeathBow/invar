@@ -77,8 +77,6 @@ prepare root (index, binding) planned = do
     let common = ["format" .= String "invar-resident-v1", "owner" .= owner, "loads" .= [load], "result_sha256" .= digest]
     pure (Exchange call (Resident.Paths (root </> "input checkpoint") directory) prefix suffix (Bytes.init (wire [invocation])) (object ("action" .= String "release" : common)) (object (["stage" .= String "released", "measurement" .= measurement "released"] ++ common)))
 
--- These files exercise host admission; actual optimizer continuation is tested
--- with the numerical worker, independently of these declared protocol clocks.
 artifacts :: FilePath -> Value -> (Value, Value) -> IO Value
 artifacts directory request (loaded, consumed) = do
     let tensors = Policies.artifact [("fixture", [1], Bytes.pack ['\0', '\0', '\128', '\63'])]

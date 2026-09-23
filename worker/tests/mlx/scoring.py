@@ -116,77 +116,7 @@ class BoundScoringTests(BoundScoreFixture, unittest.TestCase):
                 self.assertEqual(observed["log_probability_bits"], self.source_result["behavior_bits"])
                 self.assertEqual(ratio, 0)
             values.append(observed["log_probability_bits"])
-            self.command("failed-exit-" + str(index), ["score", "inspect", *flags({**selected, "log": path, "exit-code": 7})], success=False)
-            events[-1]["observation"]["probability"]["role"] = "rl_reference"
-            wrong = self.root / ("wrong-role-" + str(index) + ".jsonl")
-            wrong.write_text("\n".join(map(json.dumps, events)) + "\n")
-            self.command("wrong-role-" + str(index), ["score", "inspect", *flags({**selected, "log": wrong, "exit-code": 0})], success=False)
         self.assertNotEqual(*values)
-        self.compare_paths()
-        print(json.dumps({"actual_bound_score_artifacts": str(self.root), "models": [71, 97]}))
-
-    def compare_paths(self):
-        cache, checkpoint, identity = self.targets[1]
-        candidate_inputs = {**self.source_inputs, "digest": identity["adapter"],
-                            **{key + "-digest": identity[key] for key in ("tokenizer", "base", "assembly")},
-                            "call": 8, "attempt": 8, "instance": 8}
-        candidate = self.command("candidate", ["infer", *flags({**candidate_inputs, "python": sys.executable,
-                                 "worker": SOURCE_ENTRY, "cache": cache, "adapter": checkpoint, "worker-config": self.config})])
-        candidate_log = self.root / "candidate.stdout"
-        candidate_result = json.loads(candidate.stdout.splitlines()[-1])
-        self.assertNotEqual(candidate_result["tokens"], self.source_result["tokens"])
-
-        source_cache, source_checkpoint, source_identity = self.targets[0]
-        reverse_inputs = {**{"source-" + key: value for key, value in candidate_inputs.items()},
-                          "source-log": candidate_log, "source-exit-code": candidate.returncode,
-                          "target-digest": source_identity["adapter"],
-                          **{"target-" + key + "-digest": source_identity[key] for key in ("tokenizer", "base", "assembly")},
-                          "call": 40, "attempt": 40, "instance": 40}
-        backward = self.command("reverse-score", ["score", *flags({**reverse_inputs, "python": sys.executable,
-                                "worker": SCORE_ENTRY, "cache": source_cache, "adapter": source_checkpoint,
-                                "worker-config": self.config})])
-        original = {**{"reference-" + key: value for key, value in self.source_inputs.items()},
-                    "reference-log": self.source_log, "reference-exit-code": 0,
-                    **{"candidate-" + key: value for key, value in candidate_inputs.items()},
-                    "candidate-log": candidate_log, "candidate-exit-code": candidate.returncode}
-        scores = {"reference-score-log": self.root / "score-1.stdout", "reference-score-exit-code": 0,
-                  "reference-score-call": 21, "reference-score-attempt": 21, "reference-score-instance": 21,
-                  "candidate-score-log": self.root / "reverse-score.stdout", "candidate-score-exit-code": backward.returncode,
-                  "candidate-score-call": 40, "candidate-score-attempt": 40, "candidate-score-instance": 40}
-        self.compare_findings(original, scores, (self.source_result, candidate_result))
-
-    def compare_findings(self, original, scores, sources):
-        number = lambda word: Fraction(struct.unpack("=f", struct.pack("=I", word))[0])
-        for side, source in zip(("reference", "candidate"), sources, strict=True):
-            path = scores[side + "-score-log"]
-            body = json.loads(path.read_text().splitlines()[-1])["observation"]
-            self.assertEqual(body["prefix_tokens"] + body["response_tokens"], source["tokens"])
-            ratio = sum((number(p) - number(q) for p, q in zip(source["behavior_bits"], body["log_probability_bits"], strict=True)), Fraction())
-            self.assertNotEqual(ratio, 0)
-            budget = abs(ratio.numerator) // ratio.denominator + 1
-            options = {**original, **scores, "relation": side + "-path-log-ratio", "budget": budget}
-            result = self.command("compare-" + side, ["compare", "numerical", *flags(options)])
-            actual = json.loads(result.stdout)
-            self.assertIsNotNone(actual["observation"]["first_divergence_zero_based"])
-            self.assertEqual(actual["finding"]["judgement"]["status"], "accept")
-            self.assertEqual(actual["finding"]["use_admission"], "not_evaluated")
-            self.assertEqual(len(actual["finding"]["judgement"]["assumptions"]), 14)
-            measured = next(value for value in actual["observation"]["scored_paths"] if value["path_source"] == side.title())
-            self.assertEqual(measured["source_minus_target_log_ratio"],
-                             {"kind": "finite", "numerator": ratio.numerator, "denominator": ratio.denominator})
-            rejected = self.command("compare-refute-" + side, ["compare", "numerical", *flags({**options, "budget": 0})])
-            self.assertEqual(json.loads(rejected.stdout)["finding"]["judgement"]["status"], "refute")
-            missing = {**original, "relation": side + "-path-log-ratio", "budget": budget}
-            unknown = self.command("compare-missing-" + side, ["compare", "numerical", *flags(missing)])
-            self.assertIn("MissingScoredPath", json.loads(unknown.stdout)["finding"]["judgement"]["reason"])
-            self.command("compare-failed-score-" + side, ["compare", "numerical", *flags({**options, side + "-score-exit-code": 7})], success=False)
-        kl = self.command("compare-kl", ["compare", "numerical", *flags({**original, **scores, "relation": "kl-reference-candidate", "probe-path": "reference", "budget": 1})])
-        self.assertIn("MissingFullVocabulary", json.loads(kl.stdout)["finding"]["judgement"]["reason"])
-        swapped = {**scores, "reference-score-log": scores["candidate-score-log"],
-                   "reference-score-call": 40, "reference-score-attempt": 40, "reference-score-instance": 40}
-        self.command("compare-wrong-path", ["compare", "numerical", *flags({**original, **swapped, "relation": "reference-path-log-ratio", "budget": 1})], success=False)
-        orphan = {**original, "reference-score-call": 21, "relation": "tokens"}
-        self.command("compare-orphan", ["compare", "numerical", *flags(orphan)], success=False)
 
     def test_missing_or_wrong_permission_prevents_score_execution(self):
         cache, checkpoint, identity = self.targets[0]

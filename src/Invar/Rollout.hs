@@ -1,4 +1,3 @@
-{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE RoleAnnotations #-}
 
 module Invar.Rollout (Driver, Mode (..), Options (..), Batch, Sample, Error (..), withDriver, withConfiguredDriver, run, samples, delivered, name, group, observation, reward, scored, completion, loaded) where

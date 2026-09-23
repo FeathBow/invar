@@ -31,8 +31,6 @@ admitLog settings (workload, selected) encoded = do
     reported <- Report.admit selected encoded
     admit settings (workload, observed) reported
 
--- Prepare from this execution's actual inference observations. This constructs
--- numerical input only; no update, publication or execution permit is implied.
 prepareInput :: Learn.Settings -> (Workload.Cycle, Natural) -> ByteString -> Either String (ByteString, ByteString)
 prepareInput settings selection@(workload, _) encoded = do
     observed <- observeInferences settings selection encoded

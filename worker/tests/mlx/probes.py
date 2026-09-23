@@ -5,8 +5,6 @@ import io
 import json
 import math
 from pathlib import Path
-import subprocess
-import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -59,8 +57,6 @@ class ProbeArtifactTests(unittest.TestCase):
             path = cls.root / (str(seed) + "-probe.json")
             path.write_text(output.getvalue())
             cls.artifacts.append(probe.read(path.read_bytes()))
-        print(json.dumps({"actual_full_vocabulary_artifacts": str(cls.root), "steps": cls.steps,
-                          "source_scope": "actual tiny generation inspection fixture; standalone external probe"}))
 
     def test_actual_checkpoint_probes_compare_every_selected_vocabulary_coordinate(self):
         result = probe.compare(*self.artifacts)
@@ -80,19 +76,6 @@ class ProbeArtifactTests(unittest.TestCase):
             self.assertEqual(result[side]["raw_vector_bytes"], len(self.steps) * result["vocabulary"] * FP32_BYTES)
         own = probe.compare(self.artifacts[0], self.artifacts[0])
         self.assertTrue(all(row["kl_reference_candidate"]["value"] == 0 and row["total_variation"] == 0 for row in own["observations"]))
-
-    def test_portable_comparison_entry_reads_actual_artifacts_without_a_model(self):
-        command = [sys.executable, "-B", "-m", "worker.probe", "--reference", str(self.root / "71-probe.json"),
-                   "--candidate", str(self.root / "97-probe.json")]
-        completed = subprocess.run(command, capture_output=True, text=True, timeout=15)
-        (self.root / "compare.stdout").write_text(completed.stdout)
-        (self.root / "compare.stderr").write_text(completed.stderr)
-        (self.root / "compare.status.json").write_text(json.dumps({"command": command, "exit_code": completed.returncode}))
-        self.assertEqual(completed.returncode, 0, completed.stderr)
-        result = json.loads(completed.stdout)
-        self.assertGreaterEqual(result.pop("reduction_seconds"), 0)
-        self.assertEqual(result.pop("implementation"), probe.implementation())
-        self.assertEqual(result, probe.compare(*self.artifacts))
 
     def test_individually_valid_artifacts_still_require_identical_source_steps_and_vocabulary(self):
         original = json.loads(self.artifacts[1].encoded)

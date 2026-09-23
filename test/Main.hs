@@ -10,6 +10,7 @@ import Calls (calls)
 import Checkpoints (checkpoints)
 import Cohorts (cohorts)
 import Collections (collections)
+import Comparisons (comparisons)
 import Construction (construction)
 import Control.Monad (unless)
 import Dependencies (dependencies)
@@ -63,5 +64,5 @@ import Workloads (workloads)
 
 main :: IO ()
 main = do
-    outcomes <- traverse checkSequential [fixtures, properties, arguments, values, dependencies, evaluation, artifacts, construction, collections, records, literals, invocations, evidence, loads, store, checkpoints, inference, results, calls, batchCalls, groupedCalls, batchedProtocol, residentCalls, residentDrivers, residentObservations, residentMeasurements, residentReplays, rewards, cohorts, rollouts, sessions, learning, advantages, objectives, updates, learnerCalls, loops, schedules, policies, probabilities, workloads, reports, quality, observations, inferenceObservations, numerical, scores, scoreProbes, numericalScores, numericalProbes, uses, useEvidence, useAdmission, useBernstein, useGeneric, measurements, batchedObservations]
+    outcomes <- traverse checkSequential [fixtures, properties, arguments, values, dependencies, evaluation, artifacts, construction, collections, records, literals, invocations, evidence, loads, store, checkpoints, inference, results, calls, batchCalls, groupedCalls, batchedProtocol, residentCalls, residentDrivers, residentObservations, residentMeasurements, residentReplays, rewards, cohorts, rollouts, sessions, learning, advantages, objectives, updates, learnerCalls, loops, schedules, policies, probabilities, workloads, reports, quality, observations, inferenceObservations, numerical, scores, scoreProbes, numericalScores, numericalProbes, uses, useEvidence, useAdmission, useBernstein, useGeneric, measurements, comparisons, batchedObservations]
     unless (and outcomes) exitFailure

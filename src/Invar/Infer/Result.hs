@@ -43,9 +43,8 @@ observe planned encoded = do
         Finished result -> Right result
         _ -> Left (Unexpected "Worker output ended without a complete inference result")
 
--- A numerical observation carries no load, invocation or execution authority.
--- Native composition baselines can reuse the same request/output checks without
--- inventing the lifecycle records required by 'observe'.
+-- Native composition baselines reuse these request/output checks without the
+-- lifecycle records that 'observe' requires.
 numerical :: I.Plan -> ByteString -> Either Error Result
 numerical planned encoded = do
     reported <- either (Left . Malformed) Right (eitherDecodeStrict encoded)

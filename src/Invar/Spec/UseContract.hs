@@ -65,8 +65,6 @@ data Criterion = Criterion
     }
     deriving (Eq, Show)
 
--- These are the specific external premises used by existing observation rules,
--- not arbitrary propositions that a caller may whitelist into a proof.
 data Premise
     = ParameterMeaning
     | MeasurementMeaning

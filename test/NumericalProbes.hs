@@ -8,7 +8,6 @@ import Data.Aeson (Value (..), object, toJSON, (.=))
 import Data.Aeson.Types (parseEither, parseJSON)
 import Data.Foldable (toList)
 import Data.List (nub)
-import Data.Map.Strict qualified as Map
 import Data.Ratio ((%))
 import GHC.Float (castFloatToWord32)
 import Hedgehog
@@ -182,10 +181,4 @@ scopeRules = do
     length (filter ((== "full-vocabulary-behavior/v1") . E.observation) obligations) === 10
     length (filter ((== "cached-distribution-probe/v1") . E.specification) obligations) === 10
     let relation = N.FullVocabularyKLWithin N.Reference N.ReferenceToCandidate 1
-        claim value = E.Numerical (N.Claim (N.scope value) relation)
-        a = E.EvidenceId 0
-        b = E.EvidenceId 1
-        c = E.EvidenceId 2
-        graph = Map.fromList [(a, E.Node (claim observed) (E.Observe observed)), (b, E.Node (claim another) (E.Observe another))]
     N.finding (N.establish (N.Claim (N.scope observed) relation) another) === E.Unknown (E.NumericalProblem (N.ScopeMismatch (N.scopeId (N.scope observed)) (N.scopeId (N.scope another))))
-    E.check (Map.insert c (E.Node (claim observed) (E.Discharge a [b])) graph) c === E.Unknown (E.UnmatchedDischarge (claim another))

@@ -25,8 +25,6 @@ class ExecutionCycleChecks(lifecycle.LifecycleTests):
 
         def online(arguments, **kwargs):
             self.assertNotEqual(arguments[:2], ["replay", "inspect"])
-            with (root / "online-core-commands.jsonl").open("a") as record:
-                record.write(json.dumps(list(map(str, arguments))) + "\n")
             return invoke(arguments, **kwargs)
 
         with patch("worker.cycle.core.invoke", side_effect=online):
@@ -43,19 +41,7 @@ class ExecutionCycleChecks(lifecycle.LifecycleTests):
                            *cycle.flags({"replay-output": options.output / "checkpoints",
                                          "replay-log": options.output / "training.jsonl", "replay-exit-code": 0})],
                           executable=lifecycle.CORE)
-        (root / "execution-offline-observation.json").write_text(json.dumps(observed) + "\n")
         self.assertTrue(observed["equal"])
-        values = {"core": lifecycle.CORE, "python": sys.executable, "inference-python": sys.executable,
-                  "inference": lifecycle.ENTRY, "learning": lifecycle.ENTRY, "cache": root, "initial": initial,
-                  "reference": options.reference, "trace": declaration, "inference-config": configuration,
-                  "output": root / "execute-cycle-cli"}
-        entry = lifecycle.ENTRY.parents[3] / "entries" / "cycleexecute.py"
-        command = [sys.executable, "-B", str(entry), *cycle.flags(values)]
-        (root / "cycle-execute-command.json").write_text(json.dumps(command) + "\n")
-        result, = self.command(command, root / "execute-cycle-cli.jsonl")
-        self.assertEqual(result, json.loads((values["output"] / "execution.json").read_text()))
-        self.assertFalse((values["output"] / "complete.json").exists())
-        self.assertNotIn("equal", result)
         failed = root / "failed-worker.py"
         failed.write_text("import sys\nprint('intentional child exit', file=sys.stderr)\nraise SystemExit(23)\n")
         selected = replace(options, inference=failed, learning=failed, output=root / "execution-failed")

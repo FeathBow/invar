@@ -23,10 +23,10 @@ import Invar.Score qualified as Score
 import Invar.Spec.Invocation qualified as V
 import Store (workspace)
 import System.FilePath ((</>))
-import Workloads (replace)
+import Workloads (everywhere, replace)
 
 inferenceObservations :: Group
-inferenceObservations = Group "Complete inference observations" [("complete observations retain bound results and exact source identity", once matching), ("repeated missing reordered and trailing records fail", once complete), ("loads programs bindings and model images must correspond", once correspondence), ("strict result field and raw JSON schemas apply", once malformed), ("behavior zero signs retain actual floating literals", once signedZero), ("batch members retain the complete source through numerical and score inputs", once batchMatching), ("complete batch sources require loading and one complete framed execution", once batchBoundaries), ("batch member selection rejects absent reused and mismatched peer bindings", once batchPeers)]
+inferenceObservations = Group "Complete inference observations" [("complete observations retain bound results and exact source identity", once matching), ("repeated missing reordered and trailing records fail", once complete), ("loads programs bindings and model images must correspond", once correspondence), ("strict result field and raw JSON schemas apply", once malformed), ("behavior zero signs retain actual floating literals", once signedZero), ("integral spellings of counts seeds and bindings are admitted as integers", once integral), ("batch members retain the complete source through numerical and score inputs", once batchMatching), ("complete batch sources require loading and one complete framed execution", once batchBoundaries), ("batch member selection rejects absent reused and mismatched peer bindings", once batchPeers)]
   where
     once = withTests 1 . property
 
@@ -101,6 +101,15 @@ signedZero = do
         actual <- evalEither (observe (spelling text word))
         Result.behaviorBits (Observation.result actual) === [word, quarterWord]
     forM_ [("[0.0,-0.25]", negativeWord), ("[-0.0,-0.25]", 0), ("[-0,-0.25]", negativeWord)] $ \(text, word) -> reject (spelling text word)
+
+integral :: PropertyT IO ()
+integral = do
+    events <- fixture
+    original <- evalEither (observe (wire events))
+    let spellings = [("\"seed\":17", "\"seed\":17.0"), ("\"call\":7", "\"call\":7.0"), ("[1,2,3]", "[1.0,2.0,3.0]"), ("\"prompt_length\":1", "\"prompt_length\":1.0")]
+    actual <- evalEither (observe (foldr (uncurry everywhere) (wire events) spellings))
+    Observation.result actual === Observation.result original
+    Observation.binding actual === bound
 
 batchFixture :: PropertyT IO ([Value], [Value])
 batchFixture = do

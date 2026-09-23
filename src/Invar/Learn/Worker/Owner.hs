@@ -1,5 +1,3 @@
-{-# LANGUAGE RankNTypes #-}
-
 module Invar.Learn.Worker.Owner (Runner, withRunner, borrowed, run) where
 
 import Data.ByteString.Char8 qualified as Bytes

@@ -1,4 +1,3 @@
-{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE RoleAnnotations #-}
 
 module Invar.Worker.Resident (Options (..), Resident, Receipt, withResident, withBorrowed, run, report, completion, loaded, acknowledgement, session) where

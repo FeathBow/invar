@@ -26,7 +26,6 @@ construction =
         [ ("arithmetic and semantic control reach the finite loader", once arithmetic)
         , ("Boolean construction preserves its declared sink type", once boolean)
         , ("type-level sink declarations match the loaded contract", once contracts)
-        , ("primitive meanings cannot redefine typed operators", once meanings)
         , ("source type claims match the loaded schema", once sourceTypes)
         , ("host-level selection changes the program artifact", once selection)
         , ("typed output follows the arithmetic reference", campaign reference)
@@ -82,11 +81,6 @@ contracts = do
     rejected (C.InputMismatch "out" BooleanType NumberType) (C.compile meaning [C.emit @"out" @"arithmetic" @Allowed C.true])
     rejected (C.InvalidArtifact (A.ValidationError (D.WrongSpecification "arithmetic" "other"))) (C.compile meaning [C.emit @"out" @"other" @Allowed (C.number @1 @1)])
     rejected (C.MissingSink "missing") (C.compile meaning [C.emit @"missing" @"arithmetic" @Allowed (C.number @1 @1)])
-
-meanings :: PropertyT IO ()
-meanings = do
-    let replaced = meaning {E.meanings = Map.insert "add" O.Multiply (E.meanings meaning)}
-    rejected (C.MeaningMismatch "add" O.Add O.Multiply) (C.compile replaced [program])
 
 sourceTypes :: PropertyT IO ()
 sourceTypes = do

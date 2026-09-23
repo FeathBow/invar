@@ -12,7 +12,6 @@ import Data.Ratio ((%))
 import Numeric.Natural (Natural)
 import Prelude hiding (compare)
 
--- Numerical summary inputs carry no execution or invocation authority.
 data Sample = Sample
     { sampleCohort :: Natural
     , sampleName :: String
