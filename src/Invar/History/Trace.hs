@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.History.Trace (Run (..), Mode (..), Checked, Generation, admit, describe, generations, cohort, publication, diagnostics, closing, modelLoads, roleOutputs, profiles, residentGroups) where
+module Invar.History.Trace (Run (..), Mode (..), Checked, Generation, admit, describe, generations, cohort, publication, diagnostics, closing, modelLoads, roleOutputs, profiles) where
 
 import Control.Monad (foldM, unless)
 import Crypto.Hash.SHA256 qualified as SHA256
@@ -115,9 +115,6 @@ roleOutputs (Generation _ _ _ values _ _) = [encoded | Frame encoded fields <- v
 
 profiles :: Generation -> [Profile.Observation]
 profiles (Generation _ _ _ _ _ values) = values
-
-residentGroups :: Generation -> [Resident.Group]
-residentGroups (Generation _ _ _ _ groups _) = groups
 
 describe :: Checked -> Value
 describe (Checked digest accepted closed) = object ["log_sha256" .= digest, "generations" .= map generation accepted, "closed" .= [Object fields | Frame _ fields <- closed]]

@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Replay.Call (Call, admit, decode, value, cohort, cohorts, consumed, result, rawConsumed, bound, responseTokens, session) where
+module Invar.Replay.Call (Call, admit, decode, value, cohort, cohorts, consumed, result, bound, responseTokens, session) where
 
 import Control.Monad (unless, when)
 import Data.Aeson (Object, Value (..), encode, object, withObject, (.:), (.=))
@@ -25,7 +25,6 @@ data Call = Call
     { cohort :: Natural
     , consumed :: Object
     , result :: Object
-    , rawConsumed :: ByteString
     , bound :: V.Binding
     , body :: Output.Body
     , request :: Request
@@ -41,7 +40,7 @@ admit index (first, lastOutput) = do
     Output.validate limit observed
     Output.rawBehavior lastOutput (Output.bits observed)
     loading <- parseEither (\fields -> if Fields.member "load" fields then Just <$> (fields .: "load" >>= (.: "program")) else pure Nothing) input
-    pure (Call index input finished first binding observed requested loading)
+    pure (Call index input finished binding observed requested loading)
 
 consumption :: Object -> Parser (V.Binding, Request, Model.Model)
 consumption fields = do

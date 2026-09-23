@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Policy.File (File, withFile, tensors, metadata, identity, rawIdentity, seekTensor, exact, finite, equal, sameRepresentation, nonzero) where
+module Invar.Policy.File (File, withFile, tensors, metadata, identity, rawIdentity, seekTensor, exact, finite, equal, nonzero) where
 
 import Control.Exception (bracket)
 import Control.Monad (foldM, unless, when, (>=>))
@@ -87,15 +87,6 @@ consume (file, remaining) context = do
     chunk <- exact file count
     unless (finite chunk) (invalid "Policy adapter contains a non-finite FP32 tensor")
     consume (file, remaining - count) (SHA256.update context chunk)
-
-sameRepresentation :: File -> File -> IO Bool
-sameRepresentation first second = do
-    let left = tensors first
-        right = tensors second
-    compared <- traverse (\(before, after) -> equal (first, before) (second, after)) (zip left right)
-    mapM_ (nonzero first) (drop (length right) left)
-    mapM_ (nonzero second) (drop (length left) right)
-    pure (metadata first == metadata second && left == right && and compared)
 
 finite :: ByteString -> Bool
 finite bytes = all finiteWord [0, wordSize .. Bytes.length bytes - wordSize]

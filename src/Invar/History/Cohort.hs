@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.History.Cohort (Checked, admit, admitLog, prepareInput, describe, inferences, update, rewards) where
+module Invar.History.Cohort (Checked, admit, admitLog, describe, inferences, update, rewards) where
 
 import Control.Monad (unless)
 import Data.Aeson (Object, Value (..), object, toJSON, withObject, (.:), (.=))
@@ -30,12 +30,6 @@ admitLog settings (workload, selected) encoded = do
     observed <- observeInferences settings (workload, selected) encoded
     reported <- Report.admit selected encoded
     admit settings (workload, observed) reported
-
-prepareInput :: Learn.Settings -> (Workload.Cycle, Natural) -> ByteString -> Either String (ByteString, ByteString)
-prepareInput settings selection@(workload, _) encoded = do
-    observed <- observeInferences settings selection encoded
-    (program, payload, _) <- numericalInput settings (workload, observed)
-    pure (program, payload)
 
 observeInferences :: Learn.Settings -> (Workload.Cycle, Natural) -> ByteString -> Either String [Observation.Report]
 observeInferences settings (workload, selected) encoded = do

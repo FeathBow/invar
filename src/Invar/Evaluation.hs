@@ -21,7 +21,6 @@ module Invar.Evaluation (
     sampleReward,
     sampleTokens,
     sampleTruncated,
-    sampleBinding,
 ) where
 
 import Control.Monad (foldM, unless, when)
@@ -264,9 +263,6 @@ sampleTokens = observedTokens
 
 sampleTruncated :: Sample -> Bool
 sampleTruncated = observedTruncated
-
-sampleBinding :: Sample -> Invocation.Binding
-sampleBinding = observedBinding
 
 residence :: Report -> Maybe Resident.Ledger
 residence (Report _ _ _ _ _ physical) = physical

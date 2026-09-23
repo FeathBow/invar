@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Resident.Observation (State, Group, empty, owner, count, inference, learning, learningObserved, finish, source, prefix, body, modelProfiles, physicalOwner, ordinal, bindings, acknowledgement, costs, loading, activation, release, describe) where
+module Invar.Resident.Observation (State, Group, empty, owner, count, inference, learning, finish, source, prefix, body, modelProfiles, physicalOwner, ordinal, bindings, acknowledgement, loading, activation, release, describe) where
 
 import Control.Monad (foldM, unless, when)
 import Data.Aeson (Object, Value (..), object, (.:), (.=))
@@ -75,9 +75,6 @@ inference (cohort, current) records = do
 
 learning :: State -> (Learn.Settings, Report.Report) -> [Frame.Frame] -> Either String (State, Group, [Frame.Frame])
 learning current (settings, report) = learner (Trace.validate settings) current report
-
-learningObserved :: State -> Report.Report -> [Frame.Frame] -> Either String (State, Group, [Frame.Frame])
-learningObserved = learner Trace.validateObserved
 
 learner :: (Report.Report -> [Object] -> Either String ()) -> State -> Report.Report -> [Frame.Frame] -> Either String (State, Group, [Frame.Frame])
 learner validate current report records = do

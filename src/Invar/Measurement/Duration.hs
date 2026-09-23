@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Measurement.Duration (Duration, Clock (..), admit, value, encoding, seconds, clock, peaks, nativeMemory, sameClock, total, checkedSeconds) where
+module Invar.Measurement.Duration (Duration, Clock (..), admit, value, encoding, seconds, clock, peaks, total) where
 
 import Control.Monad (unless)
 import Data.Aeson (Object, ToJSON (..), Value (..), object, (.:), (.=))
@@ -53,12 +53,6 @@ seconds (Worker elapsed _ _) = elapsed
 seconds (Metal elapsed _ _) = elapsed
 seconds (Cpu elapsed) = elapsed
 
-sameClock :: Duration -> Duration -> Bool
-sameClock (Worker {}) (Worker {}) = True
-sameClock (Metal {}) (Metal {}) = True
-sameClock (Cpu _) (Cpu _) = True
-sameClock _ _ = False
-
 clock :: Duration -> Clock
 clock (Worker {}) = WorkerClock
 clock (Metal {}) = MetalClock
@@ -67,10 +61,6 @@ clock (Cpu _) = CpuClock
 peaks :: Duration -> Maybe (Natural, Natural)
 peaks (Worker _ allocated reserved) = Just (allocated, reserved)
 peaks _ = Nothing
-
-nativeMemory :: Duration -> Maybe (Natural, Natural)
-nativeMemory (Metal _ active cached) = Just (active, cached)
-nativeMemory _ = Nothing
 
 total :: [Double] -> Either String Double
 total values = checkedSeconds (if correction /= 0 && not (isInfinite correction || isNaN correction) then high + correction else high)

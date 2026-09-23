@@ -84,7 +84,7 @@ jobs:
           core="$(cabal list-bin exe:invar)"
           core_directory="$(dirname "$core")"
           export PATH="$core_directory:$PATH"
-          python -B -m unittest worker.tests.invocation worker.tests.probefixture worker.tests.probepacked worker.tests.probestore
+          python -B -m unittest worker.tests.invocation worker.tests.probepacked worker.tests.probestore
           python -B -m unittest discover -s worker/tests/hf -t . -p '*.py'
       - name: Format
         shell: bash

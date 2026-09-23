@@ -8,7 +8,6 @@ module Invar.Store (
     method,
     Phase (..),
     Failure (..),
-    validateLocation,
     publish,
     publishCheckpoint,
 ) where
