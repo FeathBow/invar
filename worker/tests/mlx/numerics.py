@@ -75,6 +75,16 @@ class NumericsTests(unittest.TestCase):
         mlx_numerics.NATIVE.install(ordinary)
         self.assertEqual(mlx_rollout.prefill_batch_size(ordinary, mlx_rollout.Sampling(batch_size=4, prefill_step=2)), 4)
 
+    def test_stock_profile_observation_carries_no_row_independent_fields(self):
+        ordinary, _ = model()
+        mlx_numerics.NATIVE.install(ordinary)
+        observed = mlx_numerics.NATIVE.observe(ordinary)
+        self.assertFalse({"projection_stock_rows", "prefill", "attention_stock_queries"} & set(observed))
+        primary, _ = model()
+        mlx_numerics.PRIMARY.install(primary)
+        self.assertEqual({key: mlx_numerics.PRIMARY.observe(primary)[key] for key in ("projection_stock_rows", "attention_stock_queries")},
+                         {"projection_stock_rows": SPLIT_ROWS, "attention_stock_queries": 64})
+
     def test_actual_arithmetic_is_required_by_its_assembly_binding(self):
         mx.random.seed(73)
         primary, config = model()
