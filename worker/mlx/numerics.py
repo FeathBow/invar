@@ -7,8 +7,8 @@ from mlx_lm.models.qwen3_next import Qwen3NextAttention
 from mlx_lm.tuner.lora import LoRALinear
 
 from worker.mlx import cache as mlx_cache
-from worker.mlx.attention import QUERY_TOKENS, QueryAttention
-from worker.mlx.projection import BITS, GROUP_SIZE, MINIMUM_COLUMNS, MODE, PHYSICAL_ROWS, ColumnLoRALinear, RowLinear
+from worker.mlx.attention import QUERY_TOKENS, SPLIT_QUERIES, QueryAttention
+from worker.mlx.projection import BITS, GROUP_SIZE, MINIMUM_COLUMNS, MODE, PHYSICAL_ROWS, SPLIT_ROWS, ColumnLoRALinear, RowLinear
 from worker.mlx import recurrence as mlx_recurrence
 
 
@@ -88,10 +88,13 @@ class Profile:
         return {"format": "invar-mlx-numerics/v1", "name": self.name, "modules": observed, **learning,
                 "projection_rows": PHYSICAL_ROWS if self.linear is RowLinear else None,
                 "projection_row_padding": "zero rows to the fixed block; discard padded outputs" if self.linear is RowLinear else None,
+                "projection_stock_rows": SPLIT_ROWS if self.linear is RowLinear else None,
+                "prefill": "one request per prefill call" if self.linear is RowLinear else None,
                 "lora_minimum_columns": MINIMUM_COLUMNS if self.lora is ColumnLoRALinear else None,
                 "lora_column_padding": "repeat single column; discard repeated output" if self.lora is ColumnLoRALinear else None,
                 "attention_query_tokens": QUERY_TOKENS if self.attention is QueryAttention else None,
                 "attention_query_padding": "repeat final query/mask; discard repeated outputs" if self.attention is QueryAttention else None,
+                "attention_stock_queries": SPLIT_QUERIES if self.attention is QueryAttention else None,
                 "caches": [qualified(kind) for kind in expected],
                 "batch_kv": qualified(mlx_cache.TypedBatchKVCache),
                 "recurrence": {"module": qualified(mlx_recurrence.CheckpointedDeltaNet),
@@ -99,6 +102,6 @@ class Profile:
                 "packages": {name: version(name) for name in ("mlx", "mlx-lm")}}
 
 
-PRIMARY = Profile(name="independent-native-rows/v4", linear=RowLinear, lora=ColumnLoRALinear,
+PRIMARY = Profile(name="independent-native-rows/v5", linear=RowLinear, lora=ColumnLoRALinear,
                   attention=QueryAttention, learning_linear=nn.QuantizedLinear)
 NATIVE = Profile(name="native-library-arithmetic/v1", linear=nn.QuantizedLinear, lora=LoRALinear, attention=Qwen3NextAttention)

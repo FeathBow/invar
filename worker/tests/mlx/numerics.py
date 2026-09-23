@@ -13,14 +13,16 @@ from mlx_lm.tuner.lora import LoRALinear
 
 from worker.mlx import adapter as mlx_adapter
 from worker.mlx import numerics as mlx_numerics
-from worker.mlx.projection import ColumnLoRALinear, RowLinear
+from worker.mlx.projection import SPLIT_ROWS, ColumnLoRALinear, RowLinear
+from worker.mlx import rollout as mlx_rollout
 from worker.mlx import tensors as mlx_tensors
 from worker.tests.mlx.rollout import model
 
 INPUT_WIDTH = 5120
 OUTPUT_WIDTH = 48
-ROW_COUNT = 134
-ROW_COUNTS = (1, 2, 5, 7, 8, 9, 13, 31, 32, 33, 67, ROW_COUNT)
+ROW_COUNT = SPLIT_ROWS - 1
+ROW_COUNTS = (1, 2, 3, 4, 5, 7, 8, 9, 13, 31, 32, 33, ROW_COUNT)
+STOCK_ROWS = (SPLIT_ROWS, SPLIT_ROWS + 3, 134)
 PARAMETER_SCALE = 0.01
 
 
@@ -52,6 +54,26 @@ class NumericsTests(unittest.TestCase):
         adapter.lora_b = mx.random.normal(adapter.lora_b.shape) * PARAMETER_SCALE
         object.__setattr__(adapter, "__class__", ColumnLoRALinear)
         self.rows(adapter, inputs)
+
+    def test_calls_of_stock_rows_use_the_library_projection(self):
+        mx.random.seed(79)
+        inputs = mx.random.normal((max(STOCK_ROWS), INPUT_WIDTH)).astype(mx.bfloat16)
+        linear = projection()
+        object.__setattr__(linear, "__class__", RowLinear)
+        for count in STOCK_ROWS:
+            with self.subTest(rows=count):
+                self.assertTrue(mlx_tensors.equal({"output": linear(inputs[:count])},
+                                                  {"output": nn.QuantizedLinear.__call__(linear, inputs[:count])}))
+
+    def test_row_independent_generation_prefills_one_request_below_stock_rows(self):
+        primary, _ = model()
+        mlx_numerics.PRIMARY.install(primary)
+        self.assertEqual(mlx_rollout.prefill_batch_size(primary, mlx_rollout.Sampling(batch_size=4, prefill_step=2)), 1)
+        with self.assertRaisesRegex(ValueError, "decode batch below"):
+            mlx_rollout.prefill_batch_size(primary, mlx_rollout.Sampling(batch_size=SPLIT_ROWS, prefill_step=2))
+        ordinary, _ = model()
+        mlx_numerics.NATIVE.install(ordinary)
+        self.assertEqual(mlx_rollout.prefill_batch_size(ordinary, mlx_rollout.Sampling(batch_size=4, prefill_step=2)), 4)
 
     def test_actual_arithmetic_is_required_by_its_assembly_binding(self):
         mx.random.seed(73)

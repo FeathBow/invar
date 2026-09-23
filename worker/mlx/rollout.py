@@ -3,8 +3,10 @@ from dataclasses import dataclass
 import math
 
 import mlx.core as mx
+import mlx.nn as nn
 from mlx_lm.generate import BatchGenerator
 
+from worker.mlx.projection import SPLIT_ROWS, RowLinear
 from worker.mlx.tokenization import prompt
 from worker.tokenization import decode
 from worker.trajectory import Trajectory
@@ -68,6 +70,15 @@ def fp32_logits(_tokens, logits):
     return logits.astype(mx.float32)
 
 
+def prefill_batch_size(model, sampling):
+    projection = next(module for _, module in model.named_modules() if isinstance(module, nn.QuantizedLinear))
+    if type(projection) is not RowLinear:
+        return sampling.batch_size
+    if sampling.batch_size >= SPLIT_ROWS:
+        raise ValueError("Row-independent generation requires a decode batch below its stock projection rows")
+    return 1
+
+
 def generate(model, tokenizer, requests, *, sampling):
     return execute(model, tokenizer, requests, sampling=sampling, samplers=[Sampler(request) for request in requests])
 
@@ -80,7 +91,7 @@ def execute(model, tokenizer, requests, *, sampling, samplers):
     model.eval()
     prefixes = [prompt(tokenizer, request.prompt)[0].tolist() for request in requests]
     engine = BatchGenerator(model, completion_batch_size=sampling.batch_size,
-                            prefill_batch_size=sampling.batch_size, prefill_step_size=sampling.prefill_step,
+                            prefill_batch_size=prefill_batch_size(model, sampling), prefill_step_size=sampling.prefill_step,
                             stop_tokens=[[tokenizer.eos_token_id]])
     try:
         uids = engine.insert(prefixes, max_tokens=[request.limit for request in requests], samplers=samplers,

@@ -9,15 +9,18 @@ import unittest
 
 import mlx.core as mx
 
-from worker.mlx.attention import attention, query_block
+from mlx_lm.models.base import scaled_dot_product_attention
+
+from worker.mlx.attention import SPLIT_QUERIES, attention, query_block
 from worker.mlx.cache import TypedBatchKVCache
 from worker.mlx import tensors as mlx_tensors
 
 QUERY_HEADS = 24
 KEY_HEADS = 4
 HEAD_WIDTH = 256
-VALID_TOKENS = 67
-PADDED_TOKENS = 96
+VALID_TOKENS = 37
+PADDED_TOKENS = 48
+STOCK_TOKENS = 67
 LEFT_PADDING = 79
 SCALE = HEAD_WIDTH ** -0.5
 
@@ -44,6 +47,15 @@ class AttentionTests(unittest.TestCase):
         valid = positions[None, None, None, :] < mx.array([VALID_TOKENS, PADDED_TOKENS])[:, None, None, None]
         actual = attention(*mixed, cache=TypedBatchKVCache([0, 0]), mask=causal & valid, scale=SCALE)
         self.assertTrue(mlx_tensors.equal({"output": actual[:1, :, :VALID_TOKENS]}, {"output": original}))
+
+    def test_one_sequence_of_stock_queries_uses_the_library_attention(self):
+        mx.random.seed(89)
+        queries = values(QUERY_HEADS, STOCK_TOKENS)
+        keys, responses = (values(KEY_HEADS, STOCK_TOKENS) for _ in range(2))
+        actual = attention(queries, keys, responses, cache=None, mask="causal", scale=SCALE)
+        stock = scaled_dot_product_attention(queries, keys, responses, cache=None, scale=SCALE, mask="causal")
+        self.assertGreaterEqual(STOCK_TOKENS, SPLIT_QUERIES)
+        self.assertTrue(mlx_tensors.equal({"output": actual}, {"output": stock}))
 
     def test_masked_left_padding_preserves_the_logical_decode(self):
         mx.random.seed(83)

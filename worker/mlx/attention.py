@@ -1,10 +1,12 @@
 import mlx.core as mx
+from mlx_lm.models.base import scaled_dot_product_attention
 from mlx_lm.models.cache import BatchKVCache, KVCache
 from mlx_lm.models.qwen3_next import Qwen3NextAttention
 
 from worker.mlx.recurrence import bind
 
 QUERY_TOKENS = 8
+SPLIT_QUERIES = 64
 
 
 def align(keys, values, mask, *, left_padding):
@@ -17,6 +19,8 @@ def align(keys, values, mask, *, left_padding):
 
 def attention(queries, keys, values, *, cache, mask, scale):
     batch, heads, length, _ = queries.shape
+    if batch == 1 and length >= SPLIT_QUERIES:
+        return scaled_dot_product_attention(queries, keys, values, cache=cache, scale=scale, mask=mask)
     width = keys.shape[-2]
     if isinstance(mask, str):
         if mask != "causal":

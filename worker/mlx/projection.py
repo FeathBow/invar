@@ -6,7 +6,8 @@ BITS = 4
 GROUP_SIZE = 64
 MODE = "affine"
 MINIMUM_COLUMNS = 2
-PHYSICAL_ROWS = 8
+PHYSICAL_ROWS = 4
+SPLIT_ROWS = 64
 
 
 class RowLinear(nn.QuantizedLinear):
@@ -14,6 +15,8 @@ class RowLinear(nn.QuantizedLinear):
         shape = value.shape
         rows = value.reshape(-1, shape[-1])
         count = rows.shape[0]
+        if count >= SPLIT_ROWS:
+            return super().__call__(value)
         padding = -count % PHYSICAL_ROWS
         if padding:
             rows = mx.concatenate((rows, mx.zeros((padding, shape[-1]), dtype=rows.dtype)))
