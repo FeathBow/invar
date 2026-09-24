@@ -10,4 +10,4 @@ Use the Why, What and Validation sections to explain the change and report relev
 
 ## Sign-off
 
-Read the [Developer Certificate of Origin 1.1](https://developercertificate.org/) and sign off contributions you can certify with `git commit -s`. Contributions use [Apache-2.0](LICENSE). Preserve relevant sign-offs when squashing.
+Read the [Developer Certificate of Origin 1.1](https://developercertificate.org/) and sign off every commit with `git commit -s`, using the name and email of the commit author. Contributions use [Apache-2.0](LICENSE). Preserve relevant sign-offs when squashing.
