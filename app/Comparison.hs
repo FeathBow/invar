@@ -30,7 +30,7 @@ run ("initial" : supplied) = do
     rightPolicy <- either die pure (O.required fields "right-policy")
     rightLearner <- either die pure (O.required fields "right-learner")
     codec <- either die pure (NativeCodec.select fields)
-    State.compareInitial codec (settings, left) (settings {Learn.policy = rightPolicy, Learn.learner = rightLearner}, right) >>= emit
+    State.compareInitialFiles codec (settings, left) (settings {Learn.policy = rightPolicy, Learn.learner = rightLearner}, right) >>= emit
 run [kind, "--help"] | kind `elem` ["gradients", "probabilities", "states"] = putStrLn usage
 run (kind : supplied) | kind `elem` ["gradients", "probabilities", "states"] = do
     let artifact = if kind == "states" then "checkpoint" else kind

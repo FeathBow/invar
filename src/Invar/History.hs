@@ -31,7 +31,6 @@ import Invar.Resident qualified as Resident
 import Invar.Spec.Invocation qualified as V
 import Invar.Workload qualified as Workload
 import Numeric.Natural (Natural)
-import System.FilePath ((</>))
 import Prelude hiding (compare)
 
 data Declaration = Declaration
@@ -56,9 +55,10 @@ data Checked = Checked
     , standaloneDiagnostics :: [Value]
     , initializationDiagnostics :: [Value]
     , profileObservation :: Value
+    , initialState :: Initial.Checked
     }
 
-data Generation = Generation {generationTrace :: Trace.Generation, generationDirectory :: FilePath, generationArtifacts :: Value}
+data Generation = Generation {generationTrace :: Trace.Generation, generationArtifacts :: Value, generationState :: State.Observed, generationGradients :: Gradient.Observed}
 
 admit :: Decoder -> Declaration -> (ByteString, ByteString) -> IO Checked
 admit decoder declared (trainingOutput, finalOutput) = do
@@ -75,14 +75,14 @@ admit decoder declared (trainingOutput, finalOutput) = do
     observed <- traverse (generation (schema, expectedRng)) (zip [1 ..] selected)
     finalDiagnostics <- metadata (selected, initialDiagnostics) final finalOutput
     profiles <- either invalid pure (profileSummary declared selected (initialDiagnostics, finalDiagnostics))
-    pure (Checked declared trace initial observed final finalDiagnostics initialDiagnostics profiles)
+    pure (Checked declared trace initial observed final finalDiagnostics initialDiagnostics profiles admittedInitial)
   where
     generation (schema, expectedRng) (index, selected) = do
         published <- Publication.observe selected
-        observed <- Artifacts.successor (decoder, schema) (index, selected) published
+        (observed, state, gradients) <- Artifacts.successor (decoder, schema) (index, selected) published
         actualRng <- either invalid pure (rng observed)
         unless (actualRng == expectedRng) (invalid "Successor RNG vector inventory differs from the complete initial state")
-        pure (Generation selected (Publication.directory published) observed)
+        pure (Generation selected observed state gradients)
 
 independent :: Declaration -> [Trace.Generation] -> ByteString -> IO Inference.Report
 independent declared generations output = do
@@ -127,14 +127,14 @@ profileSummary declared generations (initial, final) = do
 workerModel :: Value -> Either String (Text, Text)
 workerModel = parseEither (withObject "worker model observation" (\fields -> (,) <$> fields .: "model" <*> fields .: "revision"))
 
-compare :: Decoder -> (Checked, Checked) -> IO Value
-compare decoder (left, right) = do
+compare :: (Checked, Checked) -> IO Value
+compare (left, right) = do
     let first = declaration left
         second = declaration right
         leftSettings = Trace.settings (training first)
         rightSettings = Trace.settings (training second)
-    initial <- State.compareInitial decoder (leftSettings, checkpoint first) (rightSettings, checkpoint second)
-    generations <- compareGenerations decoder (1, checkpoint first, checkpoint second) (generationObservations left, generationObservations right)
+    initial <- State.compareInitial (Initial.state (initialState left), Initial.state (initialState right))
+    generations <- compareGenerations 1 (generationObservations left, generationObservations right)
     initialEqual <- decision initial
     generationEqual <- and <$> traverse decision generations
     leftModel <- either invalid pure (workerModel (Inference.describe (independentObservation left)))
@@ -152,31 +152,25 @@ initialization :: Initial.Source -> Maybe Integer
 initialization Initial.Provided = Nothing
 initialization (Initial.Executed run _) = Just (Initial.seed run)
 
-compareGenerations :: Decoder -> (Natural, FilePath, FilePath) -> ([Generation], [Generation]) -> IO [Value]
-compareGenerations _ _ ([], []) = pure []
-compareGenerations _ (index, _, _) ([], remaining) = pure (missing "left" index remaining)
-compareGenerations _ (index, _, _) (remaining, []) = pure (missing "right" index remaining)
-compareGenerations decoder context@(index, _, _) (left : restLeft, right : restRight) = do
-    observed <- compareGeneration decoder context (left, right)
-    rest <- compareGenerations decoder (index + 1, generationDirectory left, generationDirectory right) (restLeft, restRight)
+compareGenerations :: Natural -> ([Generation], [Generation]) -> IO [Value]
+compareGenerations _ ([], []) = pure []
+compareGenerations index ([], remaining) = pure (missing "left" index remaining)
+compareGenerations index (remaining, []) = pure (missing "right" index remaining)
+compareGenerations index (left : restLeft, right : restRight) = do
+    observed <- compareGeneration index (left, right)
+    rest <- compareGenerations (index + 1) (restLeft, restRight)
     pure (observed : rest)
 
 missing :: Text -> Natural -> [Generation] -> [Value]
 missing side index remaining = [object ["generation" .= position, "missing" .= side, "equal" .= False] | (position, _) <- zip [index ..] remaining]
 
-compareGeneration :: Decoder -> (Natural, FilePath, FilePath) -> (Generation, Generation) -> IO Value
-compareGeneration decoder (index, previousLeft, previousRight) (left, right) = do
+compareGeneration :: Natural -> (Generation, Generation) -> IO Value
+compareGeneration index (left, right) = do
     let leftCohort = Trace.cohort (generationTrace left)
         rightCohort = Trace.cohort (generationTrace right)
-        leftReport = Cohort.update leftCohort
-        rightReport = Cohort.update rightCohort
-        leftPolicy = previousLeft </> "adapter.safetensors"
-        rightPolicy = previousRight </> "adapter.safetensors"
-        leftPath = generationDirectory left
-        rightPath = generationDirectory right
-    inputsEqual <- either invalid pure (Report.sameInput leftReport rightReport)
-    states <- State.compareObserved decoder (leftReport, leftPolicy, leftPath) (rightReport, rightPolicy, rightPath)
-    gradients <- Gradient.compareObserved (leftReport, leftPolicy, leftPath </> "gradients.safetensors") (rightReport, rightPolicy, rightPath </> "gradients.safetensors")
+    inputsEqual <- either invalid pure (Report.sameInput (Cohort.update leftCohort) (Cohort.update rightCohort))
+    states <- State.compareObserved (generationState left, generationState right)
+    gradients <- Gradient.compareObserved (generationGradients left, generationGradients right)
     statesEqual <- decision states
     gradientsEqual <- decision gradients
     leftProbabilities <- field "probabilities" (generationArtifacts left)

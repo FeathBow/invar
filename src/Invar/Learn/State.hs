@@ -1,93 +1,101 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Learn.State (Decoder (..), compare, compareInitial, compareObserved) where
+module Invar.Learn.State (Decoder (..), Initial, Observed, observeInitial, observe, initialSchema, initialSteps, initialChecked, steps, checked, compareInitial, compareObserved, compare, compareInitialFiles) where
 
 import Control.Monad (unless)
 import Data.Aeson (Value, object, toJSON, withObject, (.:), (.=))
 import Data.Aeson.Types (parseEither)
 import Data.Map.Strict (Map)
-import Data.Map.Strict qualified as Map
-import Data.Maybe (catMaybes)
-import Data.Set qualified as Set
 import Data.Text (Text)
 import Invar.Learn qualified as Learn
 import Invar.Learn.Adapter qualified as Adapter
-import Invar.Learn.Changes qualified as Changes
 import Invar.Learn.Checkpoint qualified as Checkpoint
 import Invar.Learn.Codec (Decoder (..))
 import Invar.Learn.Codec qualified as Codec
-import Invar.Learn.Native qualified as Native
+import Invar.Learn.Fingerprint qualified as Fingerprint
 import Invar.Learn.Observation qualified as Observation
 import Invar.Learn.Report qualified as Report
 import Invar.Policy.File qualified as File
-import Invar.Policy.Header qualified as Header
 import System.FilePath ((</>))
 import Prelude hiding (compare)
 
-compareInitial :: Decoder -> (Learn.Settings, FilePath) -> (Learn.Settings, FilePath) -> IO Value
-compareInitial decoder left@(leftSettings, leftPath) right@(rightSettings, rightPath) = do
-    mapM_ (either (invalid . show) pure . Learn.validate) [leftSettings, rightSettings]
-    File.withFile (leftPath </> "adapter.safetensors") $ \before ->
-        File.withFile (rightPath </> "adapter.safetensors") $ \after -> do
-            Adapter.verify (Learn.policy leftSettings) before
-            Adapter.verify (Learn.policy rightSettings) after
-            leftParameters <- either invalid pure (Adapter.parameters (Adapter.schema before))
-            rightParameters <- either invalid pure (Adapter.parameters (Adapter.schema after))
-            Codec.withSession decoder $ \session -> do
-                original <- initialCheckpoint (session, leftParameters) left
-                changed <- initialCheckpoint (session, rightParameters) right
-                let originalValue = Checkpoint.value original
-                    changedValue = Checkpoint.value changed
-                distinctReferences [originalValue, changedValue]
-                policies <- policyChanges (before, after)
-                learners <- Changes.compare session [toJSON ("learner" :: Text)] (originalValue, changedValue)
-                pure (object ["comparison" .= ("initial checkpoint values and tensor bytes" :: Text), "equal" .= (null policies && null learners), "policy_equal" .= null policies, "learner_equal" .= null learners, "left_policy" .= Learn.policy leftSettings, "right_policy" .= Learn.policy rightSettings, "left_learner" .= Learn.learner leftSettings, "right_learner" .= Learn.learner rightSettings, "left_rng" .= object (Checkpoint.rngSummary original), "right_rng" .= object (Checkpoint.rngSummary changed), "differences" .= (policies ++ learners)])
+data Initial = Initial Learn.Settings (Map Text [Integer]) [File.Scan] Checkpoint.Checked [Integer] Fingerprint.Fingerprint
 
-initialCheckpoint :: (Codec.Session, Map Text [Integer]) -> (Learn.Settings, FilePath) -> IO Checkpoint.Checked
-initialCheckpoint (session, parameters) (settings, directory) = do
+data Observed = Observed Report.Report (String, String) [File.Scan] Checkpoint.Checked [Integer] Fingerprint.Fingerprint
+
+observeInitial :: Codec.Session -> (Learn.Settings, FilePath) -> IO Initial
+observeInitial session (settings, directory) = do
+    (scans, schema) <- File.withFile (directory </> "adapter.safetensors") $ \file -> do
+        scans <- Adapter.verifyScan (Learn.policy settings) file
+        pure (scans, Adapter.schema file)
+    parameters <- either invalid pure (Adapter.parameters schema)
     decoded <- Codec.decode session (directory </> "learner.pt", Learn.learner settings)
-    checked <- either invalid pure (Checkpoint.admitInitial settings parameters decoded)
-    _ <- Checkpoint.inspectTensors session checked
-    pure checked
+    admitted <- either invalid pure (Checkpoint.admitInitial settings parameters decoded)
+    counted <- Checkpoint.inspectTensors session admitted
+    Initial settings schema scans admitted counted <$> Fingerprint.native session (Checkpoint.value admitted)
 
-distinctReferences :: [Native.Value] -> IO ()
-distinctReferences values = do
-    let references = map Native.index (concatMap Native.tensorValues values)
-    unless (length references == Set.size (Set.fromList references)) (invalid "Native tensor references were reused across checkpoint snapshots")
+initialSchema :: Initial -> Map Text [Integer]
+initialSchema (Initial _ schema _ _ _ _) = schema
+
+initialSteps :: Initial -> [Integer]
+initialSteps (Initial _ _ _ _ counted _) = counted
+
+initialChecked :: Initial -> Checkpoint.Checked
+initialChecked (Initial _ _ _ admitted _ _) = admitted
+
+observe :: Codec.Session -> (Report.Report, Map Text [Integer], FilePath) -> IO Observed
+observe session (report, schema, directory) = do
+    names@(policy, learner) <- either invalid pure (identities report)
+    parameters <- either invalid pure (Adapter.parameters schema)
+    scans <- File.withFile (directory </> "adapter.safetensors") $ \file -> Adapter.matches schema file >> Adapter.verifyScan policy file
+    decoded <- Codec.decode session (directory </> "learner.pt", learner)
+    admitted <- either invalid pure (Checkpoint.admit report parameters decoded)
+    counted <- Checkpoint.inspectTensors session admitted
+    Observed report names scans admitted counted <$> Fingerprint.native session (Checkpoint.value admitted)
+
+steps :: Observed -> [Integer]
+steps (Observed _ _ _ _ counted _) = counted
+
+checked :: Observed -> Checkpoint.Checked
+checked (Observed _ _ _ admitted _ _) = admitted
+
+compareInitial :: (Initial, Initial) -> IO Value
+compareInitial (Initial leftSettings _ before original _ leftPrint, Initial rightSettings _ after changed _ rightPrint) = do
+    learners <- either invalid pure (Fingerprint.differences [toJSON ("learner" :: Text)] (leftPrint, rightPrint))
+    let policies = policyChanges (before, after)
+    pure (object ["comparison" .= ("initial checkpoint values and tensor bytes" :: Text), "equal" .= (null policies && null learners), "policy_equal" .= null policies, "learner_equal" .= null learners, "left_policy" .= Learn.policy leftSettings, "right_policy" .= Learn.policy rightSettings, "left_learner" .= Learn.learner leftSettings, "right_learner" .= Learn.learner rightSettings, "left_rng" .= object (Checkpoint.rngSummary original), "right_rng" .= object (Checkpoint.rngSummary changed), "differences" .= (policies ++ learners)])
+
+compareObserved :: (Observed, Observed) -> IO Value
+compareObserved (Observed first firstIds before _ _ leftPrint, Observed second secondIds after _ _ rightPrint) = do
+    learners <- either invalid pure (Fingerprint.differences [toJSON ("learner" :: Text)] (leftPrint, rightPrint))
+    summary (first, second) (firstIds, secondIds) (policyChanges (before, after), learners)
+
+compareInitialFiles :: Decoder -> (Learn.Settings, FilePath) -> (Learn.Settings, FilePath) -> IO Value
+compareInitialFiles decoder left right = Codec.withSession decoder $ \session -> do
+    mapM_ (either (invalid . show) pure . Learn.validate . fst) [left, right]
+    before <- observeInitial session left
+    after <- observeInitial session right
+    compareInitial (before, after)
 
 compare :: Decoder -> FilePath -> (Observation.Input, Observation.Input) -> IO Value
 compare decoder policy (left, right) = do
     first <- Observation.report left
     second <- Observation.report right
     either invalid pure (Report.paired first second)
-    compareObserved decoder (first, policy, Observation.artifact left) (second, policy, Observation.artifact right)
-
-compareObserved :: Decoder -> (Report.Report, FilePath, FilePath) -> (Report.Report, FilePath, FilePath) -> IO Value
-compareObserved decoder (first, leftPolicy, left) (second, rightPolicy, right) = do
-    leftSchema <- inputSchema first leftPolicy
-    rightSchema <- inputSchema second rightPolicy
-    leftParameters <- either invalid pure (Adapter.parameters leftSchema)
-    rightParameters <- either invalid pure (Adapter.parameters rightSchema)
-    firstIds <- either invalid pure (identities first)
-    secondIds <- either invalid pure (identities second)
-    File.withFile (left </> "adapter.safetensors") $ \before ->
-        File.withFile (right </> "adapter.safetensors") $ \after -> do
-            Adapter.verify (fst firstIds) before
-            Adapter.verify (fst secondIds) after
-            Adapter.matches leftSchema before
-            Adapter.matches rightSchema after
-            Codec.withSession decoder $ \session -> do
-                original <- checkpoint (session, first, leftParameters) (left, snd firstIds)
-                changed <- checkpoint (session, second, rightParameters) (right, snd secondIds)
-                distinctReferences [original, changed]
-                policies <- policyChanges (before, after)
-                learners <- Changes.compare session [toJSON ("learner" :: Text)] (original, changed)
-                summary (first, second) (firstIds, secondIds) (policies, learners)
+    leftSchema <- inputSchema first policy
+    rightSchema <- inputSchema second policy
+    Codec.withSession decoder $ \session -> do
+        before <- observe session (first, leftSchema, Observation.artifact left)
+        after <- observe session (second, rightSchema, Observation.artifact right)
+        compareObserved (before, after)
 
 inputSchema :: Report.Report -> FilePath -> IO (Map Text [Integer])
 inputSchema report path = do
     expected <- either invalid pure (parseEither (withObject "request" (.: "policy")) (Report.request report))
     File.withFile path (\file -> Adapter.verify expected file >> pure (Adapter.schema file))
+
+policyChanges :: ([File.Scan], [File.Scan]) -> [Value]
+policyChanges = Fingerprint.tensorDifferences (\name -> ["path" .= ["policy", name]])
 
 identities :: Report.Report -> Either String (String, String)
 identities report = do
@@ -104,26 +112,6 @@ identities report = do
         before <- update .: "before"
         after <- update .: "after"
         unless (before == (expected :: String) && after == policy) (fail "Update policy identities disagree")
-
-checkpoint :: (Codec.Session, Report.Report, Map Text [Integer]) -> (FilePath, String) -> IO Native.Value
-checkpoint (session, report, parameters) (directory, digest) = do
-    decoded <- Codec.decode session (directory </> "learner.pt", digest)
-    checked <- either invalid pure (Checkpoint.admit report parameters decoded)
-    _ <- Checkpoint.inspectTensors session checked
-    pure (Checkpoint.value checked)
-
-policyChanges :: (File.File, File.File) -> IO [Value]
-policyChanges (first, second) = catMaybes <$> traverse difference (Set.toAscList (Map.keysSet left `Set.union` Map.keysSet right))
-  where
-    left = Map.fromList [(Header.name tensor, tensor) | tensor <- File.tensors first]
-    right = Map.fromList [(Header.name tensor, tensor) | tensor <- File.tensors second]
-    difference name = case (Map.lookup name left, Map.lookup name right) of
-        (Just before, Just after) -> do
-            same <- File.equal (first, before) (second, after)
-            let fields = ["shape" | Header.shape before /= Header.shape after] ++ ["data" | not same] :: [Text]
-            pure (if null fields then Nothing else Just (object ["path" .= ["policy", name], "fields" .= fields]))
-        (Nothing, _) -> pure (Just (object ["path" .= ["policy", name], "missing" .= ("left" :: Text)]))
-        (_, Nothing) -> pure (Just (object ["path" .= ["policy", name], "missing" .= ("right" :: Text)]))
 
 summary :: (Report.Report, Report.Report) -> ((String, String), (String, String)) -> ([Value], [Value]) -> IO Value
 summary (first, second) ((firstPolicy, firstLearner), (secondPolicy, secondLearner)) (policies, learners) = do

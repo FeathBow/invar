@@ -15,5 +15,5 @@ inspect = History.admit
 initial :: Decoder -> (Learn.Settings, FilePath, Initial.Random) -> Initial.Source -> IO Initial.Checked
 initial = Initial.admit
 
-pair :: Decoder -> (History.Checked, History.Checked) -> IO ()
-pair decoder checked = void (History.compare decoder checked)
+pair :: (History.Checked, History.Checked) -> IO ()
+pair = void . History.compare

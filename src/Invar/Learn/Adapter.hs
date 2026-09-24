@@ -1,8 +1,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Learn.Adapter (schema, parameters, mlxParameters, verify, matches) where
+module Invar.Learn.Adapter (schema, parameters, mlxParameters, verify, verifyScan, matches) where
 
-import Control.Monad (unless)
+import Control.Monad (unless, void)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
@@ -30,9 +30,13 @@ mlxParameters entries = not (Map.null entries) && all native (Map.keys entries)
     native name = any (`Text.isSuffixOf` name) [".lora_a", ".lora_b"]
 
 verify :: String -> File.File -> IO ()
-verify expected file = do
-    actual <- File.identity file
+verify expected file = void (verifyScan expected file)
+
+verifyScan :: String -> File.File -> IO [File.Scan]
+verifyScan expected file = do
+    (actual, scans) <- File.identityScan file
     unless (actual == expected) (ioError (userError "Adapter contents do not match the requested tensor identity"))
+    pure scans
 
 matches :: Map Text [Integer] -> File.File -> IO ()
 matches expected file = do

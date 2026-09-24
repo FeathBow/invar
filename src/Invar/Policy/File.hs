@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Policy.File (File, withFile, tensors, metadata, identity, rawIdentity, seekTensor, exact, finite, equal, nonzero) where
+module Invar.Policy.File (File, Scan (..), withFile, tensors, metadata, identity, identityScan, scan, rawIdentityScan, seekTensor, exact, finite, nonzero) where
 
 import Control.Exception (bracket)
 import Control.Monad (foldM, unless, when, (>=>))
@@ -9,6 +9,7 @@ import Data.Bits ((.&.))
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as Bytes
 import Data.Map.Strict (Map)
+import Data.List (sortOn)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Invar.Artifact qualified as Artifact
@@ -17,6 +18,9 @@ import Invar.Policy.Header qualified as Header
 import System.IO (Handle, SeekMode (AbsoluteSeek), hClose, hFileSize, hSeek)
 
 data File = File Handle Integer (Map Text Text) [Header.Tensor]
+
+data Scan = Scan {scanName :: Text, scanShape :: [Integer], scanDigest :: String, scanNonzero :: Bool}
+    deriving (Eq, Show)
 
 withFile :: FilePath -> (File -> IO value) -> IO value
 withFile path action = bracket (Artifact.open "Tensor artifact" path) hClose (inspect >=> action)
@@ -43,50 +47,55 @@ inspect file = do
     pure (File file start attributes entries)
 
 identity :: File -> IO String
-identity source = do
+identity = fmap fst . identityScan
+
+identityScan :: File -> IO (String, [Scan])
+identityScan source = do
     encoding <- case Map.lookup "invar_policy" (metadata source) of
         Nothing -> pure Encoding.metadata
         Just "mlx-f32/v1" -> pure Encoding.mlxMetadata
         _ -> invalid "Unsupported policy tensor identity encoding"
-    Artifact.hex . SHA256.finalize <$> foldM (hashTensor encoding) SHA256.init (tensors source)
+    (context, scans) <- foldM (hashTensor encoding) (SHA256.init, []) (tensors source)
+    pure (Artifact.hex (SHA256.finalize context), reverse scans)
   where
-    hashTensor encoding context tensor = do
-        file <- seekTensor source tensor
-        consume (file, Header.end tensor - Header.begin tensor) (SHA256.update context (encoding tensor))
+    hashTensor encoding (context, scans) tensor = do
+        (updated, scanned) <- scanTensor source tensor (SHA256.update context (encoding tensor))
+        pure (updated, scanned : scans)
 
-rawIdentity :: File -> IO String
-rawIdentity (File file _ _ _) = hSeek file AbsoluteSeek 0 >> fmap Artifact.hex (Artifact.hash file)
+scan :: File -> IO [Scan]
+scan source = traverse (\tensor -> snd <$> scanTensor source tensor SHA256.init) (tensors source)
+
+scanTensor :: File -> Header.Tensor -> SHA256.Ctx -> IO (SHA256.Ctx, Scan)
+scanTensor source tensor outer = do
+    file <- seekTensor source tensor
+    loop file (Header.end tensor - Header.begin tensor) (outer, SHA256.init, False)
+  where
+    loop _ 0 (context, own, found) = pure (context, Scan (Header.name tensor) (Header.shape tensor) (Artifact.hex (SHA256.finalize own)) found)
+    loop file remaining (context, own, found) = do
+        let count = min remaining (fromIntegral Artifact.chunkSize)
+        chunk <- exact file count
+        unless (finite chunk) (invalid "Tensor artifact contains non-finite FP32 words")
+        loop file (remaining - count) (SHA256.update context chunk, SHA256.update own chunk, found || nonzeroBytes chunk)
+
+rawIdentityScan :: File -> IO (String, [Scan])
+rawIdentityScan source@(File file start _ entries) = do
+    size <- hFileSize file
+    hSeek file AbsoluteSeek 0
+    header <- exact file start
+    (context, position, scans) <- foldM step (SHA256.update SHA256.init header, 0, Map.empty) (sortOn Header.begin entries)
+    hSeek file AbsoluteSeek (start + position)
+    trailing <- exact file (size - start - position)
+    let ordered = [scans Map.! Header.name tensor | tensor <- entries]
+    pure (Artifact.hex (SHA256.finalize (SHA256.update context trailing)), ordered)
+  where
+    step (context, position, scans) tensor = do
+        hSeek file AbsoluteSeek (start + position)
+        gap <- exact file (Header.begin tensor - position)
+        (updated, scanned) <- scanTensor source tensor (SHA256.update context gap)
+        pure (updated, Header.end tensor, Map.insert (Header.name tensor) scanned scans)
 
 seekTensor :: File -> Header.Tensor -> IO Handle
 seekTensor (File file start _ _) tensor = hSeek file AbsoluteSeek (start + Header.begin tensor) >> pure file
-
-equal :: (File, Header.Tensor) -> (File, Header.Tensor) -> IO Bool
-equal (left, first) (right, second)
-    | lengthBytes first /= lengthBytes second = do
-        _ <- nonzero left first
-        _ <- nonzero right second
-        pure False
-    | otherwise = do
-        initial <- seekTensor left first
-        changed <- seekTensor right second
-        compareBytes (initial, changed) (lengthBytes first) True
-  where
-    lengthBytes tensor = Header.end tensor - Header.begin tensor
-    compareBytes _ 0 same = pure same
-    compareBytes handles@(initial, changed) remaining same = do
-        let count = min remaining (fromIntegral Artifact.chunkSize)
-        before <- exact initial count
-        after <- exact changed count
-        unless (finite before && finite after) (invalid "Tensor artifact contains non-finite FP32 words")
-        compareBytes handles (remaining - count) (same && before == after)
-
-consume :: (Handle, Integer) -> SHA256.Ctx -> IO SHA256.Ctx
-consume (_, 0) context = pure context
-consume (file, remaining) context = do
-    let count = min remaining (fromIntegral Artifact.chunkSize)
-    chunk <- exact file count
-    unless (finite chunk) (invalid "Policy adapter contains a non-finite FP32 tensor")
-    consume (file, remaining - count) (SHA256.update context chunk)
 
 finite :: ByteString -> Bool
 finite bytes = all finiteWord [0, wordSize .. Bytes.length bytes - wordSize]
@@ -97,17 +106,12 @@ finite bytes = all finiteWord [0, wordSize .. Bytes.length bytes - wordSize]
     finiteWord offset = Bytes.index bytes (offset + wordSize - 1) .&. upperExponent /= upperExponent || Bytes.index bytes (offset + wordSize - 2) .&. lowerExponent /= lowerExponent
 
 nonzero :: File -> Header.Tensor -> IO Bool
-nonzero source tensor = do
-    file <- seekTensor source tensor
-    loop file (Header.end tensor - Header.begin tensor) False
+nonzero source tensor = scanNonzero . snd <$> scanTensor source tensor SHA256.init
+
+nonzeroBytes :: ByteString -> Bool
+nonzeroBytes encoded = any nonzeroWord [0, wordSize .. Bytes.length encoded - wordSize]
   where
-    loop _ 0 !found = pure found
-    loop file remaining !found = do
-        let count = min remaining (fromIntegral Artifact.chunkSize)
-        encoded <- exact file count
-        unless (finite encoded) (invalid "Tensor artifact contains non-finite FP32 words")
-        loop file (remaining - count) (found || any (nonzeroWord encoded) [0, wordSize .. Bytes.length encoded - wordSize])
-    nonzeroWord encoded offset = any (\index -> Bytes.index encoded (offset + index) /= 0) [0 .. wordSize - 2] || Bytes.index encoded (offset + wordSize - 1) .&. magnitudeMask /= 0
+    nonzeroWord offset = any (\index -> Bytes.index encoded (offset + index) /= 0) [0 .. wordSize - 2] || Bytes.index encoded (offset + wordSize - 1) .&. magnitudeMask /= 0
     wordSize = fromIntegral Header.fp32Bytes
     magnitudeMask = 0x7f
 

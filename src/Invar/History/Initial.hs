@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.History.Initial (Source (..), Run (..), Random (..), Checked, admit, schema, diagnostics, describe) where
+module Invar.History.Initial (Source (..), Run (..), Random (..), Checked, admit, schema, diagnostics, describe, state) where
 
 import Control.Monad (unless, when, (>=>))
 import Crypto.Hash.SHA256 qualified as SHA256
@@ -18,20 +18,21 @@ import Invar.Json qualified as Json
 import Invar.Learn qualified as Learn
 import Invar.Learn.Codec (Decoder)
 import Numeric.Natural (Natural)
+import Invar.Learn.State qualified as State
 
 data Source = Provided | Executed Run ByteString
 data Run = Run {seed :: Integer, exitCode :: Int}
 data Random = Torch Natural | MLX
     deriving (Eq, Show)
-data Checked = Checked (Map Text [Integer]) Value [Value]
+data Checked = Checked (Map Text [Integer]) Value [Value] State.Initial
 
 admit :: Decoder -> (Learn.Settings, FilePath, Random) -> Source -> IO Checked
 admit decoder (settings, path, random) source = do
     (origin, records) <- either invalid pure (observation settings source)
-    (parameters, initial) <- Artifacts.initial decoder (settings, path)
+    (parameters, initial, observed) <- Artifacts.initial decoder (settings, path)
     either invalid pure (parseEither (withObject "initial checkpoint" (\fields -> fields .: "state" >>= rng random)) initial)
     fields <- either invalid pure (parseEither (withObject "initial checkpoint" pure) initial)
-    pure (Checked parameters (Object (Fields.insert "source" origin fields)) records)
+    pure (Checked parameters (Object (Fields.insert "source" origin fields)) records observed)
 
 rng :: Random -> Object -> Parser ()
 rng (Torch expected) fields = do
@@ -88,13 +89,16 @@ measurement fields = do
     unless (seconds >= 0 && allocated >= 0 && reserved >= allocated) (fail "Invalid initialization measurement observation")
 
 schema :: Checked -> Map Text [Integer]
-schema (Checked parameters _ _) = parameters
+schema (Checked parameters _ _ _) = parameters
 
 diagnostics :: Checked -> [Value]
-diagnostics (Checked _ _ records) = records
+diagnostics (Checked _ _ records _) = records
 
 describe :: Checked -> Value
-describe (Checked _ observed _) = observed
+describe (Checked _ observed _ _) = observed
+
+state :: Checked -> State.Initial
+state (Checked _ _ _ observed) = observed
 
 invalid :: String -> IO value
 invalid = ioError . userError

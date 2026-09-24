@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Learn.Codec (Decoder (..), Session, withSession, decode, chunk, consume, equal) where
+module Invar.Learn.Codec (Decoder (..), Session, withSession, decode, chunk, consume) where
 
 import Control.Monad (unless)
 import Data.Aeson (Value, encode, object, withObject, (.:), (.=))
@@ -89,19 +89,6 @@ consume (session, tensor) check = loop 0
             let count = min (Native.size tensor - offset) (fromIntegral Artifact.chunkSize)
             chunk session tensor (offset, count) >>= check
             loop (offset + count)
-
-equal :: Session -> (Native.Tensor, Native.Tensor) -> IO Bool
-equal session (left, right)
-    | Native.size left /= Native.size right = pure False
-    | otherwise = loop 0 True
-  where
-    loop offset same
-        | offset == Native.size left = pure same
-        | otherwise = do
-            let count = min (Native.size left - offset) (fromIntegral Artifact.chunkSize)
-            first <- chunk session left (offset, count)
-            second <- chunk session right (offset, count)
-            loop (offset + count) (same && first == second)
 
 invalid :: String -> IO value
 invalid = ioError . userError

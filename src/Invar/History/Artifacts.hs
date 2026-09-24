@@ -19,50 +19,35 @@ import Invar.Learn.Adapter qualified as Adapter
 import Invar.Learn.Checkpoint qualified as Checkpoint
 import Invar.Learn.Codec qualified as Codec
 import Invar.Learn.Gradient qualified as Gradient
+import Invar.Learn.State qualified as State
 import Invar.Learn.Mismatch qualified as Mismatch
 import Invar.Learn.Observation qualified as Observation
-import Invar.Learn.Report qualified as Report
-import Invar.Policy.File qualified as File
 import Numeric.Natural (Natural)
 import System.FilePath ((</>))
 import System.Posix.Files qualified as Posix
 
-initial :: Codec.Decoder -> (Learn.Settings, FilePath) -> IO (Map Text [Integer], Value)
+initial :: Codec.Decoder -> (Learn.Settings, FilePath) -> IO (Map Text [Integer], Value, State.Initial)
 initial decoder (settings, path) = do
     status <- Posix.getSymbolicLinkStatus path
     unless (Posix.isDirectory status) (invalid "Initial checkpoint is not a direct directory")
-    schema <- File.withFile (path </> "adapter.safetensors") $ \file -> do
-        Adapter.verify (Learn.policy settings) file
-        pure (Adapter.schema file)
-    parameters <- either invalid pure (Adapter.parameters schema)
-    observed <- Codec.withSession decoder $ \session -> do
-        decoded <- Codec.decode session (path </> "learner.pt", Learn.learner settings)
-        checked <- either invalid pure (Checkpoint.admitInitial settings parameters decoded)
-        state session checked
-    pure (schema, object ["checkpoint" .= path, "policy" .= Learn.policy settings, "learner" .= Learn.learner settings, "tokenizer" .= Learn.tokenizer settings, "base" .= Learn.base settings, "assembly" .= Learn.assembly settings, "state" .= observed])
+    observed <- Codec.withSession decoder $ \session -> State.observeInitial session (settings, path)
+    summary <- stateSummary (State.initialChecked observed) (State.initialSteps observed)
+    pure (State.initialSchema observed, object ["checkpoint" .= path, "policy" .= Learn.policy settings, "learner" .= Learn.learner settings, "tokenizer" .= Learn.tokenizer settings, "base" .= Learn.base settings, "assembly" .= Learn.assembly settings, "state" .= summary], observed)
 
-successor :: (Codec.Decoder, Map Text [Integer]) -> (Natural, Trace.Generation) -> Publication.Observed -> IO Value
+successor :: (Codec.Decoder, Map Text [Integer]) -> (Natural, Trace.Generation) -> Publication.Observed -> IO (Value, State.Observed, Gradient.Observed)
 successor (decoder, schema) (index, generation) published = do
     let path = Publication.directory published
         report = Cohort.update (Trace.cohort generation)
     parameters <- either invalid pure (Adapter.parameters schema)
-    policy <- either invalid pure (Report.artifact "adapter" report)
-    learner <- either invalid pure (Report.artifact "learner" report)
-    File.withFile (path </> "adapter.safetensors") $ \file -> Adapter.matches schema file >> Adapter.verify policy file
-    observed <- Codec.withSession decoder $ \session -> do
-        decoded <- Codec.decode session (path </> "learner.pt", learner)
-        checked <- either invalid pure (Checkpoint.admit report parameters decoded)
-        steps <- Checkpoint.inspectTensors session checked
-        unless (not (null steps) && all (== toInteger index) steps) (invalid "AdamW steps differ from the declared generation")
-        stateSummary checked steps
-    gradients <- Gradient.observe parameters (report, path </> "gradients.safetensors")
+    state' <- Codec.withSession decoder $ \session -> State.observe session (report, schema, path)
+    let counted = State.steps state'
+    unless (not (null counted) && all (== toInteger index) counted) (invalid "AdamW steps differ from the declared generation")
+    observed <- stateSummary (State.checked state') counted
+    (gradients, gradient) <- Gradient.observe parameters (report, path </> "gradients.safetensors")
     probabilities <- Observation.probability report (path </> "probabilities.json")
     either invalid pure (roles generation probabilities)
     mismatch <- either invalid pure (Mismatch.summarize probabilities)
-    pure (object ["publication" .= Publication.describe published, "state" .= observed, "gradients" .= gradients, "probabilities" .= probabilities, "learner_engine" .= Mismatch.describe mismatch])
-
-state :: Codec.Session -> Checkpoint.Checked -> IO Value
-state session checked = Checkpoint.inspectTensors session checked >>= stateSummary checked
+    pure (object ["publication" .= Publication.describe published, "state" .= observed, "gradients" .= gradients, "probabilities" .= probabilities, "learner_engine" .= Mismatch.describe mismatch], state', gradient)
 
 stateSummary :: Checkpoint.Checked -> [Integer] -> IO Value
 stateSummary checked steps = pure (object ("steps" .= steps : Checkpoint.rngSummary checked))

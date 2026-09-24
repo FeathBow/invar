@@ -115,7 +115,7 @@ compareHistories supplied = do
     (second, secondOutput) <- load (select "right-" fields)
     left <- History.admit decoder first firstOutput
     right <- History.admit decoder second secondOutput
-    History.compare decoder (left, right) >>= Lazy.putStrLn . encode
+    History.compare (left, right) >>= Lazy.putStrLn . encode
 
 select :: String -> O.Fields -> O.Fields
 select prefix fields = Map.fromList [(drop (length prefix) key, value) | (key, value) <- Map.toList fields, prefix `isPrefixOf` key]
