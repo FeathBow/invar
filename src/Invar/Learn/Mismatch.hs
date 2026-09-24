@@ -2,9 +2,8 @@
 
 module Invar.Learn.Mismatch (Summary (..), summarize, describe) where
 
-import Data.Aeson (Object, Value, object, (.:), (.=))
+import Data.Aeson (Value, object, (.=))
 import Data.Aeson.Key qualified as Key
-import Data.Aeson.Types (parseEither)
 import Data.List (sort)
 import Data.Word (Word32)
 import GHC.Float (castWord32ToFloat, float2Double)
@@ -19,15 +18,12 @@ data Summary = Summary
     }
     deriving (Eq, Show)
 
-summarize :: [Object] -> Either String Summary
+summarize :: [([Word32], [Word32])] -> Either String Summary
 summarize samples = do
-    pairs <- concat <$> traverse words32 samples
+    pairs <- concat <$> traverse paired samples
     if null pairs then Left "A learner and engine comparison requires at least one token" else pure (fromPairs pairs)
   where
-    words32 fields = do
-        behavior <- parseEither (.: "behavior") fields :: Either String [Word32]
-        proximal <- parseEither (.: "proximal") fields :: Either String [Word32]
-        if length behavior == length proximal then pure (zip behavior proximal) else Left "Behavior and proximal token counts differ"
+    paired (behavior, proximal) = if length behavior == length proximal then Right (zip behavior proximal) else Left "Behavior and proximal token counts differ"
 
 fromPairs :: [(Word32, Word32)] -> Summary
 fromPairs pairs =

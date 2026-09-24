@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Learn.Observation (Input (..), report, gradients, probabilities, probability) where
+module Invar.Learn.Observation (Input (..), report, gradients, probabilities, probability, probabilityObjects) where
 
 import Control.Monad (unless)
 import Crypto.Hash.SHA256 qualified as SHA256
@@ -27,20 +27,23 @@ gradients policy left right = do
     second <- report right
     Gradient.compare policy (first, artifact left) (second, artifact right)
 
-probability :: Report.Report -> FilePath -> IO [Object]
+probability :: Report.Report -> FilePath -> IO [Probability.Sample]
 probability expected path = do
     encoded <- Bytes.readFile path
     digest <- either invalid pure (Report.artifact "probabilities" expected)
     unless (Artifact.hex (SHA256.hash encoded) == digest) (invalid "Probability file differs from its reported digest")
     either invalid pure (Probability.observe (Report.invocation expected, Report.request expected, Report.output expected) encoded)
 
+probabilityObjects :: Report.Report -> FilePath -> IO [Object]
+probabilityObjects expected path = map Probability.sampleObject <$> probability expected path
+
 probabilities :: Input -> Input -> IO Value
 probabilities left right = do
     first <- report left
     second <- report right
     either invalid pure (Report.paired first second)
-    initial <- probability first (artifact left)
-    changed <- probability second (artifact right)
+    initial <- probabilityObjects first (artifact left)
+    changed <- probabilityObjects second (artifact right)
     differences <- traverse difference [(old, new) | (old, new) <- zip initial changed, not (null (fields old new))]
     leftBinding <- binding first
     rightBinding <- binding second

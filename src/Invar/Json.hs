@@ -1,4 +1,4 @@
-module Invar.Json (decode, textField, fields, identity, finite, floatingAt, floatingArrayAt) where
+module Invar.Json (decode, textField, fields, identity, finite, floatingAt, floatingArrayAt, decodeWithArrays) where
 
 import Control.Monad (unless, when)
 import Data.Aeson (Object, Value, eitherDecodeStrict, parseJSON)
@@ -53,6 +53,15 @@ floatingAt path encoded = do
 floatingArrayAt :: [Key] -> ByteString -> Either String [Double]
 floatingArrayAt path encoded = do
     _ <- decode encoded
+    floatingArray path encoded
+
+decodeWithArrays :: [[Key]] -> ByteString -> Either String (Value, [[Double]])
+decodeWithArrays paths encoded = do
+    decoded <- decode encoded
+    (,) decoded <$> traverse (`floatingArray` encoded) paths
+
+floatingArray :: [Key] -> ByteString -> Either String [Double]
+floatingArray path encoded = do
     selected <- select path encoded >>= punctuation '['
     items selected
   where

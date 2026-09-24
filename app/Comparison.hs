@@ -73,7 +73,7 @@ inspect kind supplied = do
         Nothing -> pure ()
     case kind of
         "update" -> emit (Report.describe expected)
-        "probabilities" -> Observation.probability expected (Observation.artifact source) >>= emit . object . pure . ("samples" .=)
+        "probabilities" -> Observation.probabilityObjects expected (Observation.artifact source) >>= emit . object . pure . ("samples" .=)
         _ -> die usage
 
 input :: O.Fields -> String -> String -> Either String Observation.Input

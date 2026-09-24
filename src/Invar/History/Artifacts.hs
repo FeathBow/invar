@@ -3,12 +3,11 @@
 module Invar.History.Artifacts (initial, successor) where
 
 import Control.Monad (unless)
-import Data.Aeson (Object, Value, object, withObject, (.:), (.=))
+import Data.Aeson (Value, object, withObject, (.:), (.=))
 import Data.Aeson.Types (parseEither)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
-import Data.Word (Word32)
 import GHC.Float (castDoubleToWord64, castWord32ToFloat, float2Double)
 import Invar.History.Cohort qualified as Cohort
 import Invar.History.Publication qualified as Publication
@@ -19,9 +18,10 @@ import Invar.Learn.Adapter qualified as Adapter
 import Invar.Learn.Checkpoint qualified as Checkpoint
 import Invar.Learn.Codec qualified as Codec
 import Invar.Learn.Gradient qualified as Gradient
-import Invar.Learn.State qualified as State
 import Invar.Learn.Mismatch qualified as Mismatch
 import Invar.Learn.Observation qualified as Observation
+import Invar.Learn.Probability qualified as Probability
+import Invar.Learn.State qualified as State
 import Numeric.Natural (Natural)
 import System.FilePath ((</>))
 import System.Posix.Files qualified as Posix
@@ -46,25 +46,25 @@ successor (decoder, schema) (index, generation) published = do
     (gradients, gradient) <- Gradient.observe parameters (report, path </> "gradients.safetensors")
     probabilities <- Observation.probability report (path </> "probabilities.json")
     either invalid pure (roles generation probabilities)
-    mismatch <- either invalid pure (Mismatch.summarize probabilities)
-    pure (object ["publication" .= Publication.describe published, "state" .= observed, "gradients" .= gradients, "probabilities" .= probabilities, "learner_engine" .= Mismatch.describe mismatch], state', gradient)
+    mismatch <- either invalid pure (Mismatch.summarize [(Probability.behavior sample, Probability.proximal sample) | sample <- probabilities])
+    pure (object ["publication" .= Publication.describe published, "state" .= observed, "gradients" .= gradients, "probabilities" .= map Probability.sampleObject probabilities, "learner_engine" .= Mismatch.describe mismatch], state', gradient)
 
 stateSummary :: Checkpoint.Checked -> [Integer] -> IO Value
 stateSummary checked steps = pure (object ("steps" .= steps : Checkpoint.rngSummary checked))
 
-roles :: Trace.Generation -> [Object] -> Either String ()
-roles generation probabilities = do
-    named <- traverse (\fields -> (,) <$> parseEither (.: "sample") fields <*> pure fields) probabilities
-    mapM_ (check (Map.fromList named)) (Trace.roleOutputs generation)
+roles :: Trace.Generation -> [Probability.Sample] -> Either String ()
+roles generation probabilities = mapM_ check (Trace.roleOutputs generation)
   where
-    check expected encoded = do
-        sample <- Json.decode encoded >>= parseEither (withObject "probability role output" (.: "sample"))
-        observed <- maybe (Left "Unmatched probability role observation") Right (Map.lookup (sample :: Text) expected)
-        mapM_ (vector encoded observed) ["proximal", "reference"]
-    vector encoded observed key = do
-        actual <- map castDoubleToWord64 <$> Json.floatingArrayAt [key] encoded
-        bits <- parseEither (.: key) observed :: Either String [Word32]
-        unless (actual == map (castDoubleToWord64 . float2Double . castWord32ToFloat) bits) (Left "Logged probability roles differ from actual artifact words")
+    expected = Map.fromList [(Probability.sampleName sample, sample) | sample <- probabilities]
+    check encoded = do
+        (decoded, arrays) <- Json.decodeWithArrays [["proximal"], ["reference"]] encoded
+        (proximal, fixed) <- case arrays of
+            [first, second] -> Right (first, second)
+            _ -> Left "Expected the proximal and reference arrays"
+        name <- parseEither (withObject "probability role output" (.: "sample")) decoded
+        observed <- maybe (Left "Unmatched probability role observation") Right (Map.lookup (name :: Text) expected)
+        unless (map castDoubleToWord64 proximal == map widen (Probability.proximal observed) && map castDoubleToWord64 fixed == map widen (Probability.fixed observed)) (Left "Logged probability roles differ from actual artifact words")
+    widen = castDoubleToWord64 . float2Double . castWord32ToFloat
 
 invalid :: String -> IO value
 invalid = ioError . userError

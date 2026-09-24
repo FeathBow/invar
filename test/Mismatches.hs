@@ -2,8 +2,7 @@
 
 module Mismatches (mismatches) where
 
-import Data.Aeson (Object, Value (..), object, (.=))
-import Data.Aeson.KeyMap qualified as Fields
+import Data.Aeson (object, (.=))
 import Data.Either (isLeft)
 import Data.Word (Word32)
 import GHC.Float (castFloatToWord32, castWord32ToFloat, float2Double)
@@ -15,10 +14,8 @@ import Invar.Learn.Mismatch qualified as M
 mismatches :: Group
 mismatches = Group "Learner and engine gap" [("known words give exact counts, quantiles and means", withTests 1 (property known)), ("generated words match an independent reference", withTests 200 (property generated)), ("empty and uneven observations are rejected", withTests 1 (property rejected))]
 
-sample :: [Word32] -> [Word32] -> Object
-sample behavior proximal = Fields.fromList [("behavior", toJSONWords behavior), ("proximal", toJSONWords proximal)]
-  where
-    toJSONWords = Array . foldMap (pure . Number . fromIntegral)
+sample :: [Word32] -> [Word32] -> ([Word32], [Word32])
+sample = (,)
 
 words32 :: [Float] -> [Word32]
 words32 = map castFloatToWord32
