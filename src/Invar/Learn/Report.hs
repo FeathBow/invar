@@ -47,7 +47,9 @@ admit call encoded = do
     admitEvents call (Artifact.hex (SHA256.hash encoded)) events
 
 admitFrames :: Natural -> [Framing.Frame] -> Either String Report
-admitFrames call frames = admitEvents call (Artifact.hex (SHA256.hash (Framing.encode frames))) [(Framing.fields frame, Framing.raw frame) | frame <- frames]
+admitFrames call frames =
+    let digest = Artifact.hex (SHA256.hash (Framing.encode frames))
+     in length digest `seq` admitEvents call digest [(Framing.fields frame, Framing.raw frame) | frame <- frames]
 
 admitEvents :: Natural -> String -> [(Object, ByteString)] -> Either String Report
 admitEvents call digest events = parseEither (observation digest) (filter (selected . fst) events)

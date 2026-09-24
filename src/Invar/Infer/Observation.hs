@@ -30,11 +30,13 @@ data Report = Report String V.Binding Result.Result Object
 admit :: Infer.Plan -> V.Binding -> ByteString -> Either String Report
 admit planned bound encoded = do
     unless ("\n" `Bytes.isSuffixOf` encoded) (Left "Incomplete final inference observation line")
-    Framing.decode encoded >>= admitFrames planned bound
+    Framing.decode encoded >>= admitWith planned bound encoded
 
 admitFrames :: Infer.Plan -> V.Binding -> [Framing.Frame] -> Either String Report
-admitFrames planned bound records = do
-    let encoded = Framing.encode records
+admitFrames planned bound records = admitWith planned bound (Framing.encode records) records
+
+admitWith :: Infer.Plan -> V.Binding -> ByteString -> [Framing.Frame] -> Either String Report
+admitWith planned bound encoded records =
     case break Framing.grouped records of
         (_, []) -> do
             observed <- trace [(Framing.raw frame, Framing.fields frame) | frame <- records]
@@ -68,7 +70,8 @@ check planned bound (source, values) (loaded, consumed, output, rawOutput) = do
     parseEither (checkResult bound) output
     observed <- either (Left . show) Right (Result.observeObjects planned values)
     Output.rawBehavior rawOutput (Result.behaviorBits observed)
-    pure (Report (Artifact.hex (SHA256.hash source)) bound observed loaded)
+    let digest = Artifact.hex (SHA256.hash source)
+    length digest `seq` pure (Report digest bound observed loaded)
 
 trace :: [(ByteString, Object)] -> Either String (Object, Object, Object, ByteString)
 trace records = do
