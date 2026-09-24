@@ -1,8 +1,8 @@
 {-# LANGUAGE Safe #-}
 
-module Invar.Numerical.Distribution (Bounds (..), enclose) where
+module Invar.Numerical.Distribution (Bounds (..), enclose, mass) where
 
-import Control.Monad (foldM, unless)
+import Control.Monad (unless)
 import Data.Bits (shiftL, shiftR, (.&.))
 import Data.Ratio ((%))
 import Data.Word (Word32)
@@ -14,32 +14,24 @@ data Bounds = FiniteBounds Rational Rational | InfiniteKL
 enclose :: [Word32] -> [Word32] -> Either String (Bounds, Bounds)
 enclose left right = do
     unless (not (null left) && length left == length right) (Left "KL vectors must have the same nonempty vocabulary")
-    totalP <- total left
-    totalQ <- total right
+    before <- traverse mass left
+    after <- traverse mass right
+    let totalP = sum before
+        totalQ = sum after
     unless (totalP > 0 && totalQ > 0) (Left "KL vectors must each have positive total mass")
-    if and (zipWith (\a b -> magnitude a * totalQ == magnitude b * totalP) left right)
+    if and (zipWith (\a b -> a * totalQ == b * totalP) before after)
         then pure (FiniteBounds 0 0, FiniteBounds 0 0)
-        else pure (finish (totalP, totalQ) (foldl' accumulate empty (zip left right)))
-
-total :: [Word32] -> Either String Integer
-total = foldM addMass 0
-  where
-    addMass previous encoded = do
-        value <- mass encoded
-        pure $! previous + value
+        else pure (finish (totalP, totalQ) (foldl' accumulate empty (zip before after)))
 
 data Reduction = Reduction !Fixed !Fixed !Bool !Bool
 
 empty :: Reduction
 empty = Reduction (Fixed 0 0) (Fixed 0 0) False False
 
-accumulate :: Reduction -> (Word32, Word32) -> Reduction
-accumulate (Reduction p q forward backward) (left, right)
+accumulate :: Reduction -> (Integer, Integer) -> Reduction
+accumulate (Reduction p q forward backward) (a, b)
     | a == 0 || b == 0 = Reduction p q (forward || a > 0 && b == 0) (backward || b > 0 && a == 0)
     | otherwise = let value = logarithm a b in Reduction (add p (times a value)) (add q (times (-b) value)) forward backward
-  where
-    a = magnitude left
-    b = magnitude right
 
 finish :: (Integer, Integer) -> Reduction -> (Bounds, Bounds)
 finish (totalP, totalQ) (Reduction sumP sumQ forwardInfinite backwardInfinite) = (forward, backward)

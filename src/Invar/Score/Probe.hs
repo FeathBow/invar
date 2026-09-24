@@ -7,8 +7,8 @@ import Data.Aeson (Value, withObject, (.:))
 import Data.Aeson.Types (Parser)
 import Data.Map.Strict qualified as Map
 import Data.Word (Word32)
-import GHC.Float (castWord32ToFloat)
 import Invar.Json qualified as Json
+import Invar.Numerical.Distribution qualified as Distribution
 import Invar.Spec.Score qualified as S
 import Numeric.Natural (Natural)
 
@@ -54,8 +54,5 @@ snapshot (relation, width, path) expected = withObject "full-vocabulary snapshot
         SeparateLogSoftmax -> pure ()
     pure (S.Snapshot step encodedMasses)
 
-mass :: Word32 -> Parser Float
-mass encoded = do
-    let value = castWord32ToFloat encoded
-    when (isNaN value || isInfinite value || value < 0 || value > 1) (fail "Expected a finite FP32 probability in [0,1]")
-    pure value
+mass :: Word32 -> Parser Integer
+mass = either fail pure . Distribution.mass
