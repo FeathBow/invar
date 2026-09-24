@@ -10,6 +10,7 @@ import Data.ByteString (ByteString)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text.Encoding (decodeUtf8)
+import Invar.Infer.Framing (stageName)
 import Invar.Infer.Framing qualified as Frame
 import Invar.Infer.Wire qualified as Wire
 import Invar.Learn qualified as Learn
@@ -82,7 +83,7 @@ learner validate current report records = do
     (leading, remaining) <- preparation Boundary.Learning current records
     (execution, rest) <- throughResult remaining
     let raw = Frame.encode (leading ++ execution)
-        (ready, _) = break ((== Just (String "consumed")) . stage) execution
+        (ready, _) = break ((== Just (String "consumed")) . stageName) execution
     consumed <- case drop (length ready) execution of
         value : _ -> pure value
         [] -> Left "Missing resident learner consumption"
@@ -99,17 +100,17 @@ requireRole expected current = case owner current of
 
 preparation :: Boundary.Role -> State -> [Frame.Frame] -> Either String ([Frame.Frame], [Frame.Frame])
 preparation role current records = do
-    let (leading, rest) = span (\record -> stage record `elem` map (Just . String) ["loading", "profile", "load", "activation"]) records
+    let (leading, rest) = span (\record -> stageName record `elem` map (Just . String) ["loading", "profile", "load", "activation"]) records
         initial = case role of
             Boundary.Inference -> [["load"], ["loading", "profile", "load"]]
             _ -> [["load", "activation"], ["loading", "profile", "load", "activation"]]
         expected = if count current == 0 then initial else [["activation"]]
-    unless (map stage leading `elem` map (map (Just . String)) expected) (Left "Resident observation requires one actual initial load and subsequent activation costs")
+    unless (map stageName leading `elem` map (map (Just . String)) expected) (Left "Resident observation requires one actual initial load and subsequent activation costs")
     mapM_ (\record -> when (Fields.member "phase" (Frame.fields record)) (Left "Unexpected phase within a resident group")) leading
     pure (leading, rest)
 
 throughResult :: [Frame.Frame] -> Either String ([Frame.Frame], [Frame.Frame])
-throughResult records = case break ((== Just (String "result")) . stage) records of
+throughResult records = case break ((== Just (String "result")) . stageName) records of
     (preceding, result : rest) -> pure (preceding ++ [result], rest)
     _ -> Left "Incomplete resident update result"
 
@@ -131,21 +132,21 @@ complete current (leading, execution, remaining) (loaded, consumed) = do
     retired <- Boundary.observeRelease (owner current, loads, Frame.encode (leading ++ execution)) (Frame.raw ack)
     initialLoad <- measurement "load" leading
     selected <- measurement "activation" leading
-    measured <- traverse timing (filter (\record -> stage record `elem` map (Just . String) ["load", "activation", "inference", "probability_roles", "reward_update", "artifacts", "checkpoint"]) (leading ++ execution))
+    measured <- traverse timing (filter (\record -> stageName record `elem` map (Just . String) ["load", "activation", "inference", "probability_roles", "reward_update", "artifacts", "checkpoint"]) (leading ++ execution))
     let durations = measured ++ [retired]
     selectedClock <- clocks (clock current) durations
     let next = observedModel {count = count current + 1, originalPrefix = retained, identities = admitted, clock = selectedClock}
-        profiles = filter ((== Just (String "profile")) . stage) retained
+        profiles = filter ((== Just (String "profile")) . stageName) retained
     pure (next, Group (owner current) (count current) leading execution profiles received ack initialLoad selected retired durations, rest)
 
 correspondence :: State -> [Frame.Frame] -> Object -> Either String ()
 correspondence current retained actual = do
-    let profiles = [Frame.fields record | record <- retained, stage record == Just (String "profile")]
+    let profiles = [Frame.fields record | record <- retained, stageName record == Just (String "profile")]
         expected = profiles ++ maybe [] pure (model current)
     mapM_ (\fields -> unless (all (\key -> Fields.lookup key fields == Fields.lookup key actual) ["model", "revision"]) (Left "Resident model or revision differs from its original physical load")) expected
 
 measurement :: Text -> [Frame.Frame] -> Either String (Maybe Duration.Duration)
-measurement name records = case filter ((== Just (String name)) . stage) records of
+measurement name records = case filter ((== Just (String name)) . stageName) records of
     [] -> pure Nothing
     [record] -> Just <$> timing record
     _ -> Left "Repeated resident operation measurement"
@@ -163,9 +164,6 @@ finish current (record : rest) = do
     _ <- clocks (clock current) [elapsed]
     pure (record, elapsed, rest)
 finish _ [] = Left "Missing final resident process close"
-
-stage :: Frame.Frame -> Maybe Value
-stage = Fields.lookup "stage" . Frame.fields
 
 timing :: Frame.Frame -> Either String Duration.Duration
 timing record = Duration.admit (Frame.raw record) (Frame.fields record)

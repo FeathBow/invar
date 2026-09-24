@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Infer.Framing (Frame (..), Group, Member (..), format, decode, encode, grouped, readiness, activationReadiness, completion, takeGroup, groups, members, duration, source, memberBytes) where
+module Invar.Infer.Framing (Frame (..), Group, Member (..), stageName, format, decode, encode, grouped, readiness, activationReadiness, completion, takeGroup, groups, members, duration, source, memberBytes) where
 
 import Control.Monad (unless, void, when)
 import Data.Aeson (Object, Value (..), withObject, (.:))
@@ -31,6 +31,9 @@ decode encoded = do
 
 encode :: [Frame] -> ByteString
 encode = Bytes.unlines . map raw
+
+stageName :: Frame -> Maybe Value
+stageName = Fields.lookup "stage" . fields
 
 grouped :: Frame -> Bool
 grouped (Frame _ fields) = Fields.member "format" fields && Fields.lookup "stage" fields `elem` map (Just . String) ["consumed", "result"]
