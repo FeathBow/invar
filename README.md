@@ -27,7 +27,9 @@ Invar is a framework for running reinforcement learning and inference on large l
 
 The decision has to be made on the whole model. Optimized kernels rarely match the reference bit for bit, and a small difference in one operator can grow over hundreds of decoding steps until a sampled token changes. Whether that change is acceptable depends on what the model is used for, so the check runs end to end on the model's real task.
 
-Invar turns that judgement into a contract. The contract names the prompts the model will see, how each response is scored, how much the score may drop and with what confidence, which results must stay exactly the same, and which outside assumptions the decision may rest on. Invar runs the reference and the candidate with `invar infer`, and `invar use admit` rechecks every retained record and gives one of three answers: the candidate is admitted, the contract is violated, or the evidence does not decide it. Serving engines offer deterministic modes and kernel harnesses compare single operators; neither states a use, bounds the task loss over a declared population, or records what the decision assumes.
+Invar separates the change from the noise in three steps. It first requires the candidate to give bit identical tokens and probabilities under different batch layouts, so scheduling cannot move the result. It then runs the reference and the candidate on the same prompts with the same seeds, so any remaining difference comes from the implementation. Finally it bounds the task loss increase with a finite sample confidence bound over a declared population of prompts. Every number in that chain is bound to the call that produced it and recomputed by the core, so the decision can be rechecked from the records alone.
+
+Invar turns that judgement into a contract. The contract names the prompts the model will see, how each response is scored, how much the score may drop and with what confidence, which results must stay exactly the same, and which outside assumptions the decision may rest on. Invar runs the reference and the candidate with `invar infer`, and `invar use admit` rechecks every retained record and gives one of three answers: the candidate is admitted, the contract is violated, or the evidence does not decide it. Serving engines offer deterministic modes, kernel harnesses compare single operators, and statistical tests compare scores; none of them removes scheduling noise before comparing, bounds the task loss over a declared population for a stated use, and records what the decision assumes.
 
 ## Use cases
 
@@ -35,6 +37,7 @@ Invar turns that judgement into a contract. The contract names the prompts the m
 | --- | --- |
 | Changing the inference stack inside an RL loop, such as a new kernel, an engine upgrade or lower precision | admission only when the task loss stays within the bound the contract declares |
 | Checking kernels written by an agent | an end to end decision on the real task, where unit tests on one operator miss differences that grow over decoding |
+| Checking that the rollout engine agrees with the learner | a per cycle, per token measurement of how far the learner's log probabilities differ from the engine's under the same weights |
 | Reproducible training | `invar compare histories` shows that two runs which scheduled their work differently published the same policies bit for bit |
 
 So far this has been shown for one model and one task, described under Results.
@@ -47,11 +50,15 @@ The first acceptance ran Qwen3.8-27B on one GH200. The reference was vLLM with F
 
 The contract admitted the candidate. Its task loss rose by 0.0005, one problem in 2000, and the confidence bound on that increase stayed within what the contract allows. Every remaining assumption is recorded with the party that vouches for it and a digest of its basis. The [acceptance results](docs/results/acceptance.md) explain how each value was set.
 
+Other common tests on the same records agree. A paired Wald interval gives [-0.0058, 0.0068] for the loss increase, and an exact McNemar test on the 21 problems that got worse and the 20 that got better gives a one sided p of 0.5. Only a Hoeffding bound, which ignores the variance, is too loose to admit. `invar use admit` reports all of them beside the decision.
+
 ## Measurements
 
 For each prompt, Invar compares the two implementations token by token. It finds the first token where they diverge, checks whether their probabilities are identical down to the last bit, and adds up the log probability difference over the tokens they share. To see how the candidate behaves on the same context after the outputs split, it feeds the reference's own response through the candidate and scores every step. At chosen steps it captures the probability of every token in the vocabulary from both sides and bounds the KL divergence between them in each direction.
 
 These measurements sit next to the task score. A candidate can show a large KL on a few tokens while its task score stays within bounds, and the contract states which of the two matters for the use at hand. The task bound is a confidence bound over the sampled prompts, so it holds for the declared population of prompts at the stated confidence, under the assumptions the decision records.
+
+The same records measure the gap between the learner and the inference engine. In each training cycle the rollout and the update start from the same weights, so the learner's log probability of a sampled token should equal the engine's, and `invar inspect history` reports how far they differ in every cycle. On CUDA, with vLLM generating and Hugging Face training, 1.3% to 1.8% of tokens had identical log probabilities, with a 99th percentile gap of about 0.3 nats and a maximum of 1.7. On Apple Silicon, where MLX does both, 13% to 15% were identical with a similar tail.
 
 ## Architecture
 
