@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Learn.Fingerprint (Fingerprint, native, differences, tensorDifferences) where
+module Invar.Learn.Fingerprint (Fingerprint, native, disjoint, differences, tensorDifferences) where
 
 import Control.Monad (unless)
 import Crypto.Hash.SHA256 qualified as SHA256
@@ -32,6 +32,11 @@ native session value = do
         context <- newIORef SHA256.init
         Codec.consume (session, tensor) (\chunk -> modifyIORef' context (`SHA256.update` chunk))
         (,) (Native.index tensor) . Artifact.hex . SHA256.finalize <$> readIORef context
+
+disjoint :: [Fingerprint] -> Either String ()
+disjoint prints = unless (length references == Set.size (Set.fromList references)) (Left "Native tensor references were reused across checkpoint snapshots")
+  where
+    references = concat [Map.keys digests | Fingerprint _ digests <- prints]
 
 differences :: [Value] -> (Fingerprint, Fingerprint) -> Either String [Value]
 differences path (Fingerprint first left, Fingerprint second right) = walk path (first, second)

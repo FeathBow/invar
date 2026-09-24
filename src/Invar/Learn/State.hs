@@ -53,6 +53,12 @@ observe session (report, schema, directory) = do
     counted <- Checkpoint.inspectTensors session admitted
     Observed report names scans admitted counted <$> Fingerprint.native session (Checkpoint.value admitted)
 
+initialPrint :: Initial -> Fingerprint.Fingerprint
+initialPrint (Initial _ _ _ _ _ print') = print'
+
+observedPrint :: Observed -> Fingerprint.Fingerprint
+observedPrint (Observed _ _ _ _ _ print') = print'
+
 steps :: Observed -> [Integer]
 steps (Observed _ _ _ _ counted _) = counted
 
@@ -75,6 +81,7 @@ compareInitialFiles decoder left right = Codec.withSession decoder $ \session ->
     mapM_ (either (invalid . show) pure . Learn.validate . fst) [left, right]
     before <- observeInitial session left
     after <- observeInitial session right
+    either invalid pure (Fingerprint.disjoint [initialPrint before, initialPrint after])
     compareInitial (before, after)
 
 compare :: Decoder -> FilePath -> (Observation.Input, Observation.Input) -> IO Value
@@ -87,6 +94,7 @@ compare decoder policy (left, right) = do
     Codec.withSession decoder $ \session -> do
         before <- observe session (first, leftSchema, Observation.artifact left)
         after <- observe session (second, rightSchema, Observation.artifact right)
+        either invalid pure (Fingerprint.disjoint [observedPrint before, observedPrint after])
         compareObserved (before, after)
 
 inputSchema :: Report.Report -> FilePath -> IO (Map Text [Integer])
