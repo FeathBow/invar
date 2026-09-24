@@ -1,6 +1,7 @@
 {-# LANGUAGE Safe #-}
 
 module Invar.Spec.Invocation (
+    ordinal,
     Runtime,
     CallId (..),
     AttemptId (..),
@@ -55,6 +56,9 @@ data Selection = Selection {selectedCall :: CallId, inputs :: E.World}
 
 data Binding = Binding {boundCall :: CallId, boundAttempt :: AttemptId, boundInstance :: Instance}
     deriving (Eq, Show)
+
+ordinal :: Natural -> Binding
+ordinal index = Binding (CallId index) (AttemptId index) (Instance index)
 
 data Consumption = Consumption {binding :: Binding, program :: ByteString, emission :: E.Emission}
     deriving (Eq, Show)

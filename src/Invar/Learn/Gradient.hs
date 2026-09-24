@@ -3,8 +3,7 @@
 module Invar.Learn.Gradient (Observed, compare, compareObserved, observe) where
 
 import Control.Monad (unless)
-import Data.Aeson (Value, object, withObject, (.:), (.=))
-import Data.Aeson.Types (parseEither)
+import Data.Aeson (Value, object, (.=))
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
@@ -43,14 +42,14 @@ compare policy (first, left) (second, right) = do
 compareObserved :: (Observed, Observed) -> IO Value
 compareObserved (Observed first before, Observed second after) = do
     let differences = Fingerprint.tensorDifferences (\name -> ["tensor" .= name]) (before, after)
-    bindings <- traverse (either invalid pure . parseEither (withObject "invocation" (.: "binding")) . Report.invocation) [first, second] :: IO [Value]
+    bindings <- traverse (either invalid pure . Report.bindingValue) [first, second] :: IO [Value]
     case bindings of
         [leftBinding, rightBinding] -> pure (object ["comparison" .= ("gradient tensor bytes" :: Text), "equal" .= null differences, "left_digest" .= Report.gradient first, "right_digest" .= Report.gradient second, "left_binding" .= leftBinding, "right_binding" .= rightBinding, "left_tensors" .= length before, "right_tensors" .= length after, "differences" .= differences])
         _ -> invalid "Missing comparison bindings"
 
 inventory :: Report.Report -> File.File -> IO (Map Text [Integer])
 inventory report file = do
-    expected <- either invalid pure (parseEither (withObject "request" (.: "policy")) (Report.request report))
+    expected <- either invalid pure (Report.consumedPolicy report)
     actual <- File.identity file
     unless (actual == expected) (invalid "Input adapter tensor identity differs from consumption")
     either invalid pure (Adapter.parameters (Adapter.schema file))
@@ -67,8 +66,8 @@ validate report actual file = do
     program <- field "program" attributes
     unless (object ["binding" .= bound, "program" .= program] == Report.invocation report) (invalid "Gradient metadata invocation differs from its report")
     policy <- field "policy" attributes
-    expected <- either invalid pure (parseEither (withObject "request" (.: "policy")) (Report.request report))
-    unless (policy == expected) (invalid "Gradient metadata policy differs from its consumed input")
+    expected <- either invalid pure (Report.consumedPolicy report)
+    unless (Names.unpack policy == expected) (invalid "Gradient metadata policy differs from its consumed input")
     observation <- field "observation" attributes
     unless (observation == "objective and reward gradients before AdamW") (invalid "Gradient observation is not the declared pre-AdamW snapshot")
   where

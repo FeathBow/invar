@@ -97,7 +97,7 @@ publish (run, index, offset) (workload, observed) fields = do
     unless (actualDelivery == map (Wire.bindingValue . binding . (offset +)) (Workload.delivery workload)) (fail "Training delivery differs from its declared cohort")
 
 binding :: Natural -> V.Binding
-binding index = V.Binding (V.CallId index) (V.AttemptId index) (V.Instance index)
+binding = V.ordinal
 
 generations :: Checked -> [Generation]
 generations (Checked _ values _) = values

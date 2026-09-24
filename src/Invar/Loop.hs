@@ -151,7 +151,7 @@ learnerSettings config (Cursor _ selected _) = (settings config) {L.policy = pol
 execute :: Driver scope -> (Cursor, L.Plan scope) -> (forall value. IO value -> IO value) -> IO (Either Error (Generation scope))
 execute driver (cursor, planned) restore = do
     ordinal <- Internal.reserve (rollout driver) oneUpdate
-    let binding = V.Binding (V.CallId ordinal) (V.AttemptId ordinal) (V.Instance ordinal)
+    let binding = V.ordinal ordinal
     case W.prepare binding planned of
         Left problem -> reset driver cursor >> pure (Left (Update problem))
         Right call -> do

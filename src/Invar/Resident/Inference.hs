@@ -72,7 +72,7 @@ checkGroup (policy, model) (offset, workload, selected) observed = do
         void (Observation.admitGroup planned bound batch)
 
 binding :: Natural -> Invocation.Binding
-binding index = Invocation.Binding (Invocation.CallId index) (Invocation.AttemptId index) (Invocation.Instance index)
+binding = Invocation.ordinal
 
 layout :: Ledger -> [[[Int]]]
 layout ledger = [[[length (Resident.bindings group) | group <- observed, Resident.physicalOwner group == Boundary.Owner Boundary.Inference slot] | slot <- [0 .. sessions ledger - 1]] | (_, observed) <- groups ledger]

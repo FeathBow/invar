@@ -170,4 +170,4 @@ timing :: ByteString -> Object -> Either String ()
 timing raw = void . Duration.admit raw
 
 binding :: Natural -> V.Binding
-binding index = V.Binding (V.CallId index) (V.AttemptId index) (V.Instance index)
+binding = V.ordinal

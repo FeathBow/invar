@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Learn.Report (Report, admit, admitFrames, paired, sameInput, describe, invocation, request, result, output, gradient, artifact, logDigest) where
+module Invar.Learn.Report (Report, admit, admitFrames, consumedPolicy, bindingValue, paired, sameInput, describe, invocation, request, result, output, gradient, artifact, logDigest) where
 
 import Control.Monad (unless, when)
 import Crypto.Hash.SHA256 qualified as SHA256
@@ -93,3 +93,9 @@ sameInput (Report _ left first _ _) (Report _ right second _ _) = do
 
 describe :: Report -> Value
 describe report@(Report digest _ _ _ _) = object ["log_digest" .= digest, "invocation" .= invocation report, "request" .= request report, "digest" .= gradient report, "result" .= result report]
+
+consumedPolicy :: Report -> Either String String
+consumedPolicy = parseEither (withObject "request" (.: "policy")) . request
+
+bindingValue :: Report -> Either String Value
+bindingValue = parseEither (withObject "invocation" (.: "binding")) . invocation

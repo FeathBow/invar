@@ -91,7 +91,7 @@ compare decoder policy (left, right) = do
 
 inputSchema :: Report.Report -> FilePath -> IO (Map Text [Integer])
 inputSchema report path = do
-    expected <- either invalid pure (parseEither (withObject "request" (.: "policy")) (Report.request report))
+    expected <- either invalid pure (Report.consumedPolicy report)
     File.withFile path (\file -> Adapter.verify expected file >> pure (Adapter.schema file))
 
 policyChanges :: ([File.Scan], [File.Scan]) -> [Value]
@@ -101,7 +101,7 @@ identities :: Report.Report -> Either String (String, String)
 identities report = do
     policy <- Report.artifact "adapter" report
     learner <- Report.artifact "learner" report
-    expected <- parseEither (withObject "request" (.: "policy")) (Report.request report)
+    expected <- Report.consumedPolicy report
     parseEither (withObject "staged update result" (check policy expected)) (Report.result report)
     pure (policy, learner)
   where
@@ -119,7 +119,7 @@ summary (first, second) ((firstPolicy, firstLearner), (secondPolicy, secondLearn
     rightBinding <- binding second
     pure (object ["comparison" .= ("checkpoint values and tensor bytes" :: Text), "equal" .= (null policies && null learners), "policy_equal" .= null policies, "learner_equal" .= null learners, "left_policy" .= firstPolicy, "right_policy" .= secondPolicy, "left_learner" .= firstLearner, "right_learner" .= secondLearner, "left_binding" .= leftBinding, "right_binding" .= rightBinding, "differences" .= (policies ++ learners)])
   where
-    binding report = either invalid pure (parseEither (withObject "invocation" (.: "binding")) (Report.invocation report)) :: IO Value
+    binding report = either invalid pure (Report.bindingValue report) :: IO Value
 
 invalid :: String -> IO value
 invalid = ioError . userError

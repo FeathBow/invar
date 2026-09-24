@@ -4,7 +4,7 @@ module Invar.Learn.Observation (Input (..), report, gradients, probabilities, pr
 
 import Control.Monad (unless)
 import Crypto.Hash.SHA256 qualified as SHA256
-import Data.Aeson (Object, Value, object, withObject, (.:), (.=))
+import Data.Aeson (Object, Value, object, (.:), (.=))
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as Fields
 import Data.Aeson.Types (parseEither)
@@ -49,7 +49,7 @@ probabilities left right = do
     rightBinding <- binding second
     pure (object ["comparison" .= ("pre-AdamW objective input and scalar words" :: Text), "equal" .= null differences, "left_binding" .= leftBinding, "right_binding" .= rightBinding, "samples" .= length initial, "differences" .= differences])
   where
-    binding = either invalid pure . parseEither (withObject "invocation" (.: "binding")) . Report.invocation :: Report.Report -> IO Value
+    binding = either invalid pure . Report.bindingValue :: Report.Report -> IO Value
     fields old new = [Key.toText role | role <- ["behavior", "proximal", "reference", "current", "advantage", "objective"], Fields.lookup role old /= Fields.lookup role new]
     difference (old, new) = do
         name <- either invalid pure (parseEither (.: "sample") old) :: IO Text

@@ -44,7 +44,7 @@ observeInferences settings (workload, selected) frames = do
   where
     inference events grouped (index, selectedTask) = do
         declared <- Input.task settings selectedTask
-        let bound = V.Binding (V.CallId index) (V.AttemptId index) (V.Instance index)
+        let bound = V.ordinal index
             matches fields = Fields.lookup "binding" fields == Just (Wire.bindingValue bound)
             groups = [group | group <- grouped, any (matches . Framing.fields . Framing.consumed) (Framing.members group)]
             serial = [fields | (_, fields) <- events, Fields.lookup "stage" fields == Just (String "loaded_adapter"), matches fields]

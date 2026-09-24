@@ -115,7 +115,7 @@ echo line = Bytes.hPutStrLn stdout line >> hFlush stdout
 prepareCall :: Natural -> (Natural, C.Member scope) -> Either Error I.Call
 prepareCall base (index, member) =
     let identity = base + index
-        bound = V.Binding (V.CallId identity) (V.AttemptId identity) (V.Instance identity)
+        bound = V.ordinal identity
      in first Preparation (I.prepare bound (C.planned member))
 
 finishSession :: [(Natural, C.Member scope)] -> Either W.Failure [Observed.Observation] -> Either Error [(Natural, C.Observation scope, Observed.Observation)]
