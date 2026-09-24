@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Infer.Result (Result, Error (..), observe, numerical, ready, consumed, response, tokens, behavior, behaviorBits, promptLength, truncated) where
+module Invar.Infer.Result (Result, Error (..), observe, observeObjects, numerical, ready, consumed, response, tokens, behavior, behaviorBits, promptLength, truncated) where
 
 import Control.Monad (foldM, unless)
 import Data.Aeson (FromJSON (parseJSON), Object, eitherDecodeStrict, withObject, (.:))
@@ -37,8 +37,11 @@ instance FromJSON Report where
         pure Report {request = input, body = observed}
 
 observe :: I.Plan -> ByteString -> Either Error Result
-observe planned encoded = do
-    final <- foldM (advance planned) Awaiting (Bytes.lines encoded)
+observe planned encoded = traverse (either (Left . Malformed) Right . eitherDecodeStrict) (Bytes.lines encoded) >>= observeObjects planned
+
+observeObjects :: I.Plan -> [Object] -> Either Error Result
+observeObjects planned values = do
+    final <- foldM (advance planned) Awaiting values
     case final of
         Finished result -> Right result
         _ -> Left (Unexpected "Worker output ended without a complete inference result")
@@ -52,15 +55,15 @@ numerical planned encoded = do
 
 ready :: I.Plan -> ByteString -> Either Error ()
 ready planned encoded = do
-    progress <- foldM (advance planned) Awaiting (Bytes.lines encoded)
+    values <- traverse (either (Left . Malformed) Right . eitherDecodeStrict) (Bytes.lines encoded)
+    progress <- foldM (advance planned) Awaiting values
     case progress of
         Loaded -> Right ()
         _ -> Left (Unexpected "Inference consumption requires a matching adapter load report")
 
-advance :: I.Plan -> Progress -> ByteString -> Either Error Progress
+advance :: I.Plan -> Progress -> Object -> Either Error Progress
 advance _ (Finished _) _ = Left (Unexpected "Output follows the completed inference result")
-advance planned progress encoded = do
-    value <- either (Left . Malformed) Right (eitherDecodeStrict encoded)
+advance planned progress value = do
     stage <- parse (.: "stage") value
     case stage :: String of
         "loaded_adapter" -> loaded planned progress value

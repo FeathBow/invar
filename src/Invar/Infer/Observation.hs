@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Infer.Observation (Report, admit, admitGroup, result, binding, logDigest, policyDescription, describe) where
+module Invar.Infer.Observation (Report, admit, admitFrames, admitGroup, result, binding, logDigest, policyDescription, describe) where
 
 import Control.Monad (unless, when)
 import Crypto.Hash.SHA256 qualified as SHA256
@@ -30,11 +30,15 @@ data Report = Report String V.Binding Result.Result Object
 admit :: Infer.Plan -> V.Binding -> ByteString -> Either String Report
 admit planned bound encoded = do
     unless ("\n" `Bytes.isSuffixOf` encoded) (Left "Incomplete final inference observation line")
-    records <- Framing.decode encoded
+    Framing.decode encoded >>= admitFrames planned bound
+
+admitFrames :: Infer.Plan -> V.Binding -> [Framing.Frame] -> Either String Report
+admitFrames planned bound records = do
+    let encoded = Framing.encode records
     case break Framing.grouped records of
         (_, []) -> do
             observed <- trace [(Framing.raw frame, Framing.fields frame) | frame <- records]
-            check planned bound (encoded, encoded) observed
+            check planned bound (encoded, map Framing.fields records) observed
         (prefix, execution@(consumed : _)) -> do
             _ <- Framing.readiness (prefix ++ [consumed])
             (group, remaining) <- Framing.takeGroup execution
@@ -52,17 +56,17 @@ admitMember planned bound (source, group) = do
             let loaded = Framing.fields (Framing.loaded member)
                 consumed = Framing.fields (Framing.consumed member)
                 output = Framing.result member
-            check planned bound (source, Framing.memberBytes member) (loaded, consumed, Framing.fields output, Framing.raw output)
+            check planned bound (source, map Framing.fields [Framing.loaded member, Framing.consumed member, output]) (loaded, consumed, Framing.fields output, Framing.raw output)
         _ -> Left "Expected one declared member in the finite batch observation"
 
-check :: Infer.Plan -> V.Binding -> (ByteString, ByteString) -> (Object, Object, Object, ByteString) -> Either String Report
-check planned bound (source, encoded) (loaded, consumed, output, rawOutput) = do
+check :: Infer.Plan -> V.Binding -> (ByteString, [Object]) -> (Object, Object, Object, ByteString) -> Either String Report
+check planned bound (source, values) (loaded, consumed, output, rawOutput) = do
     call <- either (Left . show) Right (Invocation.prepare bound planned)
     expected <- Json.decode (Invocation.batchInput call) >>= parseEither (withObject "expected inference consumption" pure)
     unless (Fields.delete "stage" consumed == expected) (Left "Inference consumption differs from the declared invocation")
     parseEither (checkLoad (planned, bound, expected)) loaded
     parseEither (checkResult bound) output
-    observed <- either (Left . show) Right (Result.observe planned encoded)
+    observed <- either (Left . show) Right (Result.observeObjects planned values)
     Output.rawBehavior rawOutput (Result.behaviorBits observed)
     pure (Report (Artifact.hex (SHA256.hash source)) bound observed loaded)
 

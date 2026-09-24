@@ -16,6 +16,7 @@ import Invar.History.Cohort qualified as Cohort
 import Invar.History.Execution (Frame (..), Mode (..))
 import Invar.History.Execution qualified as Execution
 import Invar.History.Profile qualified as Profile
+import Invar.Infer.Framing qualified as Framing
 import Invar.Infer.Wire qualified as Wire
 import Invar.Json qualified as Json
 import Invar.Learn qualified as Learn
@@ -58,7 +59,7 @@ advance run (current, offset, accepted, state, remaining) (index, workload) = do
     (body, published) <- case reverse execution of
         Frame _ fields : reversed | Fields.lookup "phase" fields == Just (String "published") -> Right (reverse reversed, fields)
         _ -> Left "Missing publication immediately before cycle completion"
-    observed <- Cohort.admitLog current (workload, call) (Bytes.unlines [raw | Frame raw _ <- body])
+    observed <- Cohort.admitFrames current (workload, call) [Framing.Frame raw fields | Frame raw fields <- body]
     updated <- parseEither (withObject "update invocation" Wire.binding) (Report.invocation (Cohort.update observed))
     unless (updated == binding call) (Left "Update invocation identity differs from the declared history")
     (next, groups, modelProfiles) <- Execution.validate (current, state) (workload, offset, observed) body

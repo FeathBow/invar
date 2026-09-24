@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Learn.Report (Report, admit, paired, sameInput, describe, invocation, request, result, output, gradient, artifact, logDigest) where
+module Invar.Learn.Report (Report, admit, admitFrames, paired, sameInput, describe, invocation, request, result, output, gradient, artifact, logDigest) where
 
 import Control.Monad (unless, when)
 import Crypto.Hash.SHA256 qualified as SHA256
@@ -13,6 +13,7 @@ import Data.ByteString.Char8 qualified as Bytes
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Invar.Artifact qualified as Artifact
+import Invar.Infer.Framing qualified as Framing
 import Invar.Json qualified as Json
 import Invar.Learn.Request qualified as Request
 import Numeric.Natural (Natural)
@@ -43,7 +44,13 @@ artifact name (Report _ _ _ (fields, _) _) = parseEither (\value -> value .: nam
 admit :: Natural -> ByteString -> Either String Report
 admit call encoded = do
     events <- traverse (\line -> (,line) <$> (Json.decode line >>= parseEither (withObject "execution log event" pure))) (Bytes.lines encoded)
-    parseEither (observation (Artifact.hex (SHA256.hash encoded))) (filter (selected . fst) events)
+    admitEvents call (Artifact.hex (SHA256.hash encoded)) events
+
+admitFrames :: Natural -> [Framing.Frame] -> Either String Report
+admitFrames call frames = admitEvents call (Artifact.hex (SHA256.hash (Framing.encode frames))) [(Framing.fields frame, Framing.raw frame) | frame <- frames]
+
+admitEvents :: Natural -> String -> [(Object, ByteString)] -> Either String Report
+admitEvents call digest events = parseEither (observation digest) (filter (selected . fst) events)
   where
     selected event = case (Fields.lookup "stage" event, Fields.lookup "binding" event) of
         (Just (String stage), Just (Object bound))
