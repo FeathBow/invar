@@ -25,6 +25,7 @@ import Learning (learning)
 import Literals (literals)
 import Loads (loads)
 import Loops (loops)
+import Mismatches (mismatches)
 import Numerical (numerical)
 import NumericalProbes (numericalProbes)
 import NumericalScores (numericalScores)
@@ -59,5 +60,5 @@ import Workloads (workloads)
 
 main :: IO ()
 main = do
-    outcomes <- traverse checkSequential [fixtures, properties, arguments, values, dependencies, evaluation, artifacts, construction, collections, records, literals, invocations, evidence, loads, store, checkpoints, inference, results, calls, batchCalls, groupedCalls, batchedProtocol, residentCalls, residentDrivers, residentObservations, rewards, cohorts, rollouts, sessions, learning, advantages, objectives, updates, learnerCalls, loops, schedules, policies, probabilities, workloads, reports, quality, observations, inferenceObservations, numerical, scores, scoreProbes, numericalScores, numericalProbes, uses, useEvidence, useAdmission, useBernstein, useGeneric]
+    outcomes <- traverse checkSequential [fixtures, properties, arguments, values, dependencies, evaluation, artifacts, construction, collections, records, literals, invocations, evidence, loads, store, checkpoints, inference, results, calls, batchCalls, groupedCalls, batchedProtocol, residentCalls, residentDrivers, residentObservations, rewards, cohorts, rollouts, sessions, learning, advantages, objectives, mismatches, updates, learnerCalls, loops, schedules, policies, probabilities, workloads, reports, quality, observations, inferenceObservations, numerical, scores, scoreProbes, numericalScores, numericalProbes, uses, useEvidence, useAdmission, useBernstein, useGeneric]
     unless (and outcomes) exitFailure

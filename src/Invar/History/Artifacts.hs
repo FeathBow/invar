@@ -19,6 +19,7 @@ import Invar.Learn.Adapter qualified as Adapter
 import Invar.Learn.Checkpoint qualified as Checkpoint
 import Invar.Learn.Codec qualified as Codec
 import Invar.Learn.Gradient qualified as Gradient
+import Invar.Learn.Mismatch qualified as Mismatch
 import Invar.Learn.Observation qualified as Observation
 import Invar.Learn.Report qualified as Report
 import Invar.Policy.File qualified as File
@@ -57,7 +58,8 @@ successor (decoder, schema) (index, generation) published = do
     gradients <- Gradient.observe parameters (report, path </> "gradients.safetensors")
     probabilities <- Observation.probability report (path </> "probabilities.json")
     either invalid pure (roles generation probabilities)
-    pure (object ["publication" .= Publication.describe published, "state" .= observed, "gradients" .= gradients, "probabilities" .= probabilities])
+    mismatch <- either invalid pure (Mismatch.summarize probabilities)
+    pure (object ["publication" .= Publication.describe published, "state" .= observed, "gradients" .= gradients, "probabilities" .= probabilities, "learner_engine" .= Mismatch.describe mismatch])
 
 state :: Codec.Session -> Checkpoint.Checked -> IO Value
 state session checked = Checkpoint.inspectTensors session checked >>= stateSummary checked
