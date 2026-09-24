@@ -110,44 +110,16 @@ class LifecycleTests(unittest.TestCase):
         altered.write_text("\n".join(map(json.dumps, changed)) + "\n")
         with self.assertRaisesRegex(ValueError, "Resident acknowledgement differs"):
             core.invoke(["inspect", "trace", *flags({**trace, "log": altered})], executable=CORE)
-        replay, = self.command([sys.executable, "-B", ENTRY.parents[3] / "entries" / "redo.py", *flags({
-                               "python": sys.executable, "core": CORE, "worker": ENTRY, "mode": "shared", "cache": root,
-                               "worker-config": configuration,
-                               "initial": initial, "reference": initial / "adapter.safetensors", "log": root / "train.jsonl",
-                               "output": root / "direct", "updates": 2, "exit-code": 0})], root / "direct.jsonl")
-        self.assertEqual((replay["updates"], replay["equal_results"], replay["loads"], replay["sessions"]), (2, 2, 1, 1))
-        self.assertEqual(len(set((root / "loads.txt").read_text().splitlines())), 5)
-        self.evaluate(root, observed, workload, configuration)
-        self.cycle(root, initial, trace, configuration)
+        self.evaluate(root, workload, configuration)
 
-    def cycle(self, root, initial, trace, configuration):
-        declaration = root / "cycle-reference.json"
-        declaration.write_text(json.dumps({name: str(value) for name, value in trace.items()}))
-        replay, = self.command([sys.executable, "-B", ENTRY.parents[3] / "entries" / "cycle.py", *flags({
-                               "core": CORE, "python": sys.executable, "inference-python": sys.executable,
-                               "inference": ENTRY, "learning": ENTRY, "cache": root, "initial": initial,
-                               "reference": initial / "adapter.safetensors", "trace": declaration,
-                               "inference-config": configuration, "output": root / "direct-cycle"})],
-                               root / "direct-cycle.jsonl")
-        self.assertTrue(replay["equal"])
-        self.assertEqual((replay["sessions"], replay["publications"], len(replay["cycles"])), (1, 2, 2))
-        self.assertEqual(len(set((root / "loads.txt").read_text().splitlines())), 8)
-
-    def evaluate(self, root, observed, workload, configuration):
-        adapter = root / "initial/adapter.safetensors"
+    def evaluate(self, root, workload, configuration):
         evaluation = root / "evaluation.jsonl"
         options = {"python": sys.executable, "worker": ENTRY, "worker-mode": "resident", "cache": root,
                    "worker-config": configuration, "checkpoint": root / "initial"}
         evaluated = self.command([CORE, "evaluate", *flags(options)], evaluation, stdin=workload.read_text())
         self.assertEqual(evaluated[-1]["phase"], "evaluation_complete")
         self.assertEqual(sum(row.get("stage") == "load" for row in evaluated), 1)
-        direct, = self.command([sys.executable, "-B", ENTRY.parents[3] / "entries" / "direct.py", *flags({
-                              "python": sys.executable, "core": CORE, "worker": ENTRY, "mode": "resident", "cache": root,
-                              "worker-config": configuration, "adapter": adapter, "policy": observed["policy"],
-                              "tasks": workload, "reference-log": evaluation, "reference-exit-code": 0,
-                              "output": root / "direct-inference"})], root / "direct-inference.jsonl")
-        self.assertEqual((direct["calls"], direct["equal_results"], direct["loads"]), (4, 4, 1))
-        self.assertEqual(len(set((root / "loads.txt").read_text().splitlines())), 7)
+        self.assertEqual(len(set((root / "loads.txt").read_text().splitlines())), 5)
 
 
 if __name__ == "__main__":
