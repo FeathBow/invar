@@ -15,6 +15,7 @@ module Invar.Spec.Evidence (
     assumptions,
     methods,
     methodName,
+    methodNames,
     bounds,
     Counterexample,
     Witness (..),
@@ -90,6 +91,9 @@ methodName method = case method of
     HoeffdingBound {} -> "HoeffdingBound"
     EmpiricalBernsteinBound {} -> "EmpiricalBernsteinBound"
     other -> show other
+
+methodNames :: Certificate -> [String]
+methodNames = nub . map methodName . methods
 
 bounds :: Verdict -> [(U.Metric, U.Confidence)]
 bounds verdict = case verdict of

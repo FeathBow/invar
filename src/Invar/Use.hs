@@ -104,7 +104,7 @@ describeDecision (Admitted admitted) =
         , "purpose" .= purpose (admissionContract admitted)
         , "scope_sha256" .= Artifact.hex identity
         , "requirements" .= Encoding.criterionValue (criterion (admissionContract admitted))
-        , "methods" .= map Evidence.methodName (Evidence.methods (evidence admitted))
+        , "methods" .= Evidence.methodNames (evidence admitted)
         , "remaining_conditions" .= map condition (conditions admitted)
         ]
   where

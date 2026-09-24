@@ -10,7 +10,7 @@ import Invar.Spec.Evidence qualified as Evidence
 
 verdict :: (Evidence.Witness -> Value) -> Evidence.Verdict -> Value
 verdict witness result = case result of
-    Evidence.Accept certificate -> object ["status" .= ("accept" :: String), "assumptions" .= map premise (Evidence.assumptions certificate), "methods" .= map show (Evidence.methods certificate)]
+    Evidence.Accept certificate -> object ["status" .= ("accept" :: String), "assumptions" .= map premise (Evidence.assumptions certificate), "methods" .= Evidence.methodNames certificate]
     Evidence.Refute counterexample -> object ["status" .= ("refute" :: String), "witness" .= witness (Evidence.witness counterexample)]
     Evidence.Unknown problem -> object ["status" .= ("unknown" :: String), "reason" .= show problem]
 

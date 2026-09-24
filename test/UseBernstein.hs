@@ -160,6 +160,8 @@ admission = do
         used = map (U.premise . U.supporting) (U.conditions result)
     [metric | E.EmpiricalBernsteinBound metric _ <- methods] === [U.ReferenceLoss, U.LossIncrease]
     [() | E.HoeffdingBound {} <- methods] === []
+    filter (== "EmpiricalBernsteinBound") (E.methodNames (U.evidence result)) === ["EmpiricalBernsteinBound"]
+    assert (not (any (elem ' ') (E.methodNames (U.evidence result))))
     U.bounds (established requested observed) === [(metric, bound) | E.EmpiricalBernsteinBound metric bound <- methods]
     forM_ (U.lossClaims (U.scope observed) (U.criterion requested)) $ \selected -> case selected of
         U.EmpiricalBernsteinClaim _ _ metric _ -> lookup metric (U.bounds (established requested observed)) === U.confidence selected observed
