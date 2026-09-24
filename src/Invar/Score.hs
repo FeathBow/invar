@@ -58,7 +58,7 @@ import Numeric.Natural (Natural)
 
 data Plan = Plan Inference.Report Infer.Plan ByteString [Natural]
 data Call = Call Plan V.Binding ByteString V.Runtime Load.Plan
-data Permit = Permit Call ByteString V.Runtime L.Fact Policy.Description
+data Permit = Permit Call ByteString [(ByteString, Object)] V.Runtime L.Fact Policy.Description
 data Report = Report V.Completion L.Fact Output.Body S.Fact
     deriving (Eq, Show)
 
@@ -114,8 +114,10 @@ input :: Call -> ByteString
 input = Lazy.toStrict . encode . inputValue
 
 authorize :: L.Registry -> Call -> ByteString -> Either Error (L.Registry, Permit)
-authorize registry call@(Call planned bound program ready loading) encoded = do
-    values <- records encoded
+authorize registry call encoded = records encoded >>= authorizeRecords registry call encoded
+
+authorizeRecords :: L.Registry -> Call -> ByteString -> [(ByteString, Object)] -> Either Error (L.Registry, Permit)
+authorizeRecords registry call@(Call planned bound program ready loading) encoded values = do
     let (diagnostics, execution) = span ((`elem` map (Just . String) ["loading", "profile", "load"]) . Fields.lookup "stage" . snd) values
     when (any (Fields.member "phase" . snd) diagnostics) (Left (Protocol "Unexpected phase in score loading diagnostics"))
     (loaded, consumed) <- case execution of
@@ -131,10 +133,10 @@ authorize registry call@(Call planned bound program ready loading) encoded = do
     intended <- first Lifecycle (V.intent issued (V.boundCall bound))
     current <- first Lifecycle (V.consume (V.Consumption bound program intended) issued)
     loadedFact <- first Registry (L.historical registered (V.boundInstance bound))
-    pure (registered, Permit call encoded current loadedFact description)
+    pure (registered, Permit call encoded values current loadedFact description)
 
 permission :: Permit -> ByteString
-permission (Permit (Call _ bound program _ _) _ _ _ _) = Lazy.toStrict (encode (Wire.invocationValue bound program))
+permission (Permit (Call _ bound program _ _) _ _ _ _ _) = Lazy.toStrict (encode (Wire.invocationValue bound program))
 
 observe :: Permit -> ByteString -> Either Error Report
 observe permit encoded = do
@@ -142,12 +144,12 @@ observe permit encoded = do
     observeRecords permit encoded suffix
 
 suffixBytes :: Permit -> ByteString -> Either Error ByteString
-suffixBytes (Permit _ prefix _ _ _) encoded = do
+suffixBytes (Permit _ prefix _ _ _ _) encoded = do
     unless (prefix `Bytes.isPrefixOf` encoded) (Left (Protocol "Score completion differs from its authorized prefix"))
     pure (Bytes.drop (Bytes.length prefix) encoded)
 
 observeRecords :: Permit -> ByteString -> [(ByteString, Object)] -> Either Error Report
-observeRecords (Permit call@(Call (Plan source selected inspection probes) bound _ _ _) prefix current loadedFact description) encoded suffix = do
+observeRecords (Permit call@(Call (Plan source selected inspection probes) bound _ _ _) _ preceding current loadedFact description) encoded suffix = do
     (raw, result) <- case suffix of
         [(_, before), (_, scoring), (_, after), final] -> do
             mapM_ (uncurry stage) [("verify_before", before), ("cross_score", scoring), ("verify_after", after)]
@@ -157,7 +159,6 @@ observeRecords (Permit call@(Call (Plan source selected inspection probes) bound
     parse (Json.fields ["stage", "binding", "observation"]) result
     matching bound result
     value <- parse (.: "observation") result
-    preceding <- records prefix
     let diagnostics = takeWhile ((/= Just (String "loaded_adapter")) . Fields.lookup "stage" . snd) preceding
         measurements = map snd (diagnostics ++ take 3 suffix)
     body <- first Protocol (Output.observe (Output.Input source (Infer.requested selected) inspection description probes measurements) value)
@@ -181,8 +182,8 @@ admit call status encoded = do
     (consumed, suffix) <- case consumedAndRest of
         item : remaining -> pure (item, remaining)
         [] -> Left (Protocol "Missing score consumption")
-    let prefix = Bytes.unlines (map fst (before ++ [consumed]))
-    (_, permit) <- authorize L.empty call prefix
+    let prefixRecords = before ++ [consumed]
+    (_, permit) <- authorizeRecords L.empty call (Bytes.unlines (map fst prefixRecords)) prefixRecords
     _ <- suffixBytes permit encoded
     observeRecords permit encoded suffix
 
