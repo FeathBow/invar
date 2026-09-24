@@ -1,4 +1,4 @@
-module HistoryInput (trace, traceOptions, inspect, inspectInitial, compareHistories, options) where
+module HistoryInput (trace, traceOptions, inspect, inspectInitial, compareHistories, options, inputOptions, load, select) where
 
 import Control.Monad (unless)
 import Data.Aeson (encode)
@@ -116,8 +116,9 @@ compareHistories supplied = do
     left <- History.admit decoder first firstOutput
     right <- History.admit decoder second secondOutput
     History.compare decoder (left, right) >>= Lazy.putStrLn . encode
-  where
-    select prefix fields = Map.fromList [(drop (length prefix) key, value) | (key, value) <- Map.toList fields, prefix `isPrefixOf` key]
+
+select :: String -> O.Fields -> O.Fields
+select prefix fields = Map.fromList [(drop (length prefix) key, value) | (key, value) <- Map.toList fields, prefix `isPrefixOf` key]
 
 pairOptions :: [OptDescr (String, String)]
 pairOptions = NativeCodec.options ++ concatMap (`O.prefixed` inputOptions) ["left-", "right-"]

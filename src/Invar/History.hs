@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.History (Declaration (..), Profiles (..), Checked, admit, compare, describe) where
+module Invar.History (Declaration (..), Profiles (..), Checked, admit, compare, describe, rollouts) where
 
 import Control.Monad (unless)
 import Data.Aeson (Value (..), object, withObject, (.:), (.=))
@@ -190,6 +190,11 @@ decision = either invalid pure . parseEither (withObject "comparison decision" (
 
 field :: Key -> Value -> IO Value
 field key = either invalid pure . parseEither (withObject "artifact observation" (.: key))
+
+rollouts :: Checked -> Natural -> Either String [(String, Inference.Report)]
+rollouts checked index = case drop (fromIntegral index - 1) (zip (Workload.cycles (tasks (declaration checked))) (generationObservations checked)) of
+    (workload, generation) : _ | index >= 1 -> Right (zip (map Workload.name (Workload.tasks workload)) (Cohort.inferences (Trace.cohort (generationTrace generation))))
+    _ -> Left "The admitted history has no such generation"
 
 describe :: Checked -> Value
 describe checked = object ["tasks_sha256" .= Workload.digest (tasks (declaration checked)), "initial" .= initialObservation checked, "initial_diagnostics" .= initializationDiagnostics checked, "training" .= Trace.describe (trainingTrace checked), "artifacts" .= map generationArtifacts (generationObservations checked), "final" .= Inference.describe (independentObservation checked), "final_diagnostics" .= standaloneDiagnostics checked, "profiles" .= profileObservation checked]
