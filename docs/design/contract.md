@@ -62,17 +62,16 @@ For a population standard, the reference loss is bounded at `reference_alpha` an
 
 The decision status is `admitted_under_declared_reliance`, `observed_violation` or `unknown`. An admission lists the methods used and every remaining condition with the authority and basis digest the contract declared for it. A violation carries its witness, and an unknown decision lists reasons such as `MissingReliance`.
 
-All three commands read the contract and the retained runs:
+Both commands read the contract and the retained runs:
 
 ```sh
 invar use inspect --contract contract.json --runs runs.json
 invar use admit --contract contract.json --runs runs.json
-invar use statistics --contract contract.json --runs runs.json
 ```
 
 `runs.json` has one entry per input: `[cohort, key, pair, repeats]`, where the pair holds `invar compare numerical` arguments and each repeat describes one further candidate execution.
 
-`invar use statistics` puts other common tests beside the admission bound on the same paired losses, at the contract's regression alpha and ceiling, and leaves the decision to `invar use admit`. `Invar.Use.Statistics` reports the mean loss increase, the Hoeffding and empirical Bernstein upper bounds, a paired Wald interval with the equivalence and noninferiority verdicts it implies against the ceiling, and, when every loss is zero or one, the exact one sided McNemar tail for the units that got worse. The Wald interval uses an upper enclosure of the normal quantile computed from an alternating series with a bounded remainder and an upper rational bound on pi.
+The certificate records each confidence bound it used as part of its method, so `invar use admit` reports the reference and increase bounds from the decision itself. Beside them it puts other common tests on the same paired losses, at the contract's regression alpha and ceiling, without changing the decision: `Invar.Use.Statistics` gives the population bound the contract did not use, a paired Wald interval with the equivalence and noninferiority verdicts it implies against the ceiling, and, when every loss is zero or one, the exact one sided McNemar tail for the units that got worse. The Wald interval uses an upper enclosure of the normal quantile computed from an alternating series with a bounded remainder and an upper rational bound on pi.
 
 ## The exact decimal adapter
 

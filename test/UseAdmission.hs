@@ -216,7 +216,7 @@ statistical = do
         other -> annotateShow other >> failure
     let requested = mapLoss (\value -> value {U.referenceCeiling = U.Budget (1 % 4) "Fixture bound only", U.regressionCeiling = U.Budget (1 % 2) "Fixture bound only", U.standard = U.HoeffdingPopulation population}) contract
     admitted <- accepted (U.admit requested (established requested observed))
-    assert (E.HoeffdingBound `elem` E.methods (U.evidence admitted))
+    [metric | E.HoeffdingBound metric _ <- E.methods (U.evidence admitted)] === [U.ReferenceLoss, U.LossIncrease]
     assert (any ((== U.IndependentUnits) . U.premise . U.supporting) (U.conditions admitted))
 
 encoding :: PropertyT IO ()

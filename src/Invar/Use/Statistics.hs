@@ -1,11 +1,14 @@
 {-# LANGUAGE Safe #-}
 
-module Invar.Use.Statistics (Statistics (..), McNemar (..), compare, normalQuantileUpper, normalLower) where
+module Invar.Use.Statistics (Statistics (..), McNemar (..), Bound (..), compare, normalQuantileUpper, normalLower) where
 
 import Data.List (genericLength)
 import Data.Ratio ((%))
-import Invar.Use.Confidence (empiricalBernstein, hoeffding)
+import Invar.Use.Confidence (empiricalBernstein, hoeffding, sampleVariance, squareRootUpper)
 import Prelude hiding (compare)
+
+data Bound = Hoeffding | EmpiricalBernstein
+    deriving (Eq, Show)
 
 data McNemar = McNemar {worse :: Integer, better :: Integer, oneSided :: Rational}
     deriving (Eq, Show)
@@ -13,8 +16,7 @@ data McNemar = McNemar {worse :: Integer, better :: Integer, oneSided :: Rationa
 data Statistics = Statistics
     { units :: Integer
     , meanIncrease :: Rational
-    , hoeffdingUpper :: Rational
-    , bernsteinUpper :: Rational
+    , alternative :: (Bound, Rational)
     , waldLower :: Rational
     , waldUpper :: Rational
     , equivalent :: Bool
@@ -23,24 +25,24 @@ data Statistics = Statistics
     }
     deriving (Eq, Show)
 
-compare :: Rational -> Rational -> [(Rational, Rational)] -> Maybe Statistics
-compare alpha margin pairs = do
+compare :: Rational -> Rational -> Bound -> [(Rational, Rational)] -> Maybe Statistics
+compare alpha margin used pairs = do
     let increases = [candidate - reference | (reference, candidate) <- pairs]
         count = genericLength increases
         average = sum increases / fromInteger count
-    hoeffdingWidth <- hoeffding 2 alpha (fromInteger count)
-    bernsteinWidth <- empiricalBernstein 2 alpha increases
     quantile <- normalQuantileUpper alpha
-    variance <- if count >= 2 then Just (sum [(value - average) ^ (2 :: Int) | value <- increases] / fromInteger (count - 1)) else Nothing
-    let waldWidth = quantile * rootUpper (variance / fromInteger count)
+    variance <- sampleVariance increases
+    other <- case used of
+        EmpiricalBernstein -> (,) Hoeffding . (average +) <$> hoeffding 2 alpha (fromInteger count)
+        Hoeffding -> (,) EmpiricalBernstein . (average +) <$> empiricalBernstein 2 alpha increases
+    let waldWidth = quantile * squareRootUpper (variance / fromInteger count)
         lower = average - waldWidth
         upper = average + waldWidth
     pure
         Statistics
             { units = count
             , meanIncrease = average
-            , hoeffdingUpper = average + hoeffdingWidth
-            , bernsteinUpper = average + bernsteinWidth
+            , alternative = other
             , waldLower = lower
             , waldUpper = upper
             , equivalent = lower > negate margin && upper < margin
@@ -78,7 +80,7 @@ normalQuantileUpper alpha
 normalLower :: Rational -> Rational
 normalLower x
     | integral <= 0 = 1 / 2
-    | otherwise = 1 / 2 + integral / rootUpper (2 * piUpper)
+    | otherwise = 1 / 2 + integral / squareRootUpper (2 * piUpper)
   where
     terms = [x ^ (2 * k + 1) / fromInteger (2 ^ k * product [1 .. k] * (2 * k + 1)) | k <- [0 ..]]
     count = until (\k -> fromInteger k > x * x && terms !! fromInteger k < 1 % (10 ^ (40 :: Int))) (+ 1) (1 :: Integer)
@@ -87,18 +89,3 @@ normalLower x
 
 piUpper :: Rational
 piUpper = 3141592653589794 % 1000000000000000
-
-rootUpper :: Rational -> Rational
-rootUpper value = ceilingRoot (ceiling (value * fromInteger (scale * scale))) % scale
-  where
-    scale = 10 ^ (30 :: Int)
-
-ceilingRoot :: Integer -> Integer
-ceilingRoot value = search 0 (value + 1)
-  where
-    search lower upper
-        | upper - lower <= 1 = if lower * lower == value then lower else upper
-        | midpoint * midpoint >= value = search lower midpoint
-        | otherwise = search midpoint upper
-      where
-        midpoint = (lower + upper) `div` 2

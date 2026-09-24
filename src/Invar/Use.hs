@@ -50,6 +50,8 @@ module Invar.Use (
     decodeContract,
     describeContract,
     describeConfidence,
+    bounds,
+    lossClaims,
 ) where
 
 import Data.Aeson (Value, object, (.=))
@@ -68,7 +70,7 @@ import Invar.Use.Contract (Budget (..), Criterion (..), InvarianceRequirement (.
 import Invar.Use.Contract qualified as Contract
 import Invar.Use.Encoding (decodeContract, describeContract)
 import Invar.Use.Encoding qualified as Encoding
-import Invar.Use.Finding (Finding (..), establish, finding)
+import Invar.Use.Finding (Finding (..), establish, finding, lossClaims)
 import Invar.Use.Observation (BoundRun (..), Case (..), ObservationError (..), observe)
 
 describeFinding :: Finding -> Value
@@ -102,12 +104,15 @@ describeDecision (Admitted admitted) =
         , "purpose" .= purpose (admissionContract admitted)
         , "scope_sha256" .= Artifact.hex identity
         , "requirements" .= Encoding.criterionValue (criterion (admissionContract admitted))
-        , "methods" .= map show (Evidence.methods (evidence admitted))
+        , "methods" .= map Evidence.methodName (Evidence.methods (evidence admitted))
         , "remaining_conditions" .= map condition (conditions admitted)
         ]
   where
     U.ScopeId identity = scopeId (admissionScope admitted)
     condition (ReliedOn external selected) = object ["obligation" .= EvidenceEncoding.premise (Evidence.External external), "authority" .= Contract.authority selected, "basis_sha256" .= Artifact.hex (Contract.basis selected)]
+
+bounds :: Finding -> [(Metric, Confidence)]
+bounds = Evidence.bounds . finding
 
 describeConfidence :: Confidence -> Value
 describeConfidence bound = object ["units" .= unitCount bound, "alpha" .= rational (alpha bound), "width" .= rational (width bound), "upper" .= rational (upper bound)]

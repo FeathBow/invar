@@ -94,7 +94,7 @@ data Problem
     | UnsupportedDerivation [Obligation]
     deriving (Eq, Show)
 
-data Judgement = Satisfied | Violated | Insufficient Problem
+data Judgement = Satisfied (Maybe Confidence) | Violated | Insufficient Problem
     deriving (Eq, Show)
 
 judge :: Claim -> Observed -> Judgement
@@ -103,7 +103,7 @@ judge target observed
     | otherwise = case target of
         Claim _ metric budget -> case mean metric observed of
             Nothing -> Insufficient MissingMeasurement
-            Just measured -> if measured <= budget then Satisfied else Violated
+            Just measured -> if measured <= budget then Satisfied Nothing else Violated
         PopulationClaim _ population metric budget -> judgePopulation target observed (population, metric, budget)
         EmpiricalBernsteinClaim _ population metric budget -> judgePopulation target observed (population, metric, budget)
         Required _ criterion -> case Contract.standard <$> Contract.lossRequirement criterion of
@@ -117,7 +117,7 @@ judgePopulation target observed (population, metric, budget)
     | isNothing (mean metric observed) = Insufficient MissingMeasurement
     | count < minimumUnits = Insufficient (InsufficientUnits count minimumUnits)
     | otherwise = case confidence target observed of
-        Just result | upper result <= budget -> Satisfied
+        Just result | upper result <= budget -> Satisfied (Just result)
         Just result -> Insufficient (InsufficientLossBound metric budget result)
         Nothing -> Insufficient InvalidPopulation
   where

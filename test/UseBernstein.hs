@@ -158,7 +158,12 @@ admission = do
     U.admissionScope result === U.scope observed
     let methods = E.methods (U.evidence result)
         used = map (U.premise . U.supporting) (U.conditions result)
-    filter (`elem` [E.HoeffdingBound, E.EmpiricalBernsteinBound]) methods === [E.EmpiricalBernsteinBound]
+    [metric | E.EmpiricalBernsteinBound metric _ <- methods] === [U.ReferenceLoss, U.LossIncrease]
+    [() | E.HoeffdingBound {} <- methods] === []
+    U.bounds (established requested observed) === [(metric, bound) | E.EmpiricalBernsteinBound metric bound <- methods]
+    forM_ (U.lossClaims (U.scope observed) (U.criterion requested)) $ \selected -> case selected of
+        U.EmpiricalBernsteinClaim _ _ metric _ -> lookup metric (U.bounds (established requested observed)) === U.confidence selected observed
+        other -> annotateShow other >> failure
     forM_ samplingPremises $ \premise -> assert (premise `elem` used)
     assert (U.IndependentUnits `notElem` used && U.ReplicateSamplingLaw `notElem` used)
 

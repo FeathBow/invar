@@ -1,6 +1,6 @@
 {-# LANGUAGE Safe #-}
 
-module Invar.Use.Confidence (hoeffding, empiricalBernstein) where
+module Invar.Use.Confidence (hoeffding, empiricalBernstein, squareRootUpper, sampleVariance) where
 
 import Data.List (genericLength)
 import Data.Ratio (denominator, numerator, (%))

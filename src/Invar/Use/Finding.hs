@@ -1,6 +1,6 @@
 {-# LANGUAGE Safe #-}
 
-module Invar.Use.Finding (Finding (..), establish, finding, goal) where
+module Invar.Use.Finding (Finding (..), establish, finding, goal, lossClaims) where
 
 import Data.Foldable (toList)
 import Data.Map.Strict qualified as Map
@@ -46,19 +46,9 @@ goal target = Evidence.TaskLoss target
 requirements :: U.Scope -> Contract.Criterion -> [Evidence.Claim]
 requirements selected criterion = case Contract.lossRequirement criterion of
     Just required | Contract.ConditionalDerivation _ <- Contract.standard required -> [Evidence.TaskLoss (U.Required selected criterion)]
-    requested -> maybe [] losses requested ++ numerical ++ invariance
+    _ -> map Evidence.TaskLoss (lossClaims selected criterion) ++ numerical ++ invariance
   where
     U.Scope _ _ _ samples = selected
-    losses requested =
-        [ Evidence.TaskLoss (claim (Contract.standard requested) metric (Contract.limit budget))
-        | (metric, budget) <- [(U.ReferenceLoss, Contract.referenceCeiling requested), (U.LossIncrease, Contract.regressionCeiling requested)]
-        ]
-    claim Contract.FiniteDomain metric budget = U.Claim selected metric budget
-    claim (Contract.HoeffdingPopulation population) metric budget =
-        U.PopulationClaim selected population metric budget
-    claim (Contract.EmpiricalBernsteinPopulation population) metric budget =
-        U.EmpiricalBernsteinClaim selected population metric budget
-    claim (Contract.ConditionalDerivation _) _ _ = U.Required selected criterion
     numerical =
         [ Evidence.Numerical (Numerical.Claim (Numerical.scope (U.numerical sample)) (Contract.relation requirement))
         | sample <- toList samples
@@ -70,3 +60,16 @@ requirements selected criterion = case Contract.lossRequirement criterion of
         , requirement <- toList (Contract.invarianceRequirements criterion)
         , repeated <- U.invariance sample
         ]
+
+lossClaims :: U.Scope -> Contract.Criterion -> [U.Claim]
+lossClaims selected criterion = case Contract.lossRequirement criterion of
+    Just requested ->
+        [ claim (Contract.standard requested) metric (Contract.limit budget)
+        | (metric, budget) <- [(U.ReferenceLoss, Contract.referenceCeiling requested), (U.LossIncrease, Contract.regressionCeiling requested)]
+        ]
+    Nothing -> []
+  where
+    claim Contract.FiniteDomain metric budget = U.Claim selected metric budget
+    claim (Contract.HoeffdingPopulation population) metric budget = U.PopulationClaim selected population metric budget
+    claim (Contract.EmpiricalBernsteinPopulation population) metric budget = U.EmpiricalBernsteinClaim selected population metric budget
+    claim (Contract.ConditionalDerivation _) _ _ = U.Required selected criterion

@@ -35,22 +35,11 @@ run ("admit" : supplied) = do
                 , "observation" .= U.describe observed
                 , "finding" .= U.describeFinding found
                 , "decision" .= U.describeDecision decision
-                , "confidence" .= confidence contract observed
+                , "bounds" .= [object ["metric" .= show metric, "bound" .= U.describeConfidence bound] | (metric, bound) <- U.bounds found]
+                , "statistics" .= statistics contract observed
                 ]
             )
         )
-run ("statistics" : supplied) = do
-    fields <- either die pure (O.parse options supplied)
-    contract <- readContract fields
-    observed <- observe fields contract
-    requested <- maybe (die "Statistics need a loss requirement with a population standard") pure (U.lossRequirement (U.criterion contract))
-    alpha <- case U.standard requested of
-        U.HoeffdingPopulation population -> pure (U.regressionAlpha population)
-        U.EmpiricalBernsteinPopulation population -> pure (U.regressionAlpha population)
-        _ -> die "Statistics need a population standard"
-    pairs <- maybe (die "Every unit needs a reference and a candidate loss") pure (traverse (\unit -> (,) <$> U.referenceLoss unit <*> U.candidateLoss unit) (toList (U.units observed)))
-    result <- maybe (die "Statistics need at least two units and an alpha below one half") pure (Statistics.compare alpha (U.limit (U.regressionCeiling requested)) pairs)
-    Lazy.putStrLn (encode (statistics alpha result))
 run _ = die usage
 
 readContract :: O.Fields -> IO U.UseContract
@@ -76,37 +65,33 @@ observe fields contract = do
 readInput :: O.Fields -> String -> IO Bytes.ByteString
 readInput fields name = either die pure (O.required fields name) >>= Bytes.readFile
 
-confidence :: U.UseContract -> U.Observed -> [Value]
-confidence contract observed = case U.lossRequirement criterion of
-    Just requested
-        | Just selected <- claim (U.standard requested) ->
-            [ object ["metric" .= show metric, "bound" .= U.describeConfidence bound]
-            | (metric, budget) <- [(U.ReferenceLoss, U.referenceCeiling requested), (U.LossIncrease, U.regressionCeiling requested)]
-            , Just bound <- [U.confidence (selected metric (U.limit budget)) observed]
+statistics :: U.UseContract -> U.Observed -> Maybe Value
+statistics contract observed = do
+    (population, budget, used) <- case [claim | claim <- U.lossClaims (U.scope observed) (U.criterion contract), increase claim] of
+        [U.PopulationClaim _ population _ budget] -> Just (population, budget, Statistics.Hoeffding)
+        [U.EmpiricalBernsteinClaim _ population _ budget] -> Just (population, budget, Statistics.EmpiricalBernstein)
+        _ -> Nothing
+    pairs <- traverse (\unit -> (,) <$> U.referenceLoss unit <*> U.candidateLoss unit) (toList (U.units observed))
+    result <- Statistics.compare (U.regressionAlpha population) budget used pairs
+    let (other, upper) = Statistics.alternative result
+    pure
+        ( object
+            [ "units" .= Statistics.units result
+            , "mean_increase" .= decimal (Statistics.meanIncrease result)
+            , "alternative_bound" .= object ["method" .= show other, "upper" .= decimal upper]
+            , "wald" .= object ["lower" .= decimal (Statistics.waldLower result), "upper" .= decimal (Statistics.waldUpper result), "equivalent" .= Statistics.equivalent result, "noninferior" .= Statistics.noninferior result]
+            , "mcnemar" .= fmap (\test -> object ["worse" .= Statistics.worse test, "better" .= Statistics.better test, "one_sided" .= decimal (Statistics.oneSided test)]) (Statistics.mcnemar result)
             ]
-    _ -> []
+        )
   where
-    criterion = U.criterion contract
-    claim (U.HoeffdingPopulation population) = Just (U.PopulationClaim (U.scope observed) population)
-    claim (U.EmpiricalBernsteinPopulation population) = Just (U.EmpiricalBernsteinClaim (U.scope observed) population)
-    claim _ = Nothing
-
-statistics :: Rational -> Statistics.Statistics -> Value
-statistics alpha result =
-    object
-        [ "units" .= Statistics.units result
-        , "alpha" .= decimal alpha
-        , "mean_increase" .= decimal (Statistics.meanIncrease result)
-        , "hoeffding_upper" .= decimal (Statistics.hoeffdingUpper result)
-        , "bernstein_upper" .= decimal (Statistics.bernsteinUpper result)
-        , "wald" .= object ["lower" .= decimal (Statistics.waldLower result), "upper" .= decimal (Statistics.waldUpper result), "equivalent" .= Statistics.equivalent result, "noninferior" .= Statistics.noninferior result]
-        , "mcnemar" .= fmap (\test -> object ["worse" .= Statistics.worse test, "better" .= Statistics.better test, "one_sided" .= decimal (Statistics.oneSided test)]) (Statistics.mcnemar result)
-        ]
-  where
+    increase claim = case claim of
+        U.PopulationClaim _ _ U.LossIncrease _ -> True
+        U.EmpiricalBernsteinClaim _ _ U.LossIncrease _ -> True
+        _ -> False
     decimal value = fromRational value :: Double
 
 options :: [OptDescr (String, String)]
 options = O.descriptions [("contract", "Explicit domain, optional measurement and requirements in invar-use-contract JSON"), ("runs", "JSON array of [cohort index, input key, paired-observation argument array, optional array of repeated candidate argument arrays]")]
 
 usage :: String
-usage = usageInfo "Usage: invar use inspect --contract FILE --runs FILE\n       invar use admit --contract FILE --runs FILE\n       invar use statistics --contract FILE --runs FILE\nReads retained observations; does not execute models. Run arguments use compare numerical's input options, without --relation or --budget. Repeated candidate argument arrays use the unprefixed request, binding, log and exit-code options. Paths resolve from the current directory.\nExit zero means the judgment was computed; inspect decision.status for conditional admission, violation or unknown. Declared external reliance is retained, not authenticated." options
+usage = usageInfo "Usage: invar use inspect --contract FILE --runs FILE\n       invar use admit --contract FILE --runs FILE\nReads retained observations; does not execute models. Run arguments use compare numerical's input options, without --relation or --budget. Repeated candidate argument arrays use the unprefixed request, binding, log and exit-code options. Paths resolve from the current directory.\nExit zero means the judgment was computed; inspect decision.status for conditional admission, violation or unknown. Declared external reliance is retained, not authenticated." options

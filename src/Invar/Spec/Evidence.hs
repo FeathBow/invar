@@ -14,6 +14,8 @@ module Invar.Spec.Evidence (
     conclusion,
     assumptions,
     methods,
+    methodName,
+    bounds,
     Counterexample,
     Witness (..),
     refuted,
@@ -46,7 +48,7 @@ data Node = Node {claim :: Claim, rule :: Rule}
 
 type Graph = Map EvidenceId Node
 
-data Method = Hypothesis | ReportComparison | NumericalObservation | TaskLossObservation | HoeffdingBound | EmpiricalBernsteinBound | Conjunction | AssumptionDischarge | ImplicationElimination
+data Method = Hypothesis | ReportComparison | NumericalObservation | TaskLossObservation | HoeffdingBound U.Metric U.Confidence | EmpiricalBernsteinBound U.Metric U.Confidence | Conjunction | AssumptionDischarge | ImplicationElimination
     deriving (Eq, Show)
 
 data Problem
@@ -82,6 +84,22 @@ assumptions (Certificate _ remaining _) = remaining
 
 methods :: Certificate -> [Method]
 methods (Certificate _ _ used) = used
+
+methodName :: Method -> String
+methodName method = case method of
+    HoeffdingBound {} -> "HoeffdingBound"
+    EmpiricalBernsteinBound {} -> "EmpiricalBernsteinBound"
+    other -> show other
+
+bounds :: Verdict -> [(U.Metric, U.Confidence)]
+bounds verdict = case verdict of
+    Accept certificate -> [bound | method <- methods certificate, Just bound <- [used method]]
+    Unknown (TaskLossProblem (U.InsufficientLossBound metric _ value)) -> [(metric, value)]
+    _ -> []
+  where
+    used (HoeffdingBound metric value) = Just (metric, value)
+    used (EmpiricalBernsteinBound metric value) = Just (metric, value)
+    used _ = Nothing
 
 refuted :: Counterexample -> Claim
 refuted (Counterexample target _) = target
@@ -165,15 +183,14 @@ compareNumerical target _ = Unknown (UnsupportedObservation target)
 
 compareTaskLoss :: Claim -> U.Observed -> Verdict
 compareTaskLoss target@(TaskLoss expected) observed = case U.judge expected observed of
-    U.Satisfied -> Accept (Certificate target (map External (U.claimPremises expected observed)) used)
+    U.Satisfied bound -> Accept (Certificate target (map External (U.claimPremises expected observed)) (TaskLossObservation : used bound))
     U.Violated -> Refute (Counterexample target (TaskLossWitness observed))
     U.Insufficient problem -> Unknown (TaskLossProblem problem)
   where
-    used =
-        TaskLossObservation : case expected of
-            U.PopulationClaim {} -> [HoeffdingBound]
-            U.EmpiricalBernsteinClaim {} -> [EmpiricalBernsteinBound]
-            _ -> []
+    used bound = case (expected, bound) of
+        (U.PopulationClaim _ _ metric _, Just value) -> [HoeffdingBound metric value]
+        (U.EmpiricalBernsteinClaim _ _ metric _, Just value) -> [EmpiricalBernsteinBound metric value]
+        _ -> []
 compareTaskLoss target _ = Unknown (UnsupportedObservation target)
 
 conjunction :: Claim -> [Verdict] -> Verdict
