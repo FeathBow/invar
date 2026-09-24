@@ -8,6 +8,7 @@ import Data.Aeson.Types (Parser)
 import Data.ByteString (ByteString)
 import Data.Word (Word32)
 import GHC.Float (castDoubleToWord64, castWord32ToFloat, float2Double)
+import Invar.Float32 qualified as Float32
 import Invar.Json qualified as Json
 import Numeric.Natural (Natural)
 
@@ -40,5 +41,5 @@ validate limit body = do
 rawBehavior :: ByteString -> [Word32] -> Either String ()
 rawBehavior encoded bitWords = do
     reported <- map castDoubleToWord64 <$> Json.floatingArrayAt ["behavior"] encoded
-    let actual = map (castDoubleToWord64 . float2Double . castWord32ToFloat) bitWords
+    let actual = map Float32.widened bitWords
     unless (reported == actual) (Left "Behavior value and FP32 word disagree, including zero sign")

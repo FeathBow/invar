@@ -10,6 +10,7 @@ import Data.Map.Strict qualified as Map
 import Data.Ratio (denominator, numerator)
 import Data.Set qualified as Set
 import Invar.Construct qualified as C
+import Invar.Digest qualified as Digest
 import Invar.Infer.Schema (Inputs)
 import Invar.Infer.Schema qualified as Schema
 import Invar.Materialization qualified as Materialization
@@ -108,9 +109,7 @@ validate request = do
     unless (not (isNaN value || isInfinite value) && value > 0) (Left (InvalidRequest "Temperature must be finite and positive"))
     when ('\0' `elem` prompt request) (Left (InvalidRequest "A process argument cannot contain NUL"))
   where
-    digestLength = 64
-    hexadecimal character = character `elem` ['0' .. '9'] || character `elem` ['a' .. 'f']
-    identity (label, value) = unless (length value == digestLength && all hexadecimal value) (Left (InvalidRequest ("Expected a lowercase SHA-256 " ++ label ++ " identity")))
+    identity (label, value) = unless (Digest.sha256 value) (Left (InvalidRequest ("Expected a lowercase SHA-256 " ++ label ++ " identity")))
 
 lower :: Value Natural -> Either Error Request
 lower payload = do

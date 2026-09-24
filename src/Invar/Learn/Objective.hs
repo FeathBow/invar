@@ -3,6 +3,7 @@ module Invar.Learn.Objective (Profile (..), Inputs (..), Output (..), Error (..)
 import Control.Monad (foldM, unless, when)
 import Data.Word (Word32)
 import GHC.Float (castFloatToWord32, castWord32ToFloat, double2Float, float2Double)
+import Invar.Float32 qualified as Float32
 
 data Profile = Profile {epsilon :: Double, penalty :: Double}
     deriving (Eq, Show)
@@ -77,9 +78,7 @@ probability encoded = do
     pure value
 
 operand :: Word32 -> Either Error Float
-operand encoded =
-    let value = castWord32ToFloat encoded
-     in if finite value then Right value else Left (NonFinite "FP32 operand")
+operand encoded = if Float32.finite encoded then Right (castWord32ToFloat encoded) else Left (NonFinite "FP32 operand")
 
 exponential :: Float -> Either Error Float
 exponential value = do

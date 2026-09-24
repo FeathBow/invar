@@ -15,6 +15,7 @@ import Data.Text.Encoding (decodeUtf8)
 import Data.Word (Word32)
 import GHC.Float (castWord32ToFloat)
 import Invar.Artifact qualified as Artifact
+import Invar.Float32 qualified as Float32
 import Invar.Infer qualified as Infer
 import Invar.Infer.Observation qualified as Inference
 import Invar.Infer.Result qualified as Result
@@ -97,9 +98,8 @@ implementation fields = do
 probability :: Word32 -> Parser (Maybe Rational)
 probability 0xff800000 = pure Nothing
 probability encoded = do
-    let value = castWord32ToFloat encoded
-    when (isNaN value || isInfinite value || value > 0) (fail "Expected a nonpositive FP32 log probability or negative-infinite zero support")
-    pure (Just (toRational value))
+    unless (Float32.logProbability encoded) (fail "Expected a nonpositive FP32 log probability or negative-infinite zero support")
+    pure (Just (toRational (castWord32ToFloat encoded)))
 
 ratioValue :: LogRatio -> Value
 ratioValue (Finite value) = object ["kind" .= ("finite" :: String), "numerator" .= numerator value, "denominator" .= denominator value]

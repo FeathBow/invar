@@ -13,7 +13,8 @@ import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Word (Word32)
-import GHC.Float (castDoubleToWord64, castWord32ToFloat, float2Double)
+import GHC.Float (castDoubleToWord64)
+import Invar.Float32 qualified as Float32
 import Invar.Infer.Wire qualified as Binding
 import Invar.Json qualified as Json
 import Invar.Learn.Advantage qualified as Advantage
@@ -54,7 +55,7 @@ document (intended, consumed, output) reported fields = do
     observedLoss <- fields .: "loss"
     unless (observedLoss == expectedLoss) (fail "Reported loss differs from the core token mean")
     summary <- withObject "update result" (.: "update") output
-    unless (castDoubleToWord64 reported == castDoubleToWord64 (float2Double (castWord32ToFloat expectedLoss))) (fail "Update summary differs from the core scalar loss")
+    unless (castDoubleToWord64 reported == Float32.widened expectedLoss) (fail "Update summary differs from the core scalar loss")
     tokens <- summary .: "active_tokens" :: Parser Integer
     unless (tokens == fromIntegral (sum (map (length . behavior) checked))) (fail "Update summary differs from the scalar observation token count")
     pure checked
@@ -119,7 +120,7 @@ vector :: Int -> Object -> Key -> Parser [Word32]
 vector count fields role = do
     encoded <- fields .: role :: Parser [Word32]
     unless (length encoded == count && count > 0) (fail "Probability vector token count mismatch")
-    let valid word = let number = castWord32ToFloat word in not (isNaN number || isInfinite number) && (role == "advantage" || number <= 0)
+    let valid = if role == "advantage" then Float32.finite else Float32.logProbability
     unless (all valid encoded) (fail "Invalid probability or advantage floating-point words")
     pure encoded
 

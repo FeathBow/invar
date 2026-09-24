@@ -11,7 +11,7 @@ import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Word (Word32)
-import GHC.Float (castWord32ToFloat)
+import Invar.Float32 qualified as Float32
 import Invar.Json qualified as Json
 import Numeric.Natural (Natural)
 
@@ -81,8 +81,7 @@ sample original = withObject "update sample" inspect original
 word :: Bool -> Value -> Parser Word32
 word probability encoded = do
     decoded <- parseJSON encoded
-    let number = castWord32ToFloat decoded
-    unless (not (isNaN number || isInfinite number) && (not probability || number <= 0)) (fail "Expected finite FP32 words and nonpositive log probabilities")
+    unless (if probability then Float32.logProbability decoded else Float32.finite decoded) (fail "Expected finite FP32 words and nonpositive log probabilities")
     pure decoded
 
 optimizer :: Value -> Parser ()

@@ -13,6 +13,7 @@ import Data.ByteString.Char8 qualified as Bytes
 import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Text (Text)
+import Invar.Digest qualified as Digest
 
 decode :: ByteString -> Either String Value
 decode encoded = do
@@ -34,9 +35,7 @@ fields expected actual = unless (Set.fromList expected == Set.fromList (Fields.k
 identity :: Value -> Parser String
 identity encoded = do
     decoded <- parseJSON encoded
-    let digestLength = 64
-        hexadecimal character = character `elem` ['0' .. '9'] || character `elem` ['a' .. 'f']
-    unless (length decoded == digestLength && all hexadecimal decoded) (fail "Expected a lowercase SHA-256 identity")
+    unless (Digest.sha256 decoded) (fail "Expected a lowercase SHA-256 identity")
     pure decoded
 
 finite :: Value -> Parser Double

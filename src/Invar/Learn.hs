@@ -11,6 +11,7 @@ import Data.List (sortOn)
 import Data.Map.Strict qualified as Map
 import Invar.Cohort qualified as Cohort
 import Invar.Construct qualified as C
+import Invar.Digest qualified as Digest
 import Invar.Infer qualified as I
 import Invar.Infer.Result qualified as Result
 import Invar.Learn.Program qualified as P
@@ -88,8 +89,7 @@ validate settings = do
     algorithm = finite (clip settings) && clip settings > 0 && clip settings < 1 && nonnegative (penalty settings) && positive (delta settings)
     adamw = nonnegative (learningRate chosen) && positive (epsilon chosen) && nonnegative (weightDecay chosen) && all moment [firstMoment chosen, secondMoment chosen]
     chosen = optimizer settings
-    identity value = length value == digestLength && all (`elem` (['0' .. '9'] ++ ['a' .. 'f'])) value
-    digestLength = 64
+    identity = Digest.sha256
     finite value = not (isNaN value || isInfinite value)
     positive value = finite value && value > 0
     nonnegative value = finite value && value >= 0

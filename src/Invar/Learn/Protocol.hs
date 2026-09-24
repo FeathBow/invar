@@ -8,6 +8,7 @@ import Data.Aeson.Types (Parser, parseEither)
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as Bytes
 import Data.Text.Encoding (encodeUtf8)
+import Invar.Digest qualified as Digest
 import Invar.Infer.Wire qualified as Binding
 import Invar.Learn.Wire qualified as Wire
 import Invar.Load qualified as Load
@@ -166,9 +167,7 @@ validateStats actual value = do
     finite number = not (isNaN (number :: Double) || isInfinite number)
 
 identity :: String -> Bool
-identity value = length value == digestLength && all (`elem` (['0' .. '9'] ++ ['a' .. 'f'])) value
-  where
-    digestLength = 64
+identity = Digest.sha256
 
 diagnostic :: String -> Progress -> Either Error Progress
 diagnostic stage progress@(Awaiting _ _) | stage `elem` ["loading", "profile", "load"] = Right progress

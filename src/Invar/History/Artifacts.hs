@@ -8,7 +8,8 @@ import Data.Aeson.Types (parseEither)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
-import GHC.Float (castDoubleToWord64, castWord32ToFloat, float2Double)
+import GHC.Float (castDoubleToWord64)
+import Invar.Float32 qualified as Float32
 import Invar.History.Cohort qualified as Cohort
 import Invar.History.Publication qualified as Publication
 import Invar.History.Trace qualified as Trace
@@ -63,8 +64,7 @@ roles generation probabilities = mapM_ check (Trace.roleOutputs generation)
             _ -> Left "Expected the proximal and reference arrays"
         name <- parseEither (withObject "probability role output" (.: "sample")) decoded
         observed <- maybe (Left "Unmatched probability role observation") Right (Map.lookup (name :: Text) expected)
-        unless (map castDoubleToWord64 proximal == map widen (Probability.proximal observed) && map castDoubleToWord64 fixed == map widen (Probability.fixed observed)) (Left "Logged probability roles differ from actual artifact words")
-    widen = castDoubleToWord64 . float2Double . castWord32ToFloat
+        unless (map castDoubleToWord64 proximal == map Float32.widened (Probability.proximal observed) && map castDoubleToWord64 fixed == map Float32.widened (Probability.fixed observed)) (Left "Logged probability roles differ from actual artifact words")
 
 invalid :: String -> IO value
 invalid = ioError . userError
