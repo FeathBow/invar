@@ -36,7 +36,6 @@ data ObservationError
     | InventoryMismatch [U.Key] [U.Key]
     | InvalidPair U.Key Numerical.ObservationError
     | InvalidRepeat U.Key Natural Numerical.ObservationError
-    | InvalidResponse U.Key N.Side String
     | InputMismatch U.Key String
     | MixedImplementation N.Side U.Key
     | ReusedExecution N.Side U.Key
@@ -85,26 +84,26 @@ validateDomain declared = do
 
 checked :: Maybe Measurement.Method -> (U.Key, (Domain.Input, (Numerical.BoundRun, [Numerical.Run]))) -> Either ObservationError U.Sample
 checked selected (key, (input, (pair, repeated))) = do
-    observed <- first (InvalidPair key) (Numerical.observe pair)
-    before <- response key N.Reference (Numerical.reference pair)
-    after <- response key N.Candidate (Numerical.candidate pair)
-    let requested = Result.consumed before
+    referenceReport <- first (InvalidPair key) (Numerical.admit N.Reference (Numerical.reference pair))
+    candidateReport <- first (InvalidPair key) (Numerical.admit N.Candidate (Numerical.candidate pair))
+    observed <- first (InvalidPair key) (Numerical.observeWith (referenceReport, candidateReport) pair)
+    repeatReports <- traverse (\(index, run) -> first (InvalidRepeat key index) (Numerical.admit N.Candidate run)) (zip [0 ..] repeated)
+    let before = Inference.result referenceReport
+        after = Inference.result candidateReport
+        requested = Result.consumed before
         same label condition = unless condition (Left (InputMismatch key label))
     same "prompt" (Infer.prompt requested == Domain.prompt input)
     same "token budget" (Infer.tokens requested == Domain.tokens input)
     same "temperature" (Infer.temperature requested == Domain.temperature input)
     same "seed" (Infer.seed requested == Domain.seed input)
-    let chain = Numerical.candidate pair : repeated
+    let chain = zip (Numerical.candidate pair : repeated) (candidateReport : repeatReports)
     invariance <- traverse adjacent (zip3 [0 ..] chain (drop 1 chain))
     reference <- traverse (measure N.Reference before) selected
     candidate <- traverse (measure N.Candidate after) selected
     pure (U.Sample key (Domain.unitId input) observed invariance reference candidate)
   where
     measure side result method = first (MeasurementFailed key side) (Measurement.observe method input result)
-    adjacent (index, previous, next) = first (InvalidRepeat key index) (Numerical.observe (Numerical.BoundRun previous next))
-
-response :: U.Key -> N.Side -> Numerical.Run -> Either ObservationError Result.Result
-response key side run = Inference.result <$> first (InvalidResponse key side) (Inference.admit (Numerical.planned run) (Numerical.binding run) (Numerical.logBytes run))
+    adjacent (index, (previous, previousReport), (next, nextReport)) = first (InvalidRepeat key index) (Numerical.observeWith (previousReport, nextReport) (Numerical.BoundRun previous next))
 
 consistent :: N.Side -> NonEmpty U.Sample -> Either ObservationError ()
 consistent side (initial :| remaining) = visit Set.empty (initial : remaining)

@@ -16,6 +16,8 @@ module Invar.Numerical (
     Problem (..),
     Finding,
     observe,
+    observeWith,
+    admit,
     establish,
     finding,
     scope,
@@ -86,8 +88,12 @@ finding (Finding _ result) = result
 
 observe :: BoundRun -> Either ObservationError Observed
 observe supplied = do
-    left <- checked Reference (reference supplied)
-    right <- checked Candidate (candidate supplied)
+    left <- admit Reference (reference supplied)
+    right <- admit Candidate (candidate supplied)
+    observeWith (left, right) supplied
+
+observeWith :: (Inference.Report, Inference.Report) -> BoundRun -> Either ObservationError Observed
+observeWith (left, right) supplied = do
     let before = Inference.result left
         after = Inference.result right
         requested = Result.consumed before
@@ -180,8 +186,8 @@ compareProbes measured side = case (select Reference, select Candidate) of
         (forward, backward) <- first (InvalidProbe side) (KL.enclose (S.massWords left) (S.massWords right))
         pure (N.Distribution (S.step left) forward backward)
 
-checked :: Side -> Run -> Either ObservationError Inference.Report
-checked side run = do
+admit :: Side -> Run -> Either ObservationError Inference.Report
+admit side run = do
     unless (exitCode run == 0) (Left (ProcessFailed side (exitCode run)))
     first (InvalidRun side) (Inference.admit (planned run) (binding run) (logBytes run))
 

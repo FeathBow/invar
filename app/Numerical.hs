@@ -23,13 +23,13 @@ run ["--help"] = putStrLn usage
 run supplied = do
     fields <- either die pure (O.parse options supplied)
     relation <- either die pure (selectedRelation fields)
-    suppliedPair <- pair fields
-    observed <- either (die . show) pure (N.observe suppliedPair)
+    (suppliedPair, reports) <- pair fields
+    observed <- either (die . show) pure (N.observeWith reports suppliedPair)
     let found = N.establish (N.Claim (N.scope observed) relation) observed
     Lazy.putStrLn (encode (object ["observation" .= N.describe observed, "finding" .= N.describeFinding found]))
 
 readPair :: [String] -> IO N.BoundRun
-readPair supplied = either die pure (O.parse pairOptions supplied) >>= pair
+readPair supplied = either die pure (O.parse pairOptions supplied) >>= fmap fst . pair
 
 readRun :: [String] -> IO N.Run
 readRun supplied = either die pure (O.parse runOptions supplied) >>= (`input` "")
@@ -37,14 +37,16 @@ readRun supplied = either die pure (O.parse runOptions supplied) >>= (`input` ""
 runOptions :: [OptDescr (String, String)]
 runOptions = InferenceInput.options ++ O.descriptions [("log", "Complete standalone or finite-batch inference stdout"), ("exit-code", "Independently recorded process exit status")]
 
-pair :: O.Fields -> IO N.BoundRun
+pair :: O.Fields -> IO (N.BoundRun, (Inference.Report, Inference.Report))
 pair fields = do
     left <- input fields "reference-"
     right <- input fields "candidate-"
-    referenceScores <- score fields N.Reference (left, right)
-    candidateScores <- score fields N.Candidate (right, left)
-    probes <- probeInputs fields (left, right)
-    pure (N.ProbedRun left right (referenceScores ++ candidateScores) probes)
+    leftReport <- either (die . show) pure (N.admit N.Reference left)
+    rightReport <- either (die . show) pure (N.admit N.Candidate right)
+    referenceScores <- score fields N.Reference ((left, leftReport), right)
+    candidateScores <- score fields N.Candidate ((right, rightReport), left)
+    probes <- probeInputs fields ((left, leftReport), (right, rightReport))
+    pure (N.ProbedRun left right (referenceScores ++ candidateScores) probes, (leftReport, rightReport))
 
 input :: O.Fields -> String -> IO N.Run
 input fields prefix = do
@@ -56,20 +58,19 @@ input fields prefix = do
     bytes <- Bytes.readFile path
     pure (N.Run planned binding status bytes)
 
-score :: O.Fields -> N.Side -> (N.Run, N.Run) -> IO [(N.Side, Score.Report)]
+score :: O.Fields -> N.Side -> ((N.Run, Inference.Report), N.Run) -> IO [(N.Side, Score.Report)]
 score fields side (source, target) = do
     probes <- traverse (either die pure . eitherDecodeStrict . TextBytes.pack) (O.optional fields (prefix ++ "probe-steps"))
     maybe [] (\measured -> [(side, measured)]) <$> scoreInput fields prefix (source, target, probes)
   where
     prefix = case side of N.Reference -> "reference-score-"; N.Candidate -> "candidate-score-"
 
-scoreInput :: O.Fields -> String -> (N.Run, N.Run, Maybe [Natural]) -> IO (Maybe Score.Report)
-scoreInput fields prefix (source, target, probes) = case O.optional fields (prefix ++ "log") of
+scoreInput :: O.Fields -> String -> ((N.Run, Inference.Report), N.Run, Maybe [Natural]) -> IO (Maybe Score.Report)
+scoreInput fields prefix ((source, original), target, probes) = case O.optional fields (prefix ++ "log") of
     Nothing -> do
         when (any (\key -> isJust (O.optional fields (prefix ++ key))) ["call", "attempt", "instance", "exit-code", "probe-steps"]) (die ("Missing " ++ prefix ++ "log"))
         pure Nothing
     Just path -> do
-        original <- either die pure (Inference.admit (N.planned source) (N.binding source) (N.logBytes source))
         base <- either (die . show) pure (Score.prepare (N.exitCode source) original (N.planned target))
         planned <- either (die . show) pure (maybe (Right base) (`Score.withProbe` base) probes)
         binding <- either die pure (InferenceInput.bindingWith prefix fields)
@@ -79,7 +80,7 @@ scoreInput fields prefix (source, target, probes) = case O.optional fields (pref
         measured <- either (die . show) pure (Score.admit call status bytes)
         pure (Just measured)
 
-probeInputs :: O.Fields -> (N.Run, N.Run) -> IO [N.Probe]
+probeInputs :: O.Fields -> ((N.Run, Inference.Report), (N.Run, Inference.Report)) -> IO [N.Probe]
 probeInputs fields (left, right)
     | not present = do
         unless (isNothing (O.optional fields "probe-steps")) (die "Probe steps require probe execution inputs")
@@ -89,8 +90,8 @@ probeInputs fields (left, right)
         encoded <- either die pure (O.required fields "probe-steps")
         steps <- either die pure (eitherDecodeStrict (TextBytes.pack encoded))
         let source = case side of N.Reference -> left; N.Candidate -> right
-        before <- scoreInput fields "reference-probe-" (source, left, Just steps)
-        after <- scoreInput fields "candidate-probe-" (source, right, Just steps)
+        before <- scoreInput fields "reference-probe-" (source, fst left, Just steps)
+        after <- scoreInput fields "candidate-probe-" (source, fst right, Just steps)
         pure ([N.Probe side N.Reference report | Just report <- [before]] ++ [N.Probe side N.Candidate report | Just report <- [after]])
   where
     present = any (isJust . O.optional fields) [prefix ++ suffix | prefix <- ["reference-probe-", "candidate-probe-"], suffix <- ["log", "exit-code", "call", "attempt", "instance"]]
