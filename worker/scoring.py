@@ -33,6 +33,20 @@ class Source:
     inspection: bytes
 
 
+def prescribed(request, path, tokenizer, prefix):
+    if not isinstance(path, TokenPath):
+        raise ValueError("Native scoring requires an immutable prescribed token path")
+    if path.prefix != prefix:
+        raise ValueError("Scoring source prefix differs from the actual target tokenizer")
+    if any(token >= len(tokenizer) for token in (*path.prefix, *path.response)):
+        raise ValueError("Scoring source has a token outside the target tokenizer vocabulary")
+    eos = tokenizer.eos_token_id
+    if eos in path.response[:-1] or len(path.response) > request.limit:
+        raise ValueError("Scoring source extends past the declared stopping boundary")
+    if path.response[-1] != eos and len(path.response) != request.limit:
+        raise ValueError("Scoring source does not reach EOS or the declared horizon")
+
+
 def source(encoded):
     value = core.decode(encoded)
     fields(value, "log_sha256 binding tokens behavior_bits prompt_length text truncated model revision adapter tokenizer base assembly request")

@@ -8,7 +8,7 @@ from worker.mlx.probability import words
 from worker.mlx.rollout import Sampler, consumed, execute
 from worker.mlx.tokenization import prompt
 from worker.trajectory import Request
-from worker.scoring import TokenPath
+from worker.scoring import TokenPath, prescribed
 from worker.probestore import Stored
 
 
@@ -61,16 +61,7 @@ class PathSampler(Sampler):
 
 
 def validate(request, path, tokenizer):
-    if tuple(prompt(tokenizer, request.prompt)[0].tolist()) != path.prefix:
-        raise ValueError("Scoring path prefix differs from actual target tokenization")
-    if any(token >= len(tokenizer) for token in (*path.prefix, *path.response)):
-        raise ValueError("Scoring path token is outside the target vocabulary")
-    if tokenizer.eos_token_id in path.response[:-1]:
-        raise ValueError("Scoring path continues after EOS")
-    if len(path.response) > request.limit:
-        raise ValueError("Scoring path exceeds the declared horizon")
-    if path.response[-1] != tokenizer.eos_token_id and len(path.response) != request.limit:
-        raise ValueError("Scoring path ends before EOS or the declared horizon")
+    prescribed(request, path, tokenizer, tuple(prompt(tokenizer, request.prompt)[0].tolist()))
 
 
 def capture_selections(count, *, probes, stores):
