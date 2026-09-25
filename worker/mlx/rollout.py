@@ -36,9 +36,7 @@ class Sampler:
     def __call__(self, logprobs):
         if logprobs.dtype != mx.float32 or logprobs.ndim != 2 or logprobs.shape[0] != 1:
             raise ValueError("The request sampler requires one FP32 native distribution")
-        weights = mx.softmax(logprobs / self.temperature, axis=-1, precise=True)
-        total = mx.sum(weights, axis=-1, keepdims=True)
-        distribution = weights / total
+        distribution, weights, total = tempered(logprobs, self.temperature)
         chosen = self.select(distribution)
         selected = mx.log(mx.take_along_axis(distribution, chosen[:, None], axis=-1)).reshape(())
         finite = mx.all(mx.isfinite(weights))
@@ -52,6 +50,12 @@ class Sampler:
 
     def consume(self, token):
         return consumed(self.pending, token, zero_support=False)
+
+
+def tempered(logprobs, temperature):
+    weights = mx.softmax(logprobs / temperature, axis=-1, precise=True)
+    total = mx.sum(weights, axis=-1, keepdims=True)
+    return weights / total, weights, total
 
 
 def consumed(pending, token, *, zero_support):
@@ -133,5 +137,5 @@ def selected_logprobs(logits, trajectory):
     tokens = trajectory.tokens
     response = tokens[:, trajectory.prompt_length:]
     logits = logits[:, trajectory.prompt_length - 1:, :].astype(mx.float32)
-    logprobs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
-    return mx.take_along_axis(logprobs, response[:, :, None], axis=-1).reshape(-1)
+    distribution = tempered(logits - mx.logsumexp(logits, axis=-1, keepdims=True), trajectory.request.temperature)[0]
+    return mx.log(mx.take_along_axis(distribution, response[:, :, None], axis=-1)).reshape(-1)

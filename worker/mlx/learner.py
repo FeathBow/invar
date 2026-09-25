@@ -28,6 +28,7 @@ class Runtime:
     reference: dict
     reference_identity: str
     settings: object
+    sampling: object
     saved: Witness
 
 
@@ -47,11 +48,11 @@ def attest(loaded, learner, directory, *, policy, expected):
     return Witness(policy=policy, learner=identity, signature=mlx_state.signature(saved))
 
 
-def restore(loaded, request, paths):
+def restore(loaded, request, paths, *, sampling):
     learner, reference = mlx_step.restore(loaded, request, paths)
     saved = attest(loaded, learner, paths.checkpoint, policy=request.policy, expected=request.learner)
-    return Runtime(loaded=loaded, learner=learner, reference=reference,
-                   reference_identity=request.reference, settings=request.optimizer, saved=saved)
+    return Runtime(loaded=loaded, learner=learner, reference=reference, reference_identity=request.reference,
+                   settings=request.optimizer, sampling=sampling, saved=saved)
 
 
 def verify(runtime):
@@ -84,7 +85,8 @@ def activate(runtime, request, paths):
 def execute(runtime, call, output, *, measure, approve, emit):
     checked = check(call.request)
     admitted, actual = mlx_step.consume(runtime.learner, call, runtime.reference,
-                                        checked=checked, measure=measure, emit=emit, runtime=runtime.loaded)
+                                        checked=checked, measure=measure, emit=emit, runtime=runtime.loaded,
+                                        sampling=runtime.sampling)
     approve(call.invocation)
     verify(runtime)
     result = mlx_step.execute(runtime.loaded, runtime.learner, call, output, admitted=admitted,

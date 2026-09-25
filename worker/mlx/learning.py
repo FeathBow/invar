@@ -14,25 +14,27 @@ from worker import scalar
 
 
 def evaluate_many(model, trajectories, *, evaluate):
-    observed = []
-    for item in trajectories:
-        values = mx.stop_gradient(evaluate(model, item))
-        mx.eval(values)
-        if values.dtype != mx.float32 or not np.isfinite(np.asarray(values)).all():
-            raise ValueError("Expected finite native FP32 model probabilities")
-        observed.append(values)
-    return tuple(observed)
+    return tuple(finite(mx.stop_gradient(evaluate(model, item))) for item in trajectories)
 
 
-def probabilities(model, trajectories, reference, *, evaluate):
+def finite(values):
+    mx.eval(values)
+    if values.dtype != mx.float32 or not np.isfinite(np.asarray(values)).all():
+        raise ValueError("Expected finite native FP32 model probabilities")
+    return values
+
+
+def probabilities(model, trajectories, reference, *, score):
     model.eval()
     current = adapter(model)
-    proximal = evaluate_many(model, trajectories, evaluate=evaluate)
+    proximal = tuple(map(finite, score(model, trajectories)))
     if mlx_tensors.equal(reference, current):
         return proximal, proximal
     install(model, reference)
-    fixed = evaluate_many(model, trajectories, evaluate=evaluate)
-    install(model, current)
+    try:
+        fixed = tuple(map(finite, score(model, trajectories)))
+    finally:
+        install(model, current)
     return proximal, fixed
 
 
@@ -104,9 +106,8 @@ def update(learner, batch, *, linearize):
     observations = []
     model.train()
     for item in samples:
-        current, differentiate = linearize(model, item.trajectory, evaluate=learner.evaluate)
-        mx.eval(current)
-        evaluated, objective, reward = observation(item, current, profile=batch.profile, total=count)
+        _, differentiate = linearize(model, item.trajectory, evaluate=learner.evaluate)
+        evaluated, objective, reward = observation(item, item.proximal, profile=batch.profile, total=count)
         observations.append(evaluated)
         for role, cotangent in (("objective", objective), ("reward", reward)):
             contribution = differentiate(cotangent=cotangent)

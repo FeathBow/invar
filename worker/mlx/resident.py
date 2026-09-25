@@ -82,7 +82,8 @@ def serve(options, *, loader, scope, source, transcript):
             if loaded is None:
                 loaded = load()
             if learner is None:
-                learner = measured("activation", partial(mlx_learner.restore, loaded, call.request, paths))
+                learner = measured("activation", partial(mlx_learner.restore, loaded, call.request, paths,
+                                                            sampling=configuration.sampling()))
             else:
                 learner = measured("activation", partial(mlx_learner.activate, learner, call.request, paths))
             learner = mlx_learner.execute(learner, call, paths.output, measure=measured,
