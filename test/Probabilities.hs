@@ -4,6 +4,7 @@ module Probabilities (probabilities, fixture, observed, decoded) where
 
 import Control.Monad (forM_)
 import Data.Aeson (FromJSON, Result (..), Value (..), encode, fromJSON, object, toJSON, (.=))
+import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as Fields
 import Data.Bits (xor)
 import Data.ByteString (ByteString)
@@ -14,6 +15,7 @@ import Data.List (uncons)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as Text
 import Data.Word (Word32)
+import GHC.Float (castFloatToWord32, castWord32ToFloat, float2Double)
 import Hedgehog
 import Invar.Artifact qualified as Artifact
 import Invar.Learn.Objective qualified as Objective
@@ -32,12 +34,15 @@ import Updates (alter, change, field, observe, setup, setupFor, wire)
 type UpdatesContext = (V.Binding, V.Runtime)
 
 probabilities :: Group
-probabilities = Group "Bound objective inputs" [("probability artifact identity is mandatory", once required), ("complete file binds every objective role and consumed input", once valid), ("matching hashes cannot hide invalid observations", once malformed), ("core zero advantage admits only the matching sign bit", once signedZero), ("matching hashes cannot hide scalar terms slopes or mean", once scalars), ("update summary must equal the core scalar loss", once summary), ("raw summary zero sign survives JSON admission", once summarySign), ("duplicate JSON keys and trailing bytes are rejected", once ambiguous), ("changed missing and symbolic files are rejected", once files)]
+probabilities = Group "Bound objective inputs" [("probability artifact identity is mandatory", once required), ("complete file binds every objective role and consumed input", once valid), ("matching hashes cannot hide invalid observations", once malformed), ("core zero advantage admits only the matching sign bit", once signedZero), ("matching hashes cannot hide scalar terms slopes or mean", once scalars), ("update summary must equal the core scalar loss", once summary), ("raw summary zero sign survives JSON admission", once summarySign), ("duplicate JSON keys and trailing bytes are rejected", once ambiguous), ("changed missing and symbolic files are rejected", once files), ("engine format binds proximal and current to behavior and requires the linearization", once engine)]
   where
     once = withTests 1 . property
 
 fixture :: [Value] -> Value
-fixture events = object ["format" .= String "invar-probabilities-v2", "invocation" .= invocation, "request" .= request, "samples" .= samples, "scalar_reference" .= Objective.reference, "loss" .= mean]
+fixture = fixtureWith "invar-probabilities-v2" (const id) Nothing
+
+fixtureWith :: Text.Text -> (Text.Text -> Word32 -> Word32) -> Maybe Word32 -> [Value] -> Value
+fixtureWith format role linearization events = object ["format" .= String format, "invocation" .= invocation, "request" .= request, "samples" .= samples, "scalar_reference" .= Objective.reference, "loss" .= mean]
   where
     consumed = events !! 1
     invocation = object ["binding" .= field "binding" consumed, "program" .= field "program" consumed]
@@ -46,11 +51,11 @@ fixture events = object ["format" .= String "invar-probabilities-v2", "invocatio
     ordered = [item | name <- array (field "order" request), item <- delivered, field "sample" item == name]
     total = sum (map (length . array . field "behavior_bits") ordered)
     profile = Objective.Profile (decoded (field "epsilon" request)) (decoded (field "penalty" request))
-    outputs item = either (error . show) id (Objective.calculate profile total [Objective.Inputs {Objective.current = b, Objective.proximal = b, Objective.behavior = b, Objective.fixed = b, Objective.advantage = decoded (field "advantage_bits" item)} | b <- decoded (field "behavior_bits" item)])
+    outputs item = either (error . show) id (Objective.calculate profile total [Objective.Inputs {Objective.current = role "current" b, Objective.proximal = role "proximal" b, Objective.behavior = b, Objective.fixed = role "reference" b, Objective.advantage = decoded (field "advantage_bits" item)} | b <- decoded (field "behavior_bits" item)])
     evaluated = [(item, outputs item) | item <- ordered]
     mean = either (error . show) id (Objective.mean32 (concatMap (map Objective.term . snd) evaluated))
     samples = map sample evaluated
-    sample (item, actual) = object (["sample" .= field "sample" item, "dtype" .= String "F32", "active" .= map (const True) actual, "advantage" .= map (const (field "advantage_bits" item)) actual, "objective" .= object ["terms" .= map Objective.term actual, "current_gradient" .= map Objective.gradient actual, "reward_gradient" .= map Objective.rewardGradient actual]] ++ [name .= field "behavior_bits" item | name <- ["behavior", "proximal", "reference", "current"]])
+    sample (item, actual) = object (["sample" .= field "sample" item, "dtype" .= String "F32", "active" .= map (const True) actual, "advantage" .= map (const (field "advantage_bits" item)) actual, "objective" .= object ["terms" .= map Objective.term actual, "current_gradient" .= map Objective.gradient actual, "reward_gradient" .= map Objective.rewardGradient actual]] ++ [Key.fromText name .= map (role name) (decoded (field "behavior_bits" item) :: [Word32]) | name <- ["behavior", "proximal", "reference", "current"]] ++ ["linearized" .= map (const word) actual | Just word <- [linearization]])
 
 decoded :: (FromJSON value) => Value -> value
 decoded value = case fromJSON value of
@@ -197,3 +202,23 @@ files = do
     case linked of
         Left _ -> success
         Right unexpected -> annotateShow unexpected >> failure
+
+engine :: PropertyT IO ()
+engine = do
+    (context, events) <- setup
+    let shifted name target role word = if role == name then target else word
+        other = castFloatToWord32 (-3)
+        build format role linearization = let value = fixtureWith format role linearization events in (value, (context, reported value))
+        reported value = alter 2 (\item -> change "update" (change "loss" (Number (realToFrac (float2Double (castWord32ToFloat (decoded (field "loss" value)))))) (field "update" item)) item) events
+        accept (value, configured) = do
+            root <- workspace
+            result <- observed root configured (Lazy.toStrict (encode value))
+            evalIO (Worker.verifyProbabilities root result) >>= (=== Right ())
+    accept (build current (const id) (Just other))
+    accept (build previous (shifted "proximal" other) Nothing)
+    forM_ [build current (shifted "proximal" other) (Just other), build current (shifted "current" other) (Just other), build current (const id) Nothing, build current (const id) (Just positiveWord), build previous (const id) (Just other)] $ \(value, configured) ->
+        reject configured (Lazy.toStrict (encode value))
+  where
+    current = "invar-probabilities-v3"
+    previous = "invar-probabilities-v2"
+    positiveWord = 1065353216

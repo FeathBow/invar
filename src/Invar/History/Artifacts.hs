@@ -47,7 +47,7 @@ successor (decoder, schema) (index, generation) published = do
     (gradients, gradient) <- Gradient.observe parameters (report, path </> "gradients.safetensors")
     probabilities <- Observation.probability report (path </> "probabilities.json")
     either invalid pure (roles generation probabilities)
-    mismatch <- either invalid pure (Mismatch.summarize [(Probability.behavior sample, Probability.proximal sample) | sample <- probabilities])
+    mismatch <- either invalid pure (Mismatch.summarize [(Probability.behavior sample, Probability.linearized sample) | sample <- probabilities])
     pure (object ["publication" .= Publication.describe published, "state" .= observed, "gradients" .= gradients, "probabilities" .= map Probability.sampleObject probabilities, "learner_engine" .= Mismatch.describe mismatch], state', gradient)
 
 stateSummary :: Checkpoint.Checked -> [Integer] -> IO Value

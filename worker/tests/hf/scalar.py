@@ -33,7 +33,7 @@ class ScalarTests(unittest.TestCase):
                         advantage=torch.full_like(current, 2), active=torch.ones(2, dtype=torch.bool))
         observed = checked("sample", tokens, advantage=2, count=2)
         evaluated, gradient, reward = cotangents(observed, Profile(epsilon=0.2, penalty=0.125),
-                                                 total=2, device=current.device)
+                                                 total=2, device=current.device, linearized=current)
         self.assertEqual(evaluated.objective, (scalar.Output(term=scalar.word(-2),
                          gradient=scalar.word(-1), reward_gradient=scalar.word(-1)),) * 2)
         current.backward(gradient)

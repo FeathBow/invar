@@ -16,7 +16,9 @@ from peft import LoraConfig, get_peft_model
 from worker.hf.learning import Batch, Learner, Sample, parameters, probabilities, update
 from worker.hf.objective import Profile
 from worker.hf.probe import ADAM_BETAS, ADAM_EPSILON, LEARNING_RATE, adapter_state, assert_equal, digest
+from worker.hf.probability import words
 from worker.hf.rollout import Request, Trajectory
+from worker.record import ROLES
 
 SMALL_ADVANTAGE = 2 ** -28
 OVERFLOW_ADVANTAGE = 1e30
@@ -75,15 +77,29 @@ class LearningTests(unittest.TestCase):
         self.assertTrue(all(not torch.equal(old, new) for old, new in zip(proximal, distinct, strict=True)))
         assert_equal(current, adapter_state(learner.model))
 
+    def test_objective_roles_are_the_behavior_words_and_the_graph_is_recorded(self):
+        learner = make_learner()
+        sampled = torch.tensor([math.log(0.25)], dtype=torch.float32)
+        logical = batch()
+        logical = replace(logical, samples=tuple(replace(item, trajectory=replace(item.trajectory, behavior=sampled),
+                                                         proximal=sampled, reference=sampled) for item in logical.samples))
+        with torch.no_grad():
+            graph = [words(evaluate(learner.model, item.trajectory)) for item in logical.samples]
+        result = update(learner, logical)
+        for observed, item, linearized in zip(result.probabilities, logical.samples, graph, strict=True):
+            for role in ("behavior", "proximal", "current"):
+                self.assertEqual(observed.words[ROLES.index(role)], words(item.trajectory.behavior))
+            self.assertEqual(observed.linearized, linearized)
+            self.assertNotEqual(observed.linearized, words(item.trajectory.behavior))
+
     def test_scalar_failure_cannot_reach_model_backward_or_optimizer_step(self):
         learner = make_learner()
         before = adapter_state(learner.model)
 
-        def underflow(model, trajectory):
-            return evaluate(model, trajectory) - 1000
-
+        logical = batch()
+        underflow = replace(logical, samples=tuple(replace(item, reference=item.reference - 1000) for item in logical.samples))
         with self.assertRaisesRegex(ValueError, "Probability ratio underflow"):
-            update(replace(learner, evaluate=underflow), batch())
+            update(learner, underflow)
         assert_equal(before, adapter_state(learner.model))
         self.assertEqual(learner.optimizer.state_dict()["state"], {})
         self.assertTrue(all(parameter.grad is None for parameter in parameters(learner.model)))
@@ -100,7 +116,7 @@ class LearningTests(unittest.TestCase):
         def wrong_dtype(model, trajectory):
             return evaluate(model, trajectory).double()
 
-        with self.assertRaisesRegex(ValueError, "matching FP32 response vectors"):
+        with self.assertRaisesRegex(ValueError, "Learner graph values must be FP32 response vectors"):
             update(replace(learner, evaluate=wrong_dtype), logical)
         assert_equal(before, adapter_state(learner.model))
         for parameter, state in slots.items():

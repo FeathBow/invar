@@ -37,8 +37,8 @@ def checked(sample, tokens, *, advantage, count):
     return observed
 
 
-def cotangents(observed, profile, *, total, device):
-    return probability_record.cotangents(observed, profile, total=total,
+def cotangents(observed, profile, *, total, device, linearized):
+    return probability_record.cotangents(observed, profile, total=total, linearized=words(linearized),
                                          materialize=lambda values: tensor(values, device=device),
                                          check=lambda expected, actual: checked_cotangents(expected, actual, device=device))
 

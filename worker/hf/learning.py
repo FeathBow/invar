@@ -12,8 +12,8 @@ from worker.scalar import number
 
 def probabilities(model, trajectories, reference, *, evaluate):
     current = adapter_state(model)
+    proximal = tuple(item.behavior for item in trajectories)
     with torch.no_grad():
-        proximal = tuple(evaluate(model, item).cpu() for item in trajectories)
         if equal(reference, current):
             return proximal, proximal
         set_peft_model_state_dict(model, reference)
@@ -73,17 +73,21 @@ def update(learner, batch):
     trainable = parameters(model)
     reward_gradients = tuple(torch.zeros_like(value) for value in trainable)
     for item in samples:
-        current = learner.evaluate(model, item.trajectory)
-        tokens = Tokens(current=current, proximal=item.proximal.to(current.device),
+        linearized = learner.evaluate(model, item.trajectory)
+        if linearized.dtype != torch.float32 or linearized.shape != item.trajectory.behavior.shape:
+            raise ValueError("Learner graph values must be FP32 response vectors")
+        current = item.proximal.to(linearized.device)
+        tokens = Tokens(current=current, proximal=current,
                         behavior=item.trajectory.behavior.to(current.device),
                         reference=item.reference.to(current.device),
                         advantage=torch.full_like(current, item.advantage),
                         active=torch.ones_like(current, dtype=torch.bool))
         observed = checked(item.trajectory.request.sample, tokens, advantage=item.advantage,
                            count=item.trajectory.tokens.shape[-1] - item.trajectory.prompt_length)
-        evaluated, objective, reward = cotangents(observed, batch.profile, total=count, device=current.device)
+        evaluated, objective, reward = cotangents(observed, batch.profile, total=count, device=current.device,
+                                                  linearized=linearized)
         observations.append(evaluated)
-        objective_values, reward_values = parameter_vjps(current, trainable, objective=objective, reward=reward)
+        objective_values, reward_values = parameter_vjps(linearized, trainable, objective=objective, reward=reward)
         reward_gradients = tuple(total + addition for total, addition in zip(reward_gradients, reward_values, strict=True))
         accumulate_objective(trainable, objective_values)
     mean = number(loss(observations))

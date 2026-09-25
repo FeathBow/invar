@@ -86,8 +86,9 @@ class Profile:
                                     "roles": ["objective_vjp", "reward_vjp"],
                                     "lifetime": "owned numerical operation; inference classes restored before state observation"}}
         return {"format": "invar-mlx-numerics/v1", "name": self.name, "modules": observed, **learning,
-                "probabilities": {"proximal": "engine forced-path scoring", "reference": "engine forced-path scoring",
-                                  "current": "proximal at the linearization point", "temperature": "rollout request"},
+                "probabilities": {"proximal": "behavior words of the request policy's own rollout",
+                                  "reference": "engine forced-path scoring", "current": "proximal at the linearization point",
+                                  "linearized": "learner graph at the rollout temperature", "temperature": "rollout request"},
                 "projection_rows": PHYSICAL_ROWS if self.linear is RowLinear else None,
                 "projection_row_padding": "zero rows to the fixed block; discard padded outputs" if self.linear is RowLinear else None,
                 "lora_minimum_columns": MINIMUM_COLUMNS if self.lora is ColumnLoRALinear else None,
@@ -103,6 +104,6 @@ class Profile:
                 **({"attention_stock_queries": SPLIT_QUERIES} if self.attention is QueryAttention else {})}
 
 
-PRIMARY = Profile(name="independent-native-rows/v6", linear=RowLinear, lora=ColumnLoRALinear,
+PRIMARY = Profile(name="independent-native-rows/v7", linear=RowLinear, lora=ColumnLoRALinear,
                   attention=QueryAttention, learning_linear=nn.QuantizedLinear)
-NATIVE = Profile(name="native-library-arithmetic/v2", linear=nn.QuantizedLinear, lora=LoRALinear, attention=Qwen3NextAttention)
+NATIVE = Profile(name="native-library-arithmetic/v3", linear=nn.QuantizedLinear, lora=LoRALinear, attention=Qwen3NextAttention)

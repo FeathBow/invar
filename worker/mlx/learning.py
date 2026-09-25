@@ -27,7 +27,7 @@ def finite(values):
 def probabilities(model, trajectories, reference, *, score):
     model.eval()
     current = adapter(model)
-    proximal = tuple(map(finite, score(model, trajectories)))
+    proximal = tuple(item.behavior for item in trajectories)
     if mlx_tensors.equal(reference, current):
         return proximal, proximal
     install(model, reference)
@@ -72,13 +72,13 @@ def linearize(model, trajectory, *, evaluate):
     return current, partial(vjp, model, trajectory, evaluate=evaluate, current=current)
 
 
-def observation(item, current, *, profile, total):
+def observation(item, current, *, profile, total, linearized):
     count = item.trajectory.tokens.shape[-1] - item.trajectory.prompt_length
     roles = {"current": current, "proximal": item.proximal, "reference": item.reference,
              "behavior": item.trajectory.behavior, "advantage": mx.full(current.shape, item.advantage, dtype=mx.float32)}
     actual = probability.checked(item.trajectory.request.sample, roles, mx.ones(current.shape, dtype=mx.bool_),
                                  advantage=item.advantage, count=count)
-    return probability.cotangents(actual, profile, total=total)
+    return probability.cotangents(actual, profile, total=total, linearized=linearized)
 
 
 def norm(values):
@@ -106,8 +106,8 @@ def update(learner, batch, *, linearize):
     observations = []
     model.train()
     for item in samples:
-        _, differentiate = linearize(model, item.trajectory, evaluate=learner.evaluate)
-        evaluated, objective, reward = observation(item, item.proximal, profile=batch.profile, total=count)
+        linearized, differentiate = linearize(model, item.trajectory, evaluate=learner.evaluate)
+        evaluated, objective, reward = observation(item, item.proximal, profile=batch.profile, total=count, linearized=linearized)
         observations.append(evaluated)
         for role, cotangent in (("objective", objective), ("reward", reward)):
             contribution = differentiate(cotangent=cotangent)

@@ -38,5 +38,6 @@ def checked_cotangents(expected, actual):
     return observed
 
 
-def cotangents(observed, profile, *, total):
-    return record.cotangents(observed, profile, total=total, materialize=tensor, check=checked_cotangents)
+def cotangents(observed, profile, *, total, linearized):
+    return record.cotangents(observed, profile, total=total, materialize=tensor, check=checked_cotangents,
+                             linearized=words(linearized))
