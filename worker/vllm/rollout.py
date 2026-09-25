@@ -89,9 +89,9 @@ def truncated(output, *, tokens, eos, limit):
     return not ended
 
 
-def trajectory(output, tokenizer, request, *, prefix, lora):
+def trajectory(output, tokenizer, request, *, prefix, lora, vocabulary):
     result = completion(output, prefix=prefix, lora=lora)
-    tokens = response_tokens(result, limit=request.limit, vocabulary=len(tokenizer))
+    tokens = response_tokens(result, limit=request.limit, vocabulary=vocabulary)
     capped = truncated(result, tokens=tokens, eos=tokenizer.eos_token_id, limit=request.limit)
     return Trajectory(request=request, tokens=torch.tensor([[*prefix, *tokens]], dtype=torch.int64),
                       prompt_length=len(prefix), behavior=behavior(tokens, result.logprobs),
@@ -115,5 +115,6 @@ def generate(engine, tokenizer, requests, *, loras):
     prefixes = tuple(tuple(prompt(tokenizer, request.prompt)[0].tolist()) for request in requests)
     sampling = [parameters(request, eos=tokenizer.eos_token_id) for request in requests]
     outputs = native_outputs(engine, prefixes=prefixes, sampling=sampling, loras=loras)
-    return tuple(trajectory(output, tokenizer, request, prefix=prefix, lora=lora)
+    vocabulary = len(tokenizer)
+    return tuple(trajectory(output, tokenizer, request, prefix=prefix, lora=lora, vocabulary=vocabulary)
                  for output, request, prefix, lora in zip(outputs, requests, prefixes, loras, strict=True))

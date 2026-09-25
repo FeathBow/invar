@@ -95,13 +95,13 @@ def outputs(values, queued):
     return result
 
 
-def delivered(output, tokenizer, bound):
+def delivered(output, tokenizer, bound, *, vocabulary):
     from vllm.lora.request import LoRARequest
 
     expected_lora = LoRARequest(**json.loads(bound.selection.description))
     if lora_selection(output.lora_request) != bound.selection.description:
         raise ValueError("Native completed output changed the approved LoRA selection")
-    return trajectory(output, tokenizer, bound.request, prefix=bound.prompt, lora=expected_lora)
+    return trajectory(output, tokenizer, bound.request, prefix=bound.prompt, lora=expected_lora, vocabulary=vocabulary)
 
 
 def compared(trajectories, queued, observations):
@@ -126,6 +126,7 @@ def generate(engine, tokenizer, requests, *, loras, receipts, approve):
         approve(prepared)
         engine.collective_rpc(permit)
         actual = outputs(engine.wait_for_completion(use_tqdm=False), queued)
-        result = tuple(delivered(actual[bound.external], tokenizer, bound) for bound in queued)
+        vocabulary = len(tokenizer)
+        result = tuple(delivered(actual[bound.external], tokenizer, bound, vocabulary=vocabulary) for bound in queued)
     compared(result, queued, observations)
     return Execution(prepared=prepared, trajectories=result, observations=tuple(observations))

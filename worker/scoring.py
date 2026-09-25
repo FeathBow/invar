@@ -38,7 +38,8 @@ def prescribed(request, path, tokenizer, prefix):
         raise ValueError("Native scoring requires an immutable prescribed token path")
     if path.prefix != prefix:
         raise ValueError("Scoring source prefix differs from the actual target tokenizer")
-    if any(token >= len(tokenizer) for token in (*path.prefix, *path.response)):
+    vocabulary = len(tokenizer)
+    if any(token >= vocabulary for token in (*path.prefix, *path.response)):
         raise ValueError("Scoring source has a token outside the target tokenizer vocabulary")
     eos = tokenizer.eos_token_id
     if eos in path.response[:-1] or len(path.response) > request.limit:

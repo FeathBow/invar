@@ -14,13 +14,13 @@ class Execution:
     observations: tuple[dict, ...]
 
 
-def delivered(output, tokenizer, *, bound, path):
+def delivered(output, tokenizer, *, bound, path, vocabulary):
     from vllm.lora.request import LoRARequest
     import json
 
     lora = LoRARequest(**json.loads(bound.selection.description))
     result = rollout.completion(output, prefix=path.prefix, lora=lora)
-    tokens = rollout.response_tokens(result, limit=bound.request.limit, vocabulary=len(tokenizer))
+    tokens = rollout.response_tokens(result, limit=bound.request.limit, vocabulary=vocabulary)
     if tokens != path.response:
         raise ValueError("Native output differs from the complete prescribed response")
     capped = rollout.truncated(result, tokens=tokens, eos=bound.eos, limit=bound.request.limit)
@@ -45,7 +45,8 @@ def score(engine, tokenizer, requests, *, paths, loras, receipts, approve, measu
             return engine.wait_for_completion(use_tqdm=False)
         completed = complete() if measure is None else measure("cross_score", complete)
         outputs = execution.outputs(completed, queued)
-        results = tuple(delivered(outputs[bound.external], tokenizer, bound=bound, path=path)
+        vocabulary = len(tokenizer)
+        results = tuple(delivered(outputs[bound.external], tokenizer, bound=bound, path=path, vocabulary=vocabulary)
                         for bound, path in zip(queued, paths, strict=True))
     scores = observed(results, queued, paths=paths, observations=observations, probes=selected_probes)
     return Execution(prepared=prepared, scores=scores, observations=tuple(observations))
