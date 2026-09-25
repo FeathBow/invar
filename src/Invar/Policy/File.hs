@@ -8,8 +8,8 @@ import Crypto.Hash.SHA256 qualified as SHA256
 import Data.Bits ((.&.))
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as Bytes
-import Data.Map.Strict (Map)
 import Data.List (sortOn)
+import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Invar.Artifact qualified as Artifact

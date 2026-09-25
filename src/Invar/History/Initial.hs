@@ -17,8 +17,8 @@ import Invar.History.Artifacts qualified as Artifacts
 import Invar.Json qualified as Json
 import Invar.Learn qualified as Learn
 import Invar.Learn.Codec (Decoder)
-import Numeric.Natural (Natural)
 import Invar.Learn.State qualified as State
+import Numeric.Natural (Natural)
 
 data Source = Provided | Executed Run ByteString
 data Run = Run {seed :: Integer, exitCode :: Int}
