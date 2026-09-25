@@ -10,6 +10,7 @@ import Data.ByteString.Char8 qualified as Bytes
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Invar.Cohort qualified as C
 import Invar.Infer qualified as I
+import Invar.Infer.Batch qualified as Batch
 import Invar.Learn qualified as L
 import Invar.Learn.Protocol qualified as P
 import Invar.Learn.Worker qualified as W
@@ -124,7 +125,7 @@ collect driver (cursor@(Cursor _ selected description), workload) = do
         Right boundTasks -> do
             let engine = backend config
                 worker = inferenceWorker config selected
-                options = R.Options {R.worker = worker, R.mode = inferenceMode engine, R.sessions = sessions engine, R.definition = C.Definition (policy selected) boundTasks, R.order = order workload, R.delivery = delivery workload}
+                options = R.Options {R.worker = worker, R.mode = inferenceMode engine, R.sessions = sessions engine, R.definition = C.Definition (policy selected) boundTasks, R.order = order workload, R.delivery = delivery workload, R.reference = scoring config selected}
             generated <- R.run (rollout driver) options
             pure $ do
                 batch <- first Rollout generated
@@ -138,6 +139,11 @@ collect driver (cursor@(Cursor _ selected description), workload) = do
     bind task = do
         planned <- first (Policy . show) (I.bindPolicy description (C.plan task))
         pure task {C.plan = planned}
+
+scoring :: Config -> Checkpoint -> Maybe Batch.Reference
+scoring config selected
+    | L.reference (settings config) == policy selected = Nothing
+    | otherwise = Just (Batch.Reference (reference config) (L.reference (settings config)))
 
 inferenceWorker :: Config -> Checkpoint -> Infer.Worker
 inferenceWorker config selected =

@@ -32,8 +32,11 @@ parse = withObject "numerical update request" $ \fields -> do
     fields .: "behavior_model" >>= model
     delivered <- fields .: "samples" >>= traverse sample
     order <- fields .: "order" :: Parser [Text]
-    let named = Map.fromList [(name, original) | (name, _, original) <- delivered]
-        grouped = Map.fromListWith (+) [(group, 1 :: Int) | (_, group, _) <- delivered]
+    policy <- fields .: "policy" :: Parser Text
+    reference <- fields .: "reference" :: Parser Text
+    unless (all (\(_, _, _, scored) -> scored == (policy /= reference)) delivered) (fail "Reference scores must be present exactly when the reference differs from the policy")
+    let named = Map.fromList [(name, original) | (name, _, original, _) <- delivered]
+        grouped = Map.fromListWith (+) [(group, 1 :: Int) | (_, group, _, _) <- delivered]
     unless (not (null delivered) && Map.size named == length delivered) (fail "Cohort samples must be nonempty and distinct")
     unless (length order == Map.size named && Set.fromList order == Map.keysSet named) (fail "Logical order must name every admitted sample exactly once")
     unless (all (>= minimumGroup) grouped) (fail "Each advantage group requires at least two samples")
@@ -53,11 +56,11 @@ model = withObject "behavior model representation" $ \fields -> do
 minimumGroup :: Int
 minimumGroup = 2
 
-sample :: Value -> Parser (Text, Text, Value)
+sample :: Value -> Parser (Text, Text, Value, Bool)
 sample original = withObject "update sample" inspect original
   where
     inspect fields = do
-        Json.fields ["sample", "group", "prompt", "seed", "limit", "temperature", "tokens", "prompt_length", "behavior_bits", "text", "truncated", "reward", "advantage_bits"] fields
+        Json.fields ["sample", "group", "prompt", "seed", "limit", "temperature", "tokens", "prompt_length", "behavior_bits", "reference_bits", "text", "truncated", "reward", "advantage_bits"] fields
         name <- fields .: "sample"
         group <- fields .: "group"
         when (Text.null name || Text.null group) (fail "Logical sample and group identities must be nonempty")
@@ -72,11 +75,13 @@ sample original = withObject "update sample" inspect original
         words32 <- (fields .: "behavior_bits" :: Parser [Value]) >>= traverse (word True)
         let count = fromIntegral (length words32)
         unless (prefix > 0 && prefix < fromIntegral (length tokens) && count == fromIntegral (length tokens) - prefix && count <= limit) (fail "Behavior observations must match the admitted response tokens")
+        scores <- (fields .: "reference_bits" :: Parser [Value]) >>= traverse (word True)
+        unless (null scores || length scores == length words32) (fail "Reference scores must cover every response token")
         truncated <- fields .: "truncated"
         unless (not truncated || count == limit) (fail "Invalid observed truncation status")
         _ <- fields .: "reward" >>= Json.finite
         _ <- fields .: "advantage_bits" >>= word False
-        pure (name, group, original)
+        pure (name, group, original, not (null scores))
 
 word :: Bool -> Value -> Parser Word32
 word probability encoded = do

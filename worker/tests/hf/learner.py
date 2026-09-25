@@ -52,7 +52,7 @@ def fixture(*, directory=None):
         samples.append({**asdict(numerical), "tokens": actual.tokens[0].tolist(),
                         "prompt_length": actual.prompt_length, "text": actual.text,
                         "truncated": actual.truncated,
-                        "behavior_bits": actual.behavior.view(torch.uint32).tolist(),
+                        "behavior_bits": actual.behavior.view(torch.uint32).tolist(), "reference_bits": [],
                         "reward": reward(actual.text, "#### 437", actual.truncated),
                         "advantage_bits": (0x3F7FF2E5, 0xBF7FF2E5)[index]})
     actual = {**request(), "policy": digest(state), "learner": file_digest(initial / "learner.pt"),

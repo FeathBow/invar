@@ -36,7 +36,8 @@ def admitted_request(tokenizer):
         prefix = prompt(tokenizer, item["prompt"])[0].tolist()
         response = tokenizer.encode(item["text"], add_special_tokens=False) + [tokenizer.eos_token_id]
         samples.append({**item, "tokens": prefix + response, "prompt_length": len(prefix),
-                        "limit": len(response), "behavior_bits": item["behavior_bits"] * len(response)})
+                        "limit": len(response), "behavior_bits": item["behavior_bits"] * len(response),
+                        "reference_bits": item["reference_bits"] * len(response)})
     return {**declared, "tokenizer": digest(tokenizer), "samples": samples}
 
 
@@ -48,7 +49,8 @@ class TokenizationTests(unittest.TestCase):
         truncated = value["samples"][1]
         value["samples"] = [{**completed, "limit": completed["limit"] + 1},
                             {**truncated, "tokens": truncated["tokens"][:-1], "truncated": True,
-                             "behavior_bits": truncated["behavior_bits"][:-1], "limit": truncated["limit"] - 1}]
+                             "behavior_bits": truncated["behavior_bits"][:-1], "reference_bits": truncated["reference_bits"][:-1],
+                             "limit": truncated["limit"] - 1}]
         parsed = decode(value)
         rng = torch.get_rng_state()
         validate(tokenizer, parsed.samples)

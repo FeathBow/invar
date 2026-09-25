@@ -96,6 +96,8 @@ sample engine settings advantage (original, fields) = do
     unless (behaviorWords == consumed) (fail "Behavior probability words differ from consumed input")
     linearizedWords <- if engine then vector (length consumed) fields "linearized" else pure proximalWords
     unless (not engine || (proximalWords == behaviorWords && currentWords == behaviorWords)) (fail "Proximal and current probability words differ from the engine's behavior words")
+    scored <- if engine then original .: "reference_bits" else pure []
+    unless (not engine || fixedWords == (if null scored then behaviorWords else scored)) (fail "Reference probability words differ from the engine's reference scores")
     claimed <- original .: "advantage_bits"
     unless (claimed == advantage) (fail "Consumed advantage expectation differs from the core reference")
     unless (advantageWords == replicate (length consumed) advantage) (fail "Actual advantage words differ from the core reference")

@@ -40,7 +40,7 @@ prepare :: (Worker.Worker, [[(String, String)]], Rollout.Mode) -> (Dataset.Ident
 prepare (worker, sessions, mode) (selected, description) workload = do
     planned <- Dataset.instantiate selected workload
     tasks <- traverse bind (Loop.tasks planned)
-    pure Rollout.Options {Rollout.worker = worker, Rollout.mode = mode, Rollout.sessions = sessions, Rollout.definition = Cohort.Definition (Dataset.policy selected) tasks, Rollout.order = Loop.order planned, Rollout.delivery = Loop.delivery planned}
+    pure Rollout.Options {Rollout.worker = worker, Rollout.mode = mode, Rollout.sessions = sessions, Rollout.definition = Cohort.Definition (Dataset.policy selected) tasks, Rollout.order = Loop.order planned, Rollout.delivery = Loop.delivery planned, Rollout.reference = Nothing}
   where
     bind task = do
         requested <- first show (maybe Right Infer.bindPolicy description (Cohort.plan task))

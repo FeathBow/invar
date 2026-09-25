@@ -19,6 +19,7 @@ class Observation:
     tokens: tuple[int, ...]
     prompt_length: int
     behavior_bits: tuple[int, ...]
+    reference_bits: tuple[int, ...]
     text: str
     truncated: bool
     reward: float
@@ -76,7 +77,7 @@ def identity(value):
 
 
 def sample(value):
-    value = fields(value, "sample group prompt seed limit temperature tokens prompt_length behavior_bits text truncated reward advantage_bits")
+    value = fields(value, "sample group prompt seed limit temperature tokens prompt_length behavior_bits reference_bits text truncated reward advantage_bits")
     if any(not isinstance(value[name], str) for name in ("sample", "group", "prompt", "text")):
         raise ValueError("Prompt and logical identities must be text")
     if not value["sample"] or not value["group"]:
@@ -87,8 +88,11 @@ def sample(value):
     if temperature <= 0:
         raise ValueError("Sample temperature must be positive")
     tokens, probabilities = observation(value)
+    scores = behavior_words(value["reference_bits"])
+    if scores and len(scores) != len(probabilities):
+        raise ValueError("Reference scores must cover every response token")
     return Observation(**{**value, "temperature": temperature, "reward": number(value["reward"]),
-                          "tokens": tokens, "behavior_bits": probabilities,
+                          "tokens": tokens, "behavior_bits": probabilities, "reference_bits": scores,
                           "advantage_bits": finite_word(value["advantage_bits"])})
 
 
@@ -177,6 +181,8 @@ def decode(value):
         raise ValueError("Expected an explicit cohort sequence")
     samples = tuple(sample(item) for item in value["samples"])
     logical_batch(samples, value["order"])
+    if any(bool(item.reference_bits) != (value["reference"] != value["policy"]) for item in samples):
+        raise ValueError("Reference scores must be present exactly when the reference differs from the policy")
     epsilon, penalty, delta = (number(value[name]) for name in ("epsilon", "penalty", "delta"))
     if not 0 < epsilon < 1 or penalty < 0 or delta <= 0:
         raise ValueError("Invalid GRPO coefficient configuration")

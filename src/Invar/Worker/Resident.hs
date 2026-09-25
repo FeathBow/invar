@@ -51,11 +51,11 @@ withBorrowed process identity@(Boundary.Owner _ index) action = bracket (newIORe
   where
     retire state = modifyIORef' state (\(State registry count) -> State (Load.close registry) count)
 
-run :: Resident scope -> FilePath -> [Call.Call] -> IO (Either Worker.Failure [Receipt])
-run _ _ [] = pure (Right [])
-run (Resident process state identity index) adapter calls = do
+run :: Resident scope -> FilePath -> Maybe Batch.Reference -> [Call.Call] -> IO (Either Worker.Failure [Receipt])
+run _ _ _ [] = pure (Right [])
+run (Resident process state identity index) adapter reference calls = do
     progress <- newIORef Awaiting
-    let exchange = Process.Exchange (Batch.input adapter calls) (authorize process (state, progress) calls) (complete identity progress)
+    let exchange = Process.Exchange (Batch.input adapter reference calls) (authorize process (state, progress) calls) (complete identity progress)
         transaction = ProcessResident.Transaction exchange (release (state, progress) index)
     returned <- ProcessResident.exchange process transaction
     case first failure returned of

@@ -5,7 +5,7 @@ from worker import resident
 
 
 def execute_group(group, runtime, *, source, owner, transcript, execute, release, measure):
-    execute(runtime, group.calls, approve=partial(approve, source=source))
+    execute(runtime, group.calls, reference=group.reference, approve=partial(approve, source=source))
     resident.release(owner, tuple(call.load for call in group.calls), source=source, transcript=transcript,
                      operation=partial(release, runtime), measure=measure)
 

@@ -4,9 +4,12 @@ import mlx.core as mx
 
 from worker.batch import FORMAT, capture
 from worker.report import ready, result
+from worker.mlx import adapter as mlx_adapter
+from worker.mlx.crossscore import score
 from worker.mlx import model as mlx_model
 from worker.mlx.rollout import generate
 from worker.mlx import tensors as mlx_tensors
+from worker.scoring import TokenPath
 
 
 def execute(runtime, call, *, approve, measure, emit, sampling, previous=None):
@@ -17,7 +20,7 @@ def execute(runtime, call, *, approve, measure, emit, sampling, previous=None):
     result(call, trajectory, identities=identities, emit=emit)
 
 
-def execute_batch(runtime, calls, *, approve, measure, emit, sampling):
+def execute_batch(runtime, calls, *, approve, measure, emit, sampling, reference=None):
     expected = calls[0].identities
     if any(call.identities != expected for call in calls):
         raise ValueError("Native batch members require the same model materialization")
@@ -25,10 +28,29 @@ def execute_batch(runtime, calls, *, approve, measure, emit, sampling):
     readiness = [capture(partial(ready, call, identities, model=runtime.identity, previous=None)) for call in calls]
     emit("consumed", {"format": FORMAT, "calls": readiness})
     approve(tuple(call.invocation for call in calls))
-    trajectories = measure("inference", lambda: sample(runtime, tuple(call.request for call in calls), sampling=sampling))
-    completed = [capture(partial(result, call, trajectory, identities=identities))
-                 for call, trajectory in zip(calls, trajectories, strict=True)]
+    requests = tuple(call.request for call in calls)
+    trajectories, scores = measure("inference", lambda: scored(runtime, sample(runtime, requests, sampling=sampling),
+                                                               reference=reference, sampling=sampling))
+    completed = [capture(partial(result, call, trajectory, identities=identities, reference=score))
+                 for call, trajectory, score in zip(calls, trajectories, scores, strict=True)]
     emit("result", {"format": FORMAT, "calls": completed})
+
+
+def scored(runtime, trajectories, *, reference, sampling):
+    if reference is None:
+        return trajectories, (None,) * len(trajectories)
+    current = mlx_adapter.state(runtime.model)
+    mlx_adapter.install(runtime.model, mlx_tensors.policy(reference.adapter, reference.digest))
+    try:
+        paths = tuple(TokenPath(prefix=tuple(item.tokens[0, :item.prompt_length].tolist()),
+                                response=tuple(item.tokens[0, item.prompt_length:].tolist())) for item in trajectories)
+        observed = score(runtime.model, runtime.tokenizer, tuple(item.request for item in trajectories),
+                         paths=paths, sampling=sampling)
+    finally:
+        mlx_adapter.install(runtime.model, current)
+    if not mlx_tensors.equal(current, mlx_adapter.state(runtime.model)):
+        raise RuntimeError("Native reference scoring did not restore the sampled policy")
+    return trajectories, tuple((reference.digest, item.log_probability_bits) for item in observed)
 
 
 def sample(runtime, requests, *, sampling):

@@ -8,7 +8,7 @@ import numpy as np
 from worker.logical import Result, ordered
 from worker.mlx import probability as probability
 from worker.mlx import tensors as mlx_tensors
-from worker.mlx.adapter import state as adapter, install
+from worker.mlx.adapter import state as adapter
 from worker.record import loss
 from worker import scalar
 
@@ -24,18 +24,11 @@ def finite(values):
     return values
 
 
-def probabilities(model, trajectories, reference, *, score):
-    model.eval()
-    current = adapter(model)
+def probabilities(trajectories, scores):
     proximal = tuple(item.behavior for item in trajectories)
-    if mlx_tensors.equal(reference, current):
+    if not any(scores):
         return proximal, proximal
-    install(model, reference)
-    try:
-        fixed = tuple(map(finite, score(model, trajectories)))
-    finally:
-        install(model, current)
-    return proximal, fixed
+    return proximal, tuple(finite(probability.tensor(words)) for words in scores)
 
 
 def transform(model, trajectory, *, evaluate, cotangent):

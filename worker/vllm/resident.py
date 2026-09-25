@@ -29,7 +29,8 @@ def run(options):
         serve(Owner(role="inference", session=options.session), source=sys.stdin, transcript=transcript,
               load=load,
               activate=partial(select, config=read(options.config), selection_factory=LoRARequest),
-              execute=partial(execute_batch, measure=partial(measure, emit=transcript.emit), emit=transcript.emit),
+              execute=partial(execute_batch, measure=partial(measure, emit=transcript.emit), emit=transcript.emit,
+                              config=read(options.config), selection_factory=LoRARequest),
               release=release, close=stack.close, measure=measure)
 
 

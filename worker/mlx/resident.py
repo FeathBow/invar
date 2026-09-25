@@ -73,7 +73,8 @@ def serve(options, *, loader, scope, source, transcript):
             else:
                 loaded = measured("activation", partial(inference, loaded, learner, group))
             mlx_inference.execute_batch(loaded, group.calls, approve=partial(inference_batch.approve, source=source),
-                                        measure=measured, emit=transcript.emit, sampling=configuration.sampling())
+                                        measure=measured, emit=transcript.emit, sampling=configuration.sampling(),
+                                        reference=group.reference)
             loads = tuple(call.load for call in group.calls)
         else:
             call, paths = learning_resident_input.decode(value, options)
@@ -82,8 +83,7 @@ def serve(options, *, loader, scope, source, transcript):
             if loaded is None:
                 loaded = load()
             if learner is None:
-                learner = measured("activation", partial(mlx_learner.restore, loaded, call.request, paths,
-                                                            sampling=configuration.sampling()))
+                learner = measured("activation", partial(mlx_learner.restore, loaded, call.request, paths))
             else:
                 learner = measured("activation", partial(mlx_learner.activate, learner, call.request, paths))
             learner = mlx_learner.execute(learner, call, paths.output, measure=measured,

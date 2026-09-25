@@ -74,7 +74,7 @@ options root count = do
     evalIO (writeFile path (script root calls count))
     let worker = W.Worker "/bin/sh" path root "unused" [] Nothing
         overlays = if count == 1 then [[]] else [[("INVAR_TEST_SESSION", show slot)] | slot <- [0 .. count - 1]]
-    pure R.Options {R.worker = worker, R.mode = R.Serial, R.sessions = overlays, R.definition = definition, R.order = execution, R.delivery = arrival}
+    pure R.Options {R.worker = worker, R.mode = R.Serial, R.sessions = overlays, R.definition = definition, R.order = execution, R.delivery = arrival, R.reference = Nothing}
 
 identical :: PropertyT IO ()
 identical = do

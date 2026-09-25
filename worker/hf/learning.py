@@ -1,27 +1,18 @@
 
 import torch
-from peft import set_peft_model_state_dict
 
 from worker.hf.objective import Tokens
-from worker.hf.probe import adapter_state, assert_equal, digest
-from worker.hf.probability import checked, cotangents, loss
-from worker.hf.tensors import equal
+from worker.hf.probe import adapter_state, digest
+from worker.hf.probability import checked, cotangents, loss, tensor
 from worker.logical import Batch, Learner, Result, Sample, ordered
 from worker.scalar import number
 
 
-def probabilities(model, trajectories, reference, *, evaluate):
-    current = adapter_state(model)
+def probabilities(trajectories, scores):
     proximal = tuple(item.behavior for item in trajectories)
-    with torch.no_grad():
-        if equal(reference, current):
-            return proximal, proximal
-        set_peft_model_state_dict(model, reference)
-        assert_equal(reference, adapter_state(model))
-        fixed = tuple(evaluate(model, item).cpu() for item in trajectories)
-        set_peft_model_state_dict(model, current)
-        assert_equal(current, adapter_state(model))
-    return proximal, fixed
+    if not any(scores):
+        return proximal, proximal
+    return proximal, tuple(tensor(words, device="cpu") for words in scores)
 
 
 def parameters(model):

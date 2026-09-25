@@ -72,9 +72,8 @@ def activate(runtime, request):
 
 def execute(runtime, call, output, *, loaded, checked, measure, permission, emit):
     learner = runtime.learner
-    admitted, actual = consume(call, (learner.model, runtime.reference), loaded=loaded,
-                               identity=runtime.identity, checked=checked, measure=measure,
-                               evaluate=learner.evaluate, emit=emit)
+    admitted, actual = consume(call, loaded=loaded, identity=runtime.identity, checked=checked,
+                               measure=measure, emit=emit)
     permission(call.invocation)
     verify(runtime, call.request)
     result = update(learner, call, output, batch=admitted, actual=actual,

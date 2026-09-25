@@ -102,7 +102,8 @@ def report(directory, result, logical, *, binding, input_state, reference):
                  "epsilon": SETTINGS.epsilon, "weight_decay": SETTINGS.weight_decay}
     request = {"specification": "grpo-token-mean/v1", "policy": input_state[0], "learner": input_state[1],
                "reference": reference, **IDENTITIES, "behavior_model": {name: IDENTITIES[name] for name in ("base", "assembly")},
-               "optimizer": optimizer, "samples": [observation(item.trajectory, reward, advantage=item.advantage)
+               "optimizer": optimizer, "samples": [observation(item.trajectory, reward, advantage=item.advantage,
+                                                               reference=() if reference == input_state[0] else mlx_probability.words(item.reference))
                                                       for item, reward in zip(logical.samples, REWARDS, strict=True)],
                "order": logical.order, "epsilon": logical.profile.epsilon, "penalty": logical.profile.penalty, "delta": DELTA}
     bound = {"call": binding, "attempt": binding, "instance": binding}
@@ -125,18 +126,14 @@ def report(directory, result, logical, *, binding, input_state, reference):
 
 
 class LearningTests(unittest.TestCase):
-    def test_identical_reference_adapter_reuses_the_proximal_observation(self):
-        live = learner()
-        trajectories = tuple(item.trajectory for item in batch(live.model).samples)
-        current = mlx_learning.adapter(live.model)
-        proximal, fixed = mlx_learning.probabilities(live.model, trajectories, current, score=partial(mlx_learning.evaluate_many, evaluate=evaluate))
+    def test_reference_role_is_the_supplied_engine_scores(self):
+        trajectories = tuple(item.trajectory for item in batch(learner().model).samples)
+        proximal, fixed = mlx_learning.probabilities(trajectories, ((),) * len(trajectories))
         self.assertIs(fixed, proximal)
-        shifted = {name: value + mx.arange(1, value.size + 1, dtype=mx.float32).reshape(value.shape)
-                   if name.endswith("lora_b") else value for name, value in current.items()}
-        repeated, distinct = mlx_learning.probabilities(live.model, trajectories, shifted, score=partial(mlx_learning.evaluate_many, evaluate=evaluate))
-        self.assertEqual([mlx_probability.words(value) for value in repeated], [mlx_probability.words(value) for value in proximal])
-        self.assertTrue(all(mlx_probability.words(old) != mlx_probability.words(new) for old, new in zip(proximal, distinct, strict=True)))
-        self.assertTrue(mlx_tensors.equal(current, mlx_learning.adapter(live.model)))
+        self.assertTrue(all(value is item.behavior for value, item in zip(proximal, trajectories, strict=True)))
+        scores = tuple((scalar.word(-0.25),) * item.behavior.size for item in trajectories)
+        _, supplied = mlx_learning.probabilities(trajectories, scores)
+        self.assertEqual([mlx_probability.words(value) for value in supplied], list(scores))
 
     def test_actual_parameter_vjp_and_saved_two_step_continuation(self):
         mx.random.seed(17)

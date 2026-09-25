@@ -115,7 +115,7 @@ run root selected = do
   where
     executeGroups _ [] = pure (Right [])
     executeGroups resident (group : remaining) = do
-        returned <- Resident.run resident adapter (calls group)
+        returned <- Resident.run resident adapter Nothing (calls group)
         case returned of
             Left problem -> pure (Left problem)
             Right values -> fmap (values ++) <$> executeGroups resident remaining

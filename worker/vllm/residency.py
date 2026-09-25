@@ -3,18 +3,23 @@ from pathlib import Path
 
 from worker.hf.artifact import read, read_checkpoint
 from worker.vllm.lora import Target, activate, create, layout
-from worker.vllm.worker import identified, manager
+from worker.vllm.worker import REFERENCE_ID, identified, manager
+
+
+def registered(worker, *, adapter_id):
+    return {adapter_id} | ({REFERENCE_ID} if REFERENCE_ID in getattr(worker, "_invar_lora_bindings", {}) else set())
 
 
 def idle(worker, *, adapter_id):
     native = manager(worker)
     if getattr(worker, "_invar_execution", None) is not None:
         raise RuntimeError("Native resident policy still owns an execution")
-    if set(native.list_adapters()) != {adapter_id} or set(worker._invar_lora_bindings) != {adapter_id}:
-        raise ValueError("Native residence requires exactly its current policy registration")
-    if set(native._active_adapters) != {adapter_id}:
+    expected = registered(worker, adapter_id=adapter_id)
+    if set(native.list_adapters()) != expected or set(worker._invar_lora_bindings) != expected:
+        raise ValueError("Native residence requires exactly its current policy and reference registrations")
+    if set(native._active_adapters) != expected:
         raise ValueError("Native residence has a different active policy inventory")
-    if [value for value in native.lora_index_to_id if value is not None] != [adapter_id]:
+    if sorted(value for value in native.lora_index_to_id if value is not None) != sorted(expected):
         raise ValueError("Native residence has a different occupied slot inventory")
 
 
@@ -56,14 +61,17 @@ def replace(worker, *, previous, directory, template, receipt, targets, adapter_
     package, mapping, model = candidate(worker, directory=directory, template=template, receipt=receipt,
                                         targets=targets, adapter_id=adapter_id, expected=expected)
     native = manager(worker)
+    kept = registered(worker, adapter_id=previous) - {previous}
     if not native.remove_adapter(previous):
         raise RuntimeError("Native policy removal did not release the previous registration")
-    if native.list_adapters() or native._active_adapters or any(value is not None for value in native.lora_index_to_id):
+    remaining = {value for value in native.lora_index_to_id if value is not None}
+    if set(native.list_adapters()) != kept or set(native._active_adapters) != kept or remaining != kept:
         raise RuntimeError("Native policy removal retained a registration or occupied slot")
     if not native.add_adapter(model):
         raise RuntimeError("Native replacement did not register the checked policy")
     activate(native, package, targets=mapping, adapter_id=adapter_id)
-    worker._invar_lora_bindings = {adapter_id: (package, mapping)}
+    worker._invar_lora_bindings = {**{key: value for key, value in worker._invar_lora_bindings.items() if key in kept},
+                                   adapter_id: (package, mapping)}
     return inspect(worker, receipt=package.identity, adapter_id=adapter_id)
 
 

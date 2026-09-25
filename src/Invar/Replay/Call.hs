@@ -78,7 +78,7 @@ output :: Object -> Model.Model -> Object -> Parser Output.Body
 output expected selected fields = do
     actual <- Model.binding fields
     unless (actual == selected) (fail "Direct model and tokenizer binding differs from the reference")
-    Json.fields (["stage", "binding", "adapter", "request", "tokens", "prompt_length", "behavior", "behavior_bits", "text", "truncated"] ++ Model.fields selected) fields
+    Json.fields (["stage", "binding", "adapter", "request", "tokens", "prompt_length", "behavior", "behavior_bits", "text", "truncated"] ++ ["reference" | Fields.member "reference" fields] ++ Model.fields selected) fields
     stage <- fields .: "stage" :: Parser String
     unless (stage == "result") (fail "Expected an inference result record")
     unless (all (\key -> Fields.lookup key fields == Fields.lookup key expected) ["binding", "adapter", "request"]) (fail "Direct result binding differs from the reference")

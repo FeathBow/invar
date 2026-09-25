@@ -114,7 +114,7 @@ nonempty fields key = do
 
 checkResult :: V.Binding -> Object -> Parser ()
 checkResult bound fields = do
-    Json.fields ["stage", "binding", "adapter", "tokenizer", "base", "assembly", "request", "tokens", "prompt_length", "behavior", "behavior_bits", "text", "truncated"] fields
+    Json.fields (["stage", "binding", "adapter", "tokenizer", "base", "assembly", "request", "tokens", "prompt_length", "behavior", "behavior_bits", "text", "truncated"] ++ ["reference" | Fields.member "reference" fields]) fields
     checkBinding bound fields
     fields .: "request" >>= withObject "inference numerical request" (Json.fields ["prompt", "tokens", "temperature", "seed"])
 

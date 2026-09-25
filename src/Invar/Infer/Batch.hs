@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Infer.Batch (Permit, input, authorize, authorizeActivation, permission, observe) where
+module Invar.Infer.Batch (Permit, Reference (..), input, authorize, authorizeActivation, permission, observe) where
 
 import Control.Monad (unless)
 import Data.Aeson (encode, object, (.=))
@@ -18,8 +18,13 @@ import Invar.Spec.Load qualified as Load
 
 data Permit = Permit ByteString [ByteString] [Call.Permit]
 
-input :: FilePath -> [Call.Call] -> ByteString
-input adapter calls = Lazy.toStrict (encode (object ["format" .= Framing.format, "adapter" .= adapter, "calls" .= map (decodeUtf8 . Call.batchInput) calls]))
+data Reference = Reference {location :: FilePath, identity :: String}
+    deriving (Eq, Show)
+
+input :: FilePath -> Maybe Reference -> [Call.Call] -> ByteString
+input adapter reference calls = Lazy.toStrict (encode (object ["format" .= Framing.format, "adapter" .= adapter, "reference" .= fmap declared reference, "calls" .= map (decodeUtf8 . Call.batchInput) calls]))
+  where
+    declared selected = object ["adapter" .= location selected, "digest" .= identity selected]
 
 authorize :: Load.Registry -> [Call.Call] -> ByteString -> Either Call.Error (Load.Registry, Permit)
 authorize registry calls = authorizeWith Framing.readiness (registry, calls)

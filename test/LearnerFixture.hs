@@ -42,7 +42,7 @@ withPlan :: FilePath -> (forall scope. L.Plan scope -> IO value) -> PropertyT IO
 withPlan root action = do
     fixture <- Rollout.setup root 1 [Infer.artifact Calls.request]
     let selected = Rollout.initial fixture
-        configured = L.Settings (Infer.artifact Calls.request) (replicate 64 'b') (replicate 64 'c') (Infer.tokenizer Calls.request) (replicate 64 '0') (replicate 64 '1') (Infer.base Calls.request) (Infer.assembly Calls.request) 0.2 0.04 0.0001 (L.Optimizer 0.002 0.8 0.95 0.0000001 0.01)
+        configured = L.Settings (Infer.artifact Calls.request) (replicate 64 'b') (Infer.artifact Calls.request) (Infer.tokenizer Calls.request) (replicate 64 '0') (replicate 64 '1') (Infer.base Calls.request) (Infer.assembly Calls.request) 0.2 0.04 0.0001 (L.Optimizer 0.002 0.8 0.95 0.0000001 0.01)
     observed <- evalIO $ R.withConfiguredDriver R.Resident (R.worker selected, R.sessions selected) $ \driver -> do
         batch <- R.run driver selected >>= require
         require (L.prepare configured batch) >>= action

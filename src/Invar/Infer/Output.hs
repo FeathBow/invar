@@ -1,9 +1,9 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Infer.Output (Body (..), parse, validate, rawBehavior) where
+module Invar.Infer.Output (Body (..), Scored (..), parse, validate, rawBehavior) where
 
 import Control.Monad (unless, when)
-import Data.Aeson (Object, (.:))
+import Data.Aeson (Object, withObject, (.:), (.:?))
 import Data.Aeson.Types (Parser)
 import Data.ByteString (ByteString)
 import Data.Word (Word32)
@@ -19,11 +19,19 @@ data Body = Body
     , bits :: [Word32]
     , truncated :: Bool
     , decoded :: String
+    , reference :: Maybe Scored
     }
     deriving (Eq, Show)
 
+data Scored = Scored {adapter :: String, scores :: [Word32]}
+    deriving (Eq, Show)
+
 parse :: Object -> Parser Body
-parse fields = Body <$> fields .: "tokens" <*> fields .: "prompt_length" <*> fields .: "behavior" <*> fields .: "behavior_bits" <*> fields .: "truncated" <*> fields .: "text"
+parse fields = Body <$> fields .: "tokens" <*> fields .: "prompt_length" <*> fields .: "behavior" <*> fields .: "behavior_bits" <*> fields .: "truncated" <*> fields .: "text" <*> (fields .:? "reference" >>= traverse scored)
+  where
+    scored = withObject "reference scores" $ \values -> do
+        Json.fields ["adapter", "bits"] values
+        Scored <$> (values .: "adapter" >>= Json.identity) <*> values .: "bits"
 
 validate :: Natural -> Body -> Either String ()
 validate limit body = do
@@ -34,6 +42,7 @@ validate limit body = do
     when (truncated body && count /= limit) (Left "Truncated output did not reach the checked token limit")
     unless (all validProbability (probabilities body)) (Left "Behavior log probabilities must be finite and nonpositive")
     unless (length (bits body) == length (probabilities body) && and (zipWith corresponds (probabilities body) (bits body))) (Left "Behavior values and FP32 bits disagree")
+    unless (all (\scored -> length (scores scored) == length (bits body) && all Float32.logProbability (scores scored)) (reference body)) (Left "Reference scores must be log probabilities of every response token")
   where
     validProbability value = not (isNaN value || isInfinite value) && value <= 0
     corresponds value word = value == float2Double (castWord32ToFloat word)

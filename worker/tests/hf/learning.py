@@ -64,18 +64,14 @@ def run(delivered):
 
 
 class LearningTests(unittest.TestCase):
-    def test_identical_reference_adapter_reuses_the_proximal_observation(self):
-        learner = make_learner()
+    def test_reference_role_is_the_supplied_engine_scores(self):
         trajectories = tuple(item.trajectory for item in batch().samples)
-        current = adapter_state(learner.model)
-        proximal, fixed = probabilities(learner.model, trajectories, current, evaluate=evaluate)
+        proximal, fixed = probabilities(trajectories, ((),) * len(trajectories))
         self.assertIs(fixed, proximal)
-        shifted = {name: value + torch.arange(1, value.numel() + 1, dtype=value.dtype).reshape(value.shape)
-                   if "lora_B" in name else value for name, value in current.items()}
-        repeated, distinct = probabilities(learner.model, trajectories, shifted, evaluate=evaluate)
-        self.assertTrue(all(torch.equal(old, new) for old, new in zip(proximal, repeated, strict=True)))
-        self.assertTrue(all(not torch.equal(old, new) for old, new in zip(proximal, distinct, strict=True)))
-        assert_equal(current, adapter_state(learner.model))
+        self.assertTrue(all(value is item.behavior for value, item in zip(proximal, trajectories, strict=True)))
+        scores = tuple((0xBFA00000,) for _ in trajectories)
+        _, supplied = probabilities(trajectories, scores)
+        self.assertEqual([words(value) for value in supplied], list(scores))
 
     def test_objective_roles_are_the_behavior_words_and_the_graph_is_recorded(self):
         learner = make_learner()

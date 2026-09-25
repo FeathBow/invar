@@ -9,7 +9,9 @@ import Data.Bifunctor (first)
 import Data.ByteString.Char8 qualified as Bytes
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.List (sortOn)
+import Data.Maybe (isJust)
 import Invar.Cohort qualified as C
+import Invar.Infer.Batch qualified as Batch
 import Invar.Infer.Invocation qualified as I
 import Invar.Infer.Result qualified as R
 import Invar.Reward qualified as Reward
@@ -25,7 +27,7 @@ import System.IO (hFlush, stdout)
 
 data Mode = Serial | Batched | Resident | Shared deriving (Eq, Show)
 
-data Options = Options {worker :: W.Worker, mode :: Mode, sessions :: [[(String, String)]], definition :: C.Definition, order :: [Natural], delivery :: [Natural]}
+data Options = Options {worker :: W.Worker, mode :: Mode, sessions :: [[(String, String)]], definition :: C.Definition, order :: [Natural], delivery :: [Natural], reference :: Maybe Batch.Reference}
 
 type role Batch nominal
 data Batch scope = Batch [Sample] [V.Binding]
@@ -99,11 +101,12 @@ runners (Driver _ _ pool) options = case (mode options, pool) of
     (selected, Just owned)
         | selected `elem` [Resident, Shared] ->
             if Resident.matches owned (worker options, sessions options)
-                then Right [\_ calls -> fmap (map Observed.Acknowledged) <$> launch (W.adapter (worker options)) calls | launch <- Resident.sessions owned]
+                then Right [\_ calls -> fmap (map Observed.Acknowledged) <$> launch (W.adapter (worker options)) (reference options) calls | launch <- Resident.sessions owned]
                 else Left (Dispatch "Resident launch configuration differs from its owning driver")
     (Resident, Nothing) -> Left (Dispatch "Resident execution requires a configured owning driver")
     (Shared, Nothing) -> Left (Dispatch "Shared execution requires a joint inference and learning owner")
     (_, Just _) -> Left (Dispatch "Resident owning driver cannot switch execution mode")
+    (_, Nothing) | isJust (reference options) -> Left (Dispatch "Reference scoring requires a resident or shared inference owner")
     (Serial, Nothing) -> Right [finite (W.runSession, overlay) | overlay <- sessions options]
     (Batched, Nothing) -> Right [finite (W.runBatchedSession, overlay) | overlay <- sessions options]
   where

@@ -75,7 +75,7 @@ def fixture(directory, name, *, call):
                  "base": materialization["base"], "assembly": materialization["assembly"],
                  "samples": [observation(item.trajectory, Reward(sample=item.trajectory.request.sample,
                              group=item.trajectory.request.group, value=item.advantage),
-                             advantage=item.advantage) for item in logical.samples],
+                             advantage=item.advantage, reference=()) for item in logical.samples],
                  "order": list(logical.order), "penalty": logical.profile.penalty}
     result = update(learner, logical)
     output = directory / name

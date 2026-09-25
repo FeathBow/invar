@@ -79,7 +79,7 @@ runBatchedSession worker echo calls = withRegistry worker $ \registry -> do
             pure $ case permit of
                 Nothing -> Left (I.Protocol "Batch result has no accepted consumption permits")
                 Just accepted -> map (\(completed, result, fact) -> Execution completed result fact) <$> Batch.observe accepted output
-        exchange = Process.Exchange (Batch.input (adapter worker) calls) review (fmap void . finish)
+        exchange = Process.Exchange (Batch.input (adapter worker) Nothing calls) review (fmap void . finish)
     returned <- Process.batch launch [exchange]
     case first failure returned of
         Right [output] -> first InvalidOutput <$> finish output

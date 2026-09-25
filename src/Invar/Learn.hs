@@ -13,6 +13,7 @@ import Invar.Cohort qualified as Cohort
 import Invar.Construct qualified as C
 import Invar.Digest qualified as Digest
 import Invar.Infer qualified as I
+import Invar.Infer.Output qualified as Output
 import Invar.Infer.Result qualified as Result
 import Invar.Learn.Program qualified as P
 import Invar.Learn.Wire qualified as Wire
@@ -50,7 +51,7 @@ data InputSample = InputSample {sampleGroup :: String, sampleResult :: Result.Re
 type role Plan nominal
 data Plan scope = Plan {planBatch :: R.Batch scope, planChecked :: A.Checked, planWorld :: E.World, planEmission :: E.Emission, planInput :: ByteString}
 
-data Error = InvalidSettings String | PolicyMismatch | TokenizerMismatch | MaterializationMismatch | Construction C.BuildError | Evaluation E.Error | Lowering Wire.Error | Lifecycle V.Error | InvalidEmission
+data Error = InvalidSettings String | PolicyMismatch | ReferenceMismatch | TokenizerMismatch | MaterializationMismatch | Construction C.BuildError | Evaluation E.Error | Lowering Wire.Error | Lifecycle V.Error | InvalidEmission
     deriving (Eq, Show)
 
 prepare :: Settings -> R.Batch scope -> Either Error (Plan scope)
@@ -70,6 +71,7 @@ compileInput settings samples = do
     validate settings
     unless (all ((== policy settings) . I.artifact . Result.consumed . sampleResult) samples) (Left PolicyMismatch)
     mapM_ (materialization settings . Result.consumed . sampleResult) samples
+    unless (all (scoredBy settings . Result.referenceScores . sampleResult) samples) (Left ReferenceMismatch)
     checked <- either (Left . Construction) Right P.checked
     let sources = world settings samples
     commands <- either (Left . Evaluation) Right (A.run checked sources)
@@ -78,6 +80,11 @@ compileInput settings samples = do
             payload <- either (Left . Lowering) Right (Wire.lower command)
             pure (checked, sources, command, Lazy.toStrict (encode payload))
         _ -> Left InvalidEmission
+
+scoredBy :: Settings -> Maybe Output.Scored -> Bool
+scoredBy settings scored
+    | reference settings == policy settings = null scored
+    | otherwise = fmap Output.adapter scored == Just (reference settings)
 
 validate :: Settings -> Either Error ()
 validate settings = do
@@ -101,7 +108,7 @@ materialization settings requested = do
     unless (behaviorBase settings == I.base requested && behaviorAssembly settings == I.assembly requested) (Left MaterializationMismatch)
 
 world :: Settings -> [InputSample] -> E.World
-world settings samples = Map.fromList [(Semantic "policy", Load.imageValue image), (Semantic "learner", learnerValue settings), (Semantic "reference", text (reference settings)), (Semantic "algorithm", algorithm), (Semantic "trajectories", keyed (trajectory . sampleResult)), (Semantic "behavior_model", behaviorModel), (Semantic "behavior", keyed (Sequence . map (Atom . Bits32) . Result.behaviorBits . sampleResult)), (Semantic "rewards", keyed (Atom . Number . sampleReward)), (Semantic "groups", groupValues indexed), (Semantic "order", Sequence [Mapping (Map.singleton index marker) | (index, _) <- indexed])]
+world settings samples = Map.fromList [(Semantic "policy", Load.imageValue image), (Semantic "learner", learnerValue settings), (Semantic "reference", text (reference settings)), (Semantic "algorithm", algorithm), (Semantic "trajectories", keyed (trajectory . sampleResult)), (Semantic "behavior_model", behaviorModel), (Semantic "behavior", keyed (Sequence . map (Atom . Bits32) . Result.behaviorBits . sampleResult)), (Semantic "reference_scores", keyed (Sequence . map (Atom . Bits32) . maybe [] Output.scores . Result.referenceScores . sampleResult)), (Semantic "rewards", keyed (Atom . Number . sampleReward)), (Semantic "groups", groupValues indexed), (Semantic "order", Sequence [Mapping (Map.singleton index marker) | (index, _) <- indexed])]
   where
     image = Materialization.learning (policy settings, learner settings, tokenizer settings, base settings, assembly settings, reference settings)
     behaviorModel = record [("base", text (behaviorBase settings)), ("assembly", text (behaviorAssembly settings))]

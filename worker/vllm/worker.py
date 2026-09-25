@@ -9,6 +9,8 @@ from worker.vllm.lora import Target, activate, verify
 from worker.vllm.rollout import LOGPROBS_MODE
 from worker.vllm.resources import Interval
 
+REFERENCE_ID = 1 << 30
+
 
 def manager(worker):
     runner = worker.model_runner

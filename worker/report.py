@@ -17,10 +17,11 @@ def ready(call, identities, *, model, previous, emit):
                       "request": reported_request(call.request)})
 
 
-def result(call, trajectory, *, identities, emit):
+def result(call, trajectory, *, identities, emit, reference=None):
     emit("result", {"binding": call.invocation.binding(), **identities,
                     "request": reported_request(trajectory.request),
                     "tokens": trajectory.tokens[0].tolist(), "prompt_length": trajectory.prompt_length,
                     "behavior": trajectory.behavior.tolist(), "text": trajectory.text,
                     "behavior_bits": [scalar.word(value) for value in trajectory.behavior.tolist()],
-                    "truncated": trajectory.truncated})
+                    "truncated": trajectory.truncated,
+                    "reference": None if reference is None else {"adapter": reference[0], "bits": list(reference[1])}})

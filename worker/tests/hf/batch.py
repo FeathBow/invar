@@ -22,7 +22,7 @@ def requests():
 
 
 def frame(calls):
-    return {"format": FORMAT, "adapter": "an adapter path", "calls": [json.dumps(call) for call in calls]}
+    return {"format": FORMAT, "adapter": "an adapter path", "reference": None, "calls": [json.dumps(call) for call in calls]}
 
 
 def permissions(calls):

@@ -14,11 +14,11 @@ from worker.hf.step import optimizer_options
 def request():
     samples = [{"sample": "b", "group": "question", "prompt": "Compute the answer.",
                 "seed": 17, "limit": 1, "temperature": 0.8,
-                "tokens": [11, 12], "prompt_length": 1, "behavior_bits": [0xBF800000],
+                "tokens": [11, 12], "prompt_length": 1, "behavior_bits": [0xBF800000], "reference_bits": [0xBFA00000],
                 "text": "#### 437", "truncated": False, "reward": 1.0, "advantage_bits": 0x3F7FF2E5},
                {"sample": "a", "group": "question", "prompt": "Compute the answer.",
                 "seed": 18, "limit": 1, "temperature": 0.8,
-                "tokens": [11, 13], "prompt_length": 1, "behavior_bits": [0xBF000000],
+                "tokens": [11, 13], "prompt_length": 1, "behavior_bits": [0xBF000000], "reference_bits": [0xBF400000],
                 "text": "#### 438", "truncated": False, "reward": 0.0, "advantage_bits": 0xBF7FF2E5}]
     return {"specification": SPECIFICATION, "policy": "a" * 64, "learner": "b" * 64,
             "reference": "c" * 64, "tokenizer": "d" * 64, "base": "e" * 64, "assembly": "f" * 64,

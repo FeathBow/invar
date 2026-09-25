@@ -64,7 +64,7 @@ suffix :: [(Call.Call, [Value])] -> [Value]
 suffix requests = [duration "inference", frame "result" (map (Fixture.wire . pure . last . snd) requests)]
 
 input :: FilePath -> [Call.Call] -> ByteString
-input adapter calls = Lazy.toStrict (encode (object ["format" .= format, "adapter" .= adapter, "calls" .= map (decodeUtf8 . Call.batchInput) calls]))
+input adapter calls = Lazy.toStrict (encode (object ["format" .= format, "adapter" .= adapter, "reference" .= Null, "calls" .= map (decodeUtf8 . Call.batchInput) calls]))
 
 permission :: [Call.Call] -> ByteString
 permission calls = Lazy.toStrict (encode (object ["format" .= format, "permissions" .= map (decodeUtf8 . Fixture.permissionInput) calls]))
@@ -187,7 +187,7 @@ rollout = forM_ [1, 2] $ \count -> do
         body = unlines (["case \"$INVAR_TEST_SESSION\" in"] ++ zipWith branch [0 :: Int ..] requests ++ ["*) exit 31;;", "esac"])
         worker = Worker.Worker "/bin/sh" path root "adapter path" [] Nothing
         tasks = [Cohort.Task ("member" ++ show index) "group" planned expected | index <- [0 :: Int .. 2]]
-        options = Rollout.Options worker Rollout.Batched [[("INVAR_TEST_SESSION", show slot)] | slot <- [0 .. count - 1]] (Cohort.Definition (Infer.artifact Fixture.request) tasks) order [1, 2, 0]
+        options = Rollout.Options worker Rollout.Batched [[("INVAR_TEST_SESSION", show slot)] | slot <- [0 .. count - 1]] (Cohort.Definition (Infer.artifact Fixture.request) tasks) order [1, 2, 0] Nothing
         project batch = (map Rollout.name (Rollout.samples batch), Rollout.delivered batch)
     evalIO (writeFile path body)
     returned <- evalIO (Rollout.withDriver (\driver -> fmap project <$> Rollout.run driver options)) >>= evalEither

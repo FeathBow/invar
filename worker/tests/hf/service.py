@@ -67,7 +67,9 @@ class Peer:
                 ordinal["instance"] = self.call.invocation.instance
             self.call = replace(self.call, invocation=replace(self.call.invocation, **ordinal),
                                 load=replace(self.call.load, **ordinal),
-                                request=replace(self.call.request, policy=result["adapter"], learner=result["learner"]))
+                                request=replace(self.call.request, policy=result["adapter"], learner=result["learner"],
+                                                samples=tuple(replace(item, reference_bits=item.behavior_bits)
+                                                              for item in self.call.request.samples)))
             checkpoint = self.paths.output.parent / ("service" + str(group - 1))
         self.start = len(self.output.getvalue())
         call = {"invocation": invocation(self.call.invocation), "load": invocation(self.call.load),

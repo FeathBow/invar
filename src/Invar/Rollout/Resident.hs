@@ -4,12 +4,13 @@ import Control.Exception (finally)
 import Control.Monad (join)
 import Data.ByteString (ByteString)
 import Data.IORef (atomicModifyIORef', modifyIORef', newIORef)
+import Invar.Infer.Batch qualified as Batch
 import Invar.Infer.Invocation qualified as Call
 import Invar.Worker qualified as Worker
 import Invar.Worker.Resident qualified as Resident
 
 type Configuration = (Worker.Worker, [[(String, String)]])
-type Session = FilePath -> [Call.Call] -> IO (Either Worker.Failure [Resident.Receipt])
+type Session = FilePath -> Maybe Batch.Reference -> [Call.Call] -> IO (Either Worker.Failure [Resident.Receipt])
 
 data Pool = Pool Configuration [Session] (IO ())
 

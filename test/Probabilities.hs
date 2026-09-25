@@ -11,7 +11,7 @@ import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as Bytes
 import Data.ByteString.Lazy qualified as Lazy
 import Data.Foldable (toList)
-import Data.List (uncons)
+import Data.List (uncons, zip4)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as Text
 import Data.Word (Word32)
@@ -51,11 +51,14 @@ fixtureWith format role linearization events = object ["format" .= String format
     ordered = [item | name <- array (field "order" request), item <- delivered, field "sample" item == name]
     total = sum (map (length . array . field "behavior_bits") ordered)
     profile = Objective.Profile (decoded (field "epsilon" request)) (decoded (field "penalty" request))
-    outputs item = either (error . show) id (Objective.calculate profile total [Objective.Inputs {Objective.current = role "current" b, Objective.proximal = role "proximal" b, Objective.behavior = b, Objective.fixed = role "reference" b, Objective.advantage = decoded (field "advantage_bits" item)} | b <- decoded (field "behavior_bits" item)])
+    behaviors item = decoded (field "behavior_bits" item) :: [Word32]
+    scores item = let scored = decoded (field "reference_bits" item) :: [Word32] in if null scored || format /= "invar-probabilities-v3" then behaviors item else scored
+    words32 item name = if name == "reference" then map (role name) (scores item) else map (role name) (behaviors item)
+    outputs item = either (error . show) id (Objective.calculate profile total [Objective.Inputs {Objective.current = c, Objective.proximal = p, Objective.behavior = b, Objective.fixed = q, Objective.advantage = decoded (field "advantage_bits" item)} | (b, p, q, c) <- zip4 (behaviors item) (words32 item "proximal") (words32 item "reference") (words32 item "current")])
     evaluated = [(item, outputs item) | item <- ordered]
     mean = either (error . show) id (Objective.mean32 (concatMap (map Objective.term . snd) evaluated))
     samples = map sample evaluated
-    sample (item, actual) = object (["sample" .= field "sample" item, "dtype" .= String "F32", "active" .= map (const True) actual, "advantage" .= map (const (field "advantage_bits" item)) actual, "objective" .= object ["terms" .= map Objective.term actual, "current_gradient" .= map Objective.gradient actual, "reward_gradient" .= map Objective.rewardGradient actual]] ++ [Key.fromText name .= map (role name) (decoded (field "behavior_bits" item) :: [Word32]) | name <- ["behavior", "proximal", "reference", "current"]] ++ ["linearized" .= map (const word) actual | Just word <- [linearization]])
+    sample (item, actual) = object (["sample" .= field "sample" item, "dtype" .= String "F32", "active" .= map (const True) actual, "advantage" .= map (const (field "advantage_bits" item)) actual, "objective" .= object ["terms" .= map Objective.term actual, "current_gradient" .= map Objective.gradient actual, "reward_gradient" .= map Objective.rewardGradient actual]] ++ [Key.fromText name .= (if name == "behavior" then behaviors item else words32 item name) | name <- ["behavior", "proximal", "reference", "current"]] ++ ["linearized" .= map (const word) actual | Just word <- [linearization]])
 
 decoded :: (FromJSON value) => Value -> value
 decoded value = case fromJSON value of
@@ -216,7 +219,7 @@ engine = do
             evalIO (Worker.verifyProbabilities root result) >>= (=== Right ())
     accept (build current (const id) (Just other))
     accept (build previous (shifted "proximal" other) Nothing)
-    forM_ [build current (shifted "proximal" other) (Just other), build current (shifted "current" other) (Just other), build current (const id) Nothing, build current (const id) (Just positiveWord), build previous (const id) (Just other)] $ \(value, configured) ->
+    forM_ [build current (shifted "proximal" other) (Just other), build current (shifted "current" other) (Just other), build current (shifted "reference" other) (Just other), build current (const id) Nothing, build current (const id) (Just positiveWord), build previous (const id) (Just other)] $ \(value, configured) ->
         reject configured (Lazy.toStrict (encode value))
   where
     current = "invar-probabilities-v3"

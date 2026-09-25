@@ -19,7 +19,7 @@ type Algorithm = C.Record '[ '("epsilon", Rational), '("penalty", Rational), '("
 type Trajectory = C.Record '[ '("prompt", [Natural]), '("seed", Rational), '("limit", Natural), '("temperature", Rational), '("tokens", [Natural]), '("prompt_length", Natural), '("text", [Natural]), '("truncated", Bool)]
 type Policy = C.Record '[ '("artifact", [Natural]), '("profile", [Natural])]
 type BehaviorModel = C.Record '[ '("base", [Natural]), '("assembly", [Natural])]
-type Allowed = '[ 'C.Semantic "policy", 'C.Semantic "learner", 'C.Semantic "reference", 'C.Semantic "algorithm", 'C.Semantic "trajectories", 'C.Semantic "behavior_model", 'C.Semantic "behavior", 'C.Semantic "rewards", 'C.Semantic "groups", 'C.Semantic "order"]
+type Allowed = '[ 'C.Semantic "policy", 'C.Semantic "learner", 'C.Semantic "reference", 'C.Semantic "algorithm", 'C.Semantic "trajectories", 'C.Semantic "behavior_model", 'C.Semantic "behavior", 'C.Semantic "reference_scores", 'C.Semantic "rewards", 'C.Semantic "groups", 'C.Semantic "order"]
 
 checked :: Either C.BuildError A.Checked
 checked = C.compile (E.Semantics schema Map.empty) [C.emit @"update" @"grpo-token-mean/v1" @Allowed expression]
@@ -33,6 +33,7 @@ checked = C.compile (E.Semantics schema Map.empty) [C.emit @"update" @"grpo-toke
             $ C.field @"trajectories" (C.mapSource @('C.Semantic "trajectories") @Trajectory)
             $ C.field @"behavior_model" (C.source @('C.Semantic "behavior_model") @BehaviorModel)
             $ C.field @"behavior" (C.mapSource @('C.Semantic "behavior") @[Word32])
+            $ C.field @"reference_scores" (C.mapSource @('C.Semantic "reference_scores") @[Word32])
             $ C.field @"rewards" (C.mapSource @('C.Semantic "rewards") @Rational)
             $ C.field @"groups" (C.sequenceSource @('C.Semantic "groups") @(Map Natural Bool))
             $ C.field @"order" (C.sequenceSource @('C.Semantic "order") @(Map Natural Bool)) C.emptyFields
@@ -44,7 +45,7 @@ schema = P.Schema sources Map.empty (Map.singleton "update" sink)
     sink = P.Sink "grpo-token-mean/v1" (P.RecordType fields) (Map.keysSet sources) Set.empty
 
 fields :: Map String P.Type
-fields = Map.fromList [("policy", record [("artifact", text), ("profile", text)]), ("learner", learner), ("reference", text), ("algorithm", algorithm), ("trajectories", P.MapType trajectory), ("behavior_model", record [("base", text), ("assembly", text)]), ("behavior", P.MapType (P.SequenceType P.BitsType)), ("rewards", P.MapType P.NumberType), ("groups", selectors), ("order", selectors)]
+fields = Map.fromList [("policy", record [("artifact", text), ("profile", text)]), ("learner", learner), ("reference", text), ("algorithm", algorithm), ("trajectories", P.MapType trajectory), ("behavior_model", record [("base", text), ("assembly", text)]), ("behavior", P.MapType (P.SequenceType P.BitsType)), ("reference_scores", P.MapType (P.SequenceType P.BitsType)), ("rewards", P.MapType P.NumberType), ("groups", selectors), ("order", selectors)]
   where
     selectors = P.SequenceType (P.MapType P.BooleanType)
     text = P.SequenceType P.TokenType

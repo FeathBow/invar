@@ -76,12 +76,13 @@ def trajectory(item):
                       truncated=item.truncated)
 
 
-def batch(model, request, reference, *, checked, measure, evaluate, emit):
+def batch(request, *, checked, measure, emit):
     from worker.hf.learning import Batch, Sample, probabilities
     from worker.hf.objective import Profile
 
     trajectories = tuple(trajectory(item) for item in request.samples)
-    proximal, fixed = measure("probability_roles", lambda: probabilities(model, trajectories, reference, evaluate=evaluate))
+    scores = tuple(item.reference_bits for item in request.samples)
+    proximal, fixed = measure("probability_roles", lambda: probabilities(trajectories, scores))
     normalized = dict(checked.values)
     samples = tuple(Sample(trajectory=item, proximal=old, reference=ref, advantage=normalized[item.request.sample])
                     for item, old, ref in zip(trajectories, proximal, fixed, strict=True))
@@ -136,23 +137,21 @@ def run(call, options, *, loader, measure, permission, evaluate):
     checked = check(call.request)
     options.output.mkdir(exist_ok=False)
     model, tokenizer, identity = loader(options, call.request)
-    optimizer, reference, loaded = restore_inputs(model, call.request, options, tokenizer=tokenizer)
-    admitted, actual = consume(call, (model, reference), loaded=loaded, identity=identity,
-                               checked=checked, measure=measure, evaluate=evaluate, emit=report)
+    optimizer, _, loaded = restore_inputs(model, call.request, options, tokenizer=tokenizer)
+    admitted, actual = consume(call, loaded=loaded, identity=identity, checked=checked, measure=measure, emit=report)
     permission(call.invocation)
     learner = Learner(model=model, optimizer=optimizer, evaluate=evaluate)
     report("result", execute(learner, call, options.output, batch=admitted, actual=actual,
                              tokenizer=tokenizer, measure=measure))
 
 
-def consume(call, runtime, *, loaded, identity, checked, measure, evaluate, emit):
+def consume(call, *, loaded, identity, checked, measure, emit):
     from worker.registry import invocation, learning
     request = call.request
     bound = call.invocation.binding()
-    model, reference = runtime
     emit("loaded_learner", {"binding": bound, "state": loaded, "load": invocation(call.load),
                             "image": learning(loaded), "model": identity[0], "revision": identity[1]})
-    admitted = batch(model, request, reference, checked=checked, measure=measure, evaluate=evaluate, emit=emit)
+    admitted = batch(request, checked=checked, measure=measure, emit=emit)
     actual = consumed(request, batch=admitted, rewards=checked.rewards, loaded=loaded)
     emit("consumed", {"binding": bound, "program": call.invocation.program, "request": actual,
                        "load": invocation(call.load)})

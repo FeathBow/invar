@@ -23,7 +23,7 @@ import Numeric.Natural (Natural)
 data Error = Shape String | Membership String | Numerical Advantage.Error
     deriving (Eq, Show)
 
-data Inputs = Inputs {trajectories :: Map Natural (V.Value Natural), behavior :: Map Natural (V.Value Natural), rewards :: Map Natural (V.Value Natural), groups :: Map Natural String, order :: [Natural]}
+data Inputs = Inputs {trajectories :: Map Natural (V.Value Natural), behavior :: Map Natural (V.Value Natural), scores :: Map Natural (V.Value Natural), rewards :: Map Natural (V.Value Natural), groups :: Map Natural String, order :: [Natural]}
 
 lower :: E.Emission -> Either Error Value
 lower command@(E.Emission "update" "grpo-token-mean/v1" payload) = do
@@ -69,17 +69,18 @@ inputs :: V.Value Natural -> Either Error Inputs
 inputs payload = do
     trajectories <- field "trajectories" payload >>= mapping
     behavior <- field "behavior" payload >>= mapping
+    scores <- field "reference_scores" payload >>= mapping
     rewards <- field "rewards" payload >>= mapping
     order <- field "order" payload >>= sequenceValues >>= traverse singleton
     let keys = Map.keysSet trajectories
     unless (not (null order) && length order == Set.size keys && Set.fromList order == keys) (Left (Membership "Order must select every trajectory exactly once"))
-    unless (Map.keysSet behavior == keys && Map.keysSet rewards == keys) (Left (Membership "Behavior and rewards must share the trajectory keys"))
+    unless (Map.keysSet behavior == keys && Map.keysSet scores == keys && Map.keysSet rewards == keys) (Left (Membership "Behavior, reference scores and rewards must share the trajectory keys"))
     grouped <- field "groups" payload >>= sequenceValues >>= traverse selectors
     unless (all ((>= minimumGroup) . length) grouped) (Left (Membership "Every advantage group must contain at least two samples"))
     let assignments = [(key, "g" ++ show index) | (index, group) <- zip [0 :: Natural ..] grouped, key <- group]
         groups = Map.fromList assignments
     unless (length assignments == Set.size keys && Map.keysSet groups == keys) (Left (Membership "Groups must partition the trajectory keys"))
-    pure Inputs {trajectories, behavior, rewards, groups, order}
+    pure Inputs {trajectories, behavior, scores, rewards, groups, order}
 
 minimumGroup :: Int
 minimumGroup = 2
@@ -95,6 +96,7 @@ sample batch expected (position, key) = do
     trajectory <- lookupKey key (trajectories batch)
     group <- lookupKey key (groups batch)
     probabilities <- lookupKey key (behavior batch) >>= sequenceValues >>= traverse bits
+    scored <- lookupKey key (scores batch) >>= sequenceValues >>= traverse bits
     reward <- lookupKey key (rewards batch) >>= number
     advantage <- maybe (Left (Membership "Missing expected sample advantage")) Right (Map.lookup (label position) expected)
     prompt <- field "prompt" trajectory >>= text
@@ -105,7 +107,7 @@ sample batch expected (position, key) = do
     prefix <- field "prompt_length" trajectory >>= natural
     response <- field "text" trajectory >>= text
     truncated <- field "truncated" trajectory >>= boolean
-    pure (object ["sample" .= label position, "group" .= group, "prompt" .= prompt, "seed" .= seed, "limit" .= limit, "temperature" .= temperature, "tokens" .= tokens, "prompt_length" .= prefix, "behavior_bits" .= probabilities, "text" .= response, "truncated" .= truncated, "reward" .= reward, "advantage_bits" .= advantage])
+    pure (object ["sample" .= label position, "group" .= group, "prompt" .= prompt, "seed" .= seed, "limit" .= limit, "temperature" .= temperature, "tokens" .= tokens, "prompt_length" .= prefix, "behavior_bits" .= probabilities, "reference_bits" .= scored, "text" .= response, "truncated" .= truncated, "reward" .= reward, "advantage_bits" .= advantage])
 
 modelValue :: V.Value Natural -> Either Error Value
 modelValue value = do

@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Infer.Result (Result, Error (..), observe, observeObjects, numerical, ready, consumed, response, tokens, behavior, behaviorBits, promptLength, truncated) where
+module Invar.Infer.Result (Result, Error (..), observe, observeObjects, numerical, ready, consumed, response, tokens, behavior, behaviorBits, referenceScores, promptLength, truncated) where
 
 import Control.Monad (foldM, unless)
 import Data.Aeson (FromJSON (parseJSON), Object, eitherDecodeStrict, withObject, (.:))
@@ -126,6 +126,9 @@ behavior (Result reported) = Output.probabilities (body reported)
 
 behaviorBits :: Result -> [Word32]
 behaviorBits (Result reported) = Output.bits (body reported)
+
+referenceScores :: Result -> Maybe Output.Scored
+referenceScores (Result reported) = Output.reference (body reported)
 
 promptLength :: Result -> Natural
 promptLength (Result reported) = Output.prefix (body reported)
