@@ -37,7 +37,7 @@ Invar turns that judgement into a contract. The contract names the prompts the m
 | --- | --- |
 | Changing the inference stack inside an RL loop, such as a new kernel, an engine upgrade or lower precision | admission only when the task loss stays within the bound the contract declares |
 | Checking kernels written by an agent | an end to end decision on the real task, where unit tests on one operator miss differences that grow over decoding |
-| Checking that the rollout engine agrees with the learner | a per cycle, per token measurement of how far the learner's log probabilities differ from the engine's under the same weights |
+| Keeping the learner consistent with the rollout engine | on Apple Silicon, objective probabilities taken from the engine itself, so they match the sampled ones bit for bit; on CUDA, a per cycle, per token measurement of the remaining gap |
 | Reproducible training | `invar compare histories` shows that two runs which scheduled their work differently published the same policies bit for bit |
 
 So far this has been shown for one model and one task, described under Results.
@@ -58,7 +58,7 @@ For each prompt, Invar compares the two implementations token by token. It finds
 
 These measurements sit next to the task score. A candidate can show a large KL on a few tokens while its task score stays within bounds, and the contract states which of the two matters for the use at hand. The task bound is a confidence bound over the sampled prompts, so it holds for the declared population of prompts at the stated confidence, under the assumptions the decision records.
 
-The same records measure the gap between the learner and the inference engine. In each training cycle the rollout and the update start from the same weights, so the learner's log probability of a sampled token should equal the engine's, and `invar inspect history` reports how far they differ in every cycle. On CUDA, with vLLM generating and Hugging Face training, 1.3% to 1.8% of tokens had identical log probabilities, with a 99th percentile gap of about 0.3 nats and a maximum of 1.7. On Apple Silicon, where MLX does both, 13% to 15% were identical with a similar tail.
+The same records measure the gap between the learner and the inference engine. In each training cycle the rollout and the update start from the same weights, so the learner's log probability of a sampled token should equal the engine's, and `invar inspect history` reports how far they differ in every cycle. Most of the gap came from the two sides computing different distributions: the engine samples at the request temperature, and the learner scored tokens at temperature 1. On Apple Silicon the learner now takes every probability in its objective from the engine, by replaying the sampled tokens through it, and computes only the gradient itself, at the rollout temperature. In a 64 sample update of a 27B model all 13,351 tokens then matched the engine bit for bit, where 15% had matched on the same rollouts before, so the importance weight between the rollout and the update is exactly 1. The replay adds about 11% to a training cycle. On CUDA, with vLLM generating and Hugging Face training, 1.3% to 1.8% of tokens still have identical log probabilities, with a 99th percentile gap of about 0.3 nats and a maximum of 1.7.
 
 ## Architecture
 
