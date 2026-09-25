@@ -130,6 +130,14 @@ class DecodingTests(unittest.TestCase):
         self.assertTrue(all(value is not None and value.isfinite().all() for value in gradients))
         self.assertTrue(any(torch.count_nonzero(value).item() for value in gradients))
 
+    def test_learner_scores_the_sampled_distribution_at_the_request_temperature(self):
+        loaded, tokenizer = hybrid(), make_tokenizer()
+        for temperature in (0.6, 1.4):
+            trajectory = generate(loaded, tokenizer, replace(REQUEST, temperature=temperature, limit=12), device="cpu")
+            with torch.no_grad():
+                values = logprobs(loaded, trajectory, device="cpu")
+            torch.testing.assert_close(values, trajectory.behavior, rtol=0, atol=1e-5)
+
     def test_missing_native_cache_fails_without_recomputing_the_prefix(self):
         loaded = model()
 
