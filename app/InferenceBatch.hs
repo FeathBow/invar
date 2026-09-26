@@ -23,7 +23,7 @@ run supplied = do
     arguments <- either die pure (eitherDecodeStrict encoded)
     when (null arguments) (die "A finite inference batch requires at least one call")
     calls <- either die pure (traverse prepare arguments)
-    Worker.runBatchedSession worker emit calls >>= either (die . show) (const (pure ()))
+    Worker.runBatchedSession worker Nothing emit calls >>= either (die . show) (const (pure ()))
   where
     emit line = TextBytes.hPutStrLn stdout line >> hFlush stdout
 

@@ -35,7 +35,9 @@ def load(cache, adapter, *, expected):
     return Runtime(model=model, tokenizer=tokenizer, adapter=adapter, device="cuda", identity=(MODEL, REVISION))
 
 
-def execute(runtime, call, *, approve, measure, previous=None, emit=report):
+def execute(runtime, call, *, approve, measure, previous=None, emit=report, reference=None):
+    if reference is not None:
+        raise ValueError("Reference scoring requires an engine forced-path scorer, which Hugging Face inference does not provide")
     requested = call.identities
     tokenizer = verify(runtime.tokenizer, requested["tokenizer"])
     consumed = verify_adapter(runtime.model, requested["adapter"],

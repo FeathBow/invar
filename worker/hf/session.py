@@ -12,6 +12,35 @@ from worker.trajectory import Request
 
 
 @dataclass(frozen=True, kw_only=True)
+class Reference:
+    adapter: Path
+    digest: str
+
+
+def reference(value):
+    if value is None:
+        return None
+    fields(value, "adapter digest")
+    if not isinstance(value["adapter"], str) or not value["adapter"]:
+        raise ValueError("A reference scoring declaration requires an adapter location")
+    return Reference(adapter=Path(value["adapter"]), digest=identity(value["digest"]))
+
+
+def declare(parser):
+    parser.add_argument("--reference", help="Fixed reference adapter to score every sampled path under")
+    parser.add_argument("--reference-digest", help="Expected canonical reference adapter tensor SHA-256")
+    return parser
+
+
+def declared(options):
+    if (options.reference is None) != (options.reference_digest is None):
+        raise ValueError("A reference scoring declaration requires both an adapter location and a digest")
+    if options.reference is None:
+        return None
+    return reference({"adapter": options.reference, "digest": options.reference_digest})
+
+
+@dataclass(frozen=True, kw_only=True)
 class Call:
     invocation: Invocation
     load: Invocation
@@ -54,6 +83,7 @@ def serve(options, *, source, loader, execute, permission):
     if not line:
         raise ValueError("An inference batch requires at least one request")
     call = decode(json.loads(line, object_pairs_hook=unique))
+    scoring = declared(options)
     runtime = loader(options.cache, options.adapter, expected=call.identities)
     calls, attempts, instances = set(), set(), set()
     previous = None
@@ -64,7 +94,7 @@ def serve(options, *, source, loader, execute, permission):
         calls.add(bound.call)
         attempts.add(bound.attempt)
         instances.add(bound.instance)
-        execute(runtime, call, approve=permission, previous=previous)
+        execute(runtime, call, approve=permission, previous=previous, reference=scoring)
         previous = call.load
         line = source.readline()
         if not line:
@@ -77,7 +107,7 @@ def main():
     from worker.hf.inference import execute, load
     from worker.hf.metrics import measure
 
-    parser = argparse.ArgumentParser(description="Execute a bound inference batch with one model load")
+    parser = declare(argparse.ArgumentParser(description="Execute a bound inference batch with one model load"))
     parser.add_argument("--cache", type=Path, required=True)
     parser.add_argument("--adapter", type=Path, required=True)
     serve(parser.parse_args(), source=sys.stdin, loader=load,

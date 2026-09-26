@@ -95,8 +95,9 @@ def bound(identities, expected):
         raise ValueError("Native loaded identities differ from the requested materialization")
 
 
-def execute(runtime, call, *, approve, measure, emit, previous=None):
+def execute(runtime, call, *, approve, measure, emit, previous=None, reference=None, config=None, selection_factory=None):
     tokenizer = verify(runtime.tokenizer, call.identities["tokenizer"])
+    scoring = None if reference is None else referenced(runtime, reference, config=config, selection_factory=selection_factory)
 
     def permission(prepared):
         identities = observed(prepared, runtime, tokenizer=tokenizer)
@@ -106,13 +107,21 @@ def execute(runtime, call, *, approve, measure, emit, previous=None):
         approve(call.invocation)
         verify(runtime.tokenizer, tokenizer)
 
-    execution = measure("inference", lambda: generate(runtime.engine, runtime.tokenizer, [call.request],
-                                                       loras=[runtime.lora], receipts=[runtime.receipt], approve=permission))
+    def sampled():
+        execution = generate(runtime.engine, runtime.tokenizer, [call.request],
+                             loras=[runtime.lora], receipts=[runtime.receipt], approve=permission)
+        if scoring is None:
+            return execution, None
+        expected = {**dict(runtime.identities), "adapter": reference.digest}
+        score, = scored(scoring, execution.trajectories, tokenizer=tokenizer, expected=expected)
+        return execution, score
+
+    execution, score = measure("inference", sampled)
     verify(runtime.tokenizer, tokenizer)
     trajectory, = execution.trajectories
     identities = observed(execution.prepared, runtime, tokenizer=tokenizer)
     bound(identities, call.identities)
-    result(call, trajectory, identities=identities, emit=emit)
+    result(call, trajectory, identities=identities, emit=emit, reference=score)
 
 
 def referenced(runtime, reference, *, config, selection_factory):

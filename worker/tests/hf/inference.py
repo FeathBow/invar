@@ -92,7 +92,7 @@ def run(runtime, source, *, loader=None):
         read_adapter(adapter, expected["adapter"])
         return measured("load", lambda: runtime)
 
-    options = SimpleNamespace(cache=runtime.adapter.parent, adapter=runtime.adapter)
+    options = SimpleNamespace(cache=runtime.adapter.parent, adapter=runtime.adapter, reference=None, reference_digest=None)
     session.serve(options, source=source, loader=loaded if loader is None else loader,
                       execute=partial(inference.execute, measure=measured),
                       permission=partial(invocation.approve, source=source))
@@ -159,7 +159,7 @@ class InferenceTests(unittest.TestCase):
             with torch.no_grad():
                 next(value for value in runtime.model.parameters() if not value.requires_grad).add_(1)
 
-        options = SimpleNamespace(cache=runtime.adapter.parent, adapter=runtime.adapter)
+        options = SimpleNamespace(cache=runtime.adapter.parent, adapter=runtime.adapter, reference=None, reference_digest=None)
         with redirect_stdout(output), self.assertRaisesRegex(RuntimeError, "frozen.*binding mismatch"):
             session.serve(options, source=source,
                               loader=lambda cache, adapter, **keywords: runtime,
@@ -189,7 +189,7 @@ class InferenceTests(unittest.TestCase):
             changed = {name: value + 1 for name, value in adapter_state(runtime.model).items()}
             save_file(changed, runtime.adapter)
 
-        options = SimpleNamespace(cache=runtime.adapter.parent, adapter=runtime.adapter)
+        options = SimpleNamespace(cache=runtime.adapter.parent, adapter=runtime.adapter, reference=None, reference_digest=None)
         with redirect_stdout(output):
             session.serve(options, source=source,
                               loader=lambda cache, adapter, **keywords: runtime,
@@ -210,7 +210,7 @@ class InferenceTests(unittest.TestCase):
             with torch.no_grad():
                 next(value for value in runtime.model.parameters() if value.requires_grad).add_(1)
 
-        options = SimpleNamespace(cache=runtime.adapter.parent, adapter=runtime.adapter)
+        options = SimpleNamespace(cache=runtime.adapter.parent, adapter=runtime.adapter, reference=None, reference_digest=None)
         with redirect_stdout(output), self.assertRaisesRegex(ValueError, "contents do not match"):
             session.serve(options, source=source,
                           loader=lambda cache, adapter, **keywords: runtime,

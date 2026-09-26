@@ -9,7 +9,6 @@ import Data.Bifunctor (first)
 import Data.ByteString.Char8 qualified as Bytes
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.List (sortOn)
-import Data.Maybe (isJust)
 import Invar.Cohort qualified as C
 import Invar.Infer.Batch qualified as Batch
 import Invar.Infer.Invocation qualified as I
@@ -106,11 +105,10 @@ runners (Driver _ _ pool) options = case (mode options, pool) of
     (Resident, Nothing) -> Left (Dispatch "Resident execution requires a configured owning driver")
     (Shared, Nothing) -> Left (Dispatch "Shared execution requires a joint inference and learning owner")
     (_, Just _) -> Left (Dispatch "Resident owning driver cannot switch execution mode")
-    (_, Nothing) | isJust (reference options) -> Left (Dispatch "Reference scoring requires a resident or shared inference owner")
     (Serial, Nothing) -> Right [finite (W.runSession, overlay) | overlay <- sessions options]
     (Batched, Nothing) -> Right [finite (W.runBatchedSession, overlay) | overlay <- sessions options]
   where
-    finite (launch, overlay) emit calls = fmap (map Observed.Terminated) <$> launch ((worker options) {W.environment = overlay}) emit calls
+    finite (launch, overlay) emit calls = fmap (map Observed.Terminated) <$> launch ((worker options) {W.environment = overlay}) (reference options) emit calls
 
 echo :: Bytes.ByteString -> IO ()
 echo line = Bytes.hPutStrLn stdout line >> hFlush stdout

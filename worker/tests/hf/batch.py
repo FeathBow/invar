@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import unittest
 
 from worker.batch import FORMAT, approve, capture, decode, serve
+from worker.hf import inference, session
 from worker.tests.hf.inference import envelope
 
 
@@ -55,6 +56,33 @@ class BatchTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "positive temperature"):
             serve(SimpleNamespace(cache=Path("unused")), source=io.StringIO(json.dumps(frame(values)) + "\n"),
                   loader=forbidden, execute=forbidden, permission=forbidden)
+
+    def test_a_declared_reference_reaches_every_serial_and_batched_execution(self):
+        declared = session.Reference(adapter=Path("reference adapter"), digest="c" * 64)
+        received = []
+
+        def execute(runtime, calls, **options):
+            received.append(options["reference"])
+
+        values = requests()
+        batched = {**frame(values), "reference": {"adapter": "reference adapter", "digest": "c" * 64}}
+        serve(SimpleNamespace(cache=Path("unused")), source=io.StringIO(json.dumps(batched) + "\n"),
+              loader=lambda *args, **kwargs: "runtime", execute=execute, permission=None)
+        self.assertEqual(received, [declared])
+        received.clear()
+        options = SimpleNamespace(cache=Path("unused"), adapter=Path("unused"),
+                                  reference="reference adapter", reference_digest="c" * 64)
+        session.serve(options, source=io.StringIO("".join(json.dumps(value) + "\n" for value in values)),
+                      loader=lambda *args, **kwargs: "runtime", execute=execute, permission=None)
+        self.assertEqual(received, [declared] * len(values))
+        for partial in ({"reference": "reference adapter", "reference_digest": None},
+                        {"reference": None, "reference_digest": "c" * 64}):
+            with self.subTest(partial=partial), self.assertRaisesRegex(ValueError, "both an adapter location and a digest"):
+                session.serve(SimpleNamespace(cache=Path("unused"), adapter=Path("unused"), **partial),
+                              source=io.StringIO(json.dumps(values[0]) + "\n"),
+                              loader=lambda *args, **kwargs: "runtime", execute=execute, permission=None)
+        with self.assertRaisesRegex(ValueError, "forced-path scorer"):
+            inference.execute(None, None, approve=None, measure=None, reference=declared)
 
     def test_finite_input_requires_strict_nonempty_encoded_call_inventory(self):
         original = frame(requests())

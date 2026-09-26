@@ -48,7 +48,7 @@ def components(options, stack, *, emit, engine_factory=factory):
         bound(dict(runtime.identities), expected)
         return runtime
 
-    return loader, partial(execute, measure=timed, emit=emit), configured
+    return loader, partial(execute, measure=timed, emit=emit, config=read(options.config), selection_factory=LoRARequest), configured
 
 
 def run(options, *, protocol, engine_factory=factory):
@@ -68,10 +68,14 @@ def run_batch(options):
         from worker.hf.metrics import measure
         from worker.vllm.runtime import execute_batch
 
+        from vllm.lora.request import LoRARequest
+        from worker.vllm.configuration import read
+
         emit = partial(report, output)
         loader, _, _ = components(options, stack, emit=emit)
         serve(options, source=sys.stdin, loader=loader,
-              execute=partial(execute_batch, measure=partial(measure, emit=emit), emit=emit),
+              execute=partial(execute_batch, measure=partial(measure, emit=emit), emit=emit,
+                              config=read(options.config), selection_factory=LoRARequest),
               permission=partial(approve, source=sys.stdin))
 
 

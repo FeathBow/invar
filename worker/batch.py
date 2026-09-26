@@ -2,17 +2,11 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 
-from worker.cohort import fields, identity
+from worker.cohort import fields
 from worker.invocation import decode as invocation
-from worker.hf.session import Call, decode as call, unique
+from worker.hf.session import Call, Reference, decode as call, reference, unique
 
 FORMAT = "invar-inference-batch-v1"
-
-
-@dataclass(frozen=True, kw_only=True)
-class Reference:
-    adapter: Path
-    digest: str
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -20,15 +14,6 @@ class Batch:
     adapter: Path
     reference: Reference | None
     calls: tuple[Call, ...]
-
-
-def reference(value):
-    if value is None:
-        return None
-    fields(value, "adapter digest")
-    if not isinstance(value["adapter"], str) or not value["adapter"]:
-        raise ValueError("A reference scoring declaration requires an adapter location")
-    return Reference(adapter=Path(value["adapter"]), digest=identity(value["digest"]))
 
 
 def decode(encoded):
@@ -65,9 +50,7 @@ def capture(operation):
 
 def serve(options, *, source, loader, execute, permission):
     batch = decode(source.readline())
-    if batch.reference is not None:
-        raise ValueError("Reference scoring requires a resident inference owner")
     runtime = loader(options.cache, batch.adapter, expected=batch.calls[0].identities)
-    execute(runtime, batch.calls, approve=permission)
+    execute(runtime, batch.calls, reference=batch.reference, approve=permission)
     if source.readline():
         raise ValueError("Input follows the completed finite inference batch")

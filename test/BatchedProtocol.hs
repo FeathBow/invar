@@ -38,6 +38,7 @@ batchedProtocol =
         , ("batch completion preserves the original probability zero sign", once zeroSign)
         , ("batch completion requires clean exit and no trailing output", once terminal)
         , ("batched rollout retains device partition and logical delivery", once rollout)
+        , ("a declared reference reaches both finite worker protocols", once declared)
         ]
   where
     once = withTests 1 . property
@@ -64,7 +65,10 @@ suffix :: [(Call.Call, [Value])] -> [Value]
 suffix requests = [duration "inference", frame "result" (map (Fixture.wire . pure . last . snd) requests)]
 
 input :: FilePath -> [Call.Call] -> ByteString
-input adapter calls = Lazy.toStrict (encode (object ["format" .= format, "adapter" .= adapter, "reference" .= Null, "calls" .= map (decodeUtf8 . Call.batchInput) calls]))
+input adapter = inputWith adapter Null
+
+inputWith :: FilePath -> Value -> [Call.Call] -> ByteString
+inputWith adapter reference calls = Lazy.toStrict (encode (object ["format" .= format, "adapter" .= adapter, "reference" .= reference, "calls" .= map (decodeUtf8 . Call.batchInput) calls]))
 
 permission :: [Call.Call] -> ByteString
 permission calls = Lazy.toStrict (encode (object ["format" .= format, "permissions" .= map (decodeUtf8 . Fixture.permissionInput) calls]))
@@ -97,7 +101,7 @@ run requests observations = do
         worker = Worker.Worker "/bin/sh" path root "adapter path" [] (Just configuration)
     evalIO (writeFile path (argument ++ script root (map fst requests) observations))
     output <- evalIO (newIORef [])
-    returned <- evalIO (Worker.runBatchedSession worker (\line -> modifyIORef' output (line :)) (map fst requests))
+    returned <- evalIO (Worker.runBatchedSession worker Nothing (\line -> modifyIORef' output (line :)) (map fst requests))
     approved <- evalIO (doesFileExist (root </> "approved"))
     emitted <- evalIO (Bytes.unlines . reverse <$> readIORef output)
     pure (returned, approved, emitted)
@@ -199,3 +203,22 @@ rejected (Left (Worker.InvalidOutput _)) = success
 rejected (Left (Worker.ProtocolFailure _)) = success
 rejected (Left problem) = annotateShow problem >> failure
 rejected (Right _) = failure
+
+declared :: PropertyT IO ()
+declared = do
+    requests <- setup [2, 0, 1]
+    root <- workspace
+    let selected = Worker.Reference "reference adapter" (replicate 64 'c')
+        expected = object ["adapter" .= String "reference adapter", "digest" .= String (Text.replicate 64 "c")]
+        batched = root </> "batched.sh"
+        serial = root </> "serial.sh"
+        arguments = root </> "arguments"
+    evalIO (writeFile batched ("IFS= read -r request || exit 21\ntest \"$request\" = " ++ Serial.quote (Bytes.unpack (inputWith "adapter path" expected (map fst requests))) ++ " || exit 22\nexit 23\n"))
+    batchedOutcome <- evalIO (Worker.runBatchedSession (Worker.Worker "/bin/sh" batched root "adapter path" [] Nothing) (Just selected) (const (pure ())) (map fst requests))
+    case batchedOutcome of
+        Left problem -> problem === Worker.WorkerExit (ExitFailure 23)
+        Right _ -> failure
+    evalIO (writeFile serial ("printf '%s\\n' \"$@\" > " ++ Serial.quote arguments ++ "\nexit 23\n"))
+    _ <- evalIO (Worker.runSession (Worker.Worker "/bin/sh" serial root "adapter path" [] Nothing) (Just selected) (const (pure ())) (map fst requests))
+    received <- evalIO (lines <$> readFile arguments)
+    drop 2 received === ["--reference=reference adapter", "--reference-digest=" ++ replicate 64 'c']

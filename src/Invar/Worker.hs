@@ -1,4 +1,4 @@
-module Invar.Worker (Worker (..), Failure (..), Execution, report, completion, loaded, run, runBatch, runSession, runBatchedSession) where
+module Invar.Worker (Worker (..), Batch.Reference (..), Failure (..), Execution, report, completion, loaded, run, runBatch, runSession, runBatchedSession) where
 
 import Control.Exception (bracket, mask_)
 import Data.Bifunctor (first)
@@ -53,12 +53,12 @@ run worker call = withRegistry worker $ \registry -> do
         Left problem -> pure (Left problem)
 
 runBatch :: Worker -> [I.Call] -> IO (Either Failure [Execution])
-runBatch worker = runSession worker (\line -> Bytes.hPutStrLn stdout line >> hFlush stdout)
+runBatch worker = runSession worker Nothing (\line -> Bytes.hPutStrLn stdout line >> hFlush stdout)
 
-runSession :: Worker -> (ByteString -> IO ()) -> [I.Call] -> IO (Either Failure [Execution])
-runSession worker echo calls = withRegistry worker $ \registry -> do
+runSession :: Worker -> Maybe Batch.Reference -> (ByteString -> IO ()) -> [I.Call] -> IO (Either Failure [Execution])
+runSession worker reference echo calls = withRegistry worker $ \registry -> do
     pending <- traverse (\call -> Pending call <$> newIORef Nothing) calls
-    let inputs = arguments worker
+    let inputs = arguments worker ++ foldMap (\declared -> ["--reference=" ++ Batch.location declared, "--reference-digest=" ++ Batch.identity declared]) reference
         launch = Process.Launch (executable worker) inputs (environment worker) echo
         exchange value@(Pending call _) = Process.Exchange (I.batchInput call) (authorize registry value) (fmap void . observe value)
     returned <- Process.batch launch (map exchange pending)
@@ -66,9 +66,9 @@ runSession worker echo calls = withRegistry worker $ \registry -> do
         Right outputs -> fmap (first InvalidOutput . sequence) (traverse (uncurry observe) (zip pending outputs))
         Left problem -> pure (Left problem)
 
-runBatchedSession :: Worker -> (ByteString -> IO ()) -> [I.Call] -> IO (Either Failure [Execution])
-runBatchedSession _ _ [] = pure (Right [])
-runBatchedSession worker echo calls = withRegistry worker $ \registry -> do
+runBatchedSession :: Worker -> Maybe Batch.Reference -> (ByteString -> IO ()) -> [I.Call] -> IO (Either Failure [Execution])
+runBatchedSession _ _ _ [] = pure (Right [])
+runBatchedSession worker reference echo calls = withRegistry worker $ \registry -> do
     slot <- newIORef Nothing
     let launch = Process.Launch (executable worker) (batchArguments worker) (environment worker) echo
         review output = do
@@ -79,7 +79,7 @@ runBatchedSession worker echo calls = withRegistry worker $ \registry -> do
             pure $ case permit of
                 Nothing -> Left (I.Protocol "Batch result has no accepted consumption permits")
                 Just accepted -> map (\(completed, result, fact) -> Execution completed result fact) <$> Batch.observe accepted output
-        exchange = Process.Exchange (Batch.input (adapter worker) Nothing calls) review (fmap void . finish)
+        exchange = Process.Exchange (Batch.input (adapter worker) reference calls) review (fmap void . finish)
     returned <- Process.batch launch [exchange]
     case first failure returned of
         Right [output] -> first InvalidOutput <$> finish output

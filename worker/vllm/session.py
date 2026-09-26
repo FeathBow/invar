@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from worker.vllm import entry as vllm_entry
 
 
@@ -8,7 +10,12 @@ def main():
 
         serve(options, **dependencies)
 
-    options = vllm_entry.batch_arguments("Native inference session with one prepared engine")
+    from worker.hf.session import declare
+
+    arguments = declare(vllm_entry.parser("Native inference session with one prepared engine"))
+    arguments.add_argument("--cache", type=Path, required=True)
+    arguments.add_argument("--adapter", type=Path, required=True)
+    options = arguments.parse_args()
     vllm_entry.run(options, protocol=protocol)
 
 
