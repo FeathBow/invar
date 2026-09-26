@@ -35,6 +35,7 @@ module Invar.Use (
     establish,
     finding,
     admit,
+    validate,
     admissionContract,
     admissionScope,
     evidence,
@@ -67,7 +68,7 @@ import Invar.Spec.Evidence qualified as Evidence
 import Invar.Spec.Measurement qualified as Measurement
 import Invar.Spec.Use (Claim (..), Confidence (..), Key (..), Metric (..), Observed, Problem (..), Scope, ScopeId, Unit (..), confidence, mean, measurements, scope, scopeId, units)
 import Invar.Spec.Use qualified as U
-import Invar.Use.Admission (Admission, AdmissionProblem (..), Decision (..), ReliedOn (..), admissionContract, admissionScope, admit, conditions, evidence)
+import Invar.Use.Admission (Admission, AdmissionProblem (..), Decision (..), ReliedOn (..), admissionContract, admissionScope, admit, conditions, evidence, validate)
 import Invar.Use.Contract (Budget (..), Criterion (..), InvarianceRequirement (..), LossRequirement (..), NumericalRequirement (..), Population (..), Premise (..), Reliance (..), Standard (..), Transfer (..), UseContract (..))
 import Invar.Use.Contract qualified as Contract
 import Invar.Use.Encoding (decodeContract, describeContract)

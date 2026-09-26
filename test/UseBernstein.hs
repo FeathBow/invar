@@ -1,7 +1,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module UseBernstein (useBernstein) where
+module UseBernstein (useBernstein, contract, unchanged, unitTotal, seedTotal) where
 
 import Calls (change, field)
 import Control.Monad (forM_)

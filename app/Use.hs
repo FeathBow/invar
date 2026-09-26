@@ -12,6 +12,7 @@ import Options qualified as O
 import System.Console.GetOpt (OptDescr, usageInfo)
 import System.Exit (die)
 import UsePlan qualified
+import UsePrepare qualified
 import UseRuns qualified
 
 run :: [String] -> IO ()
@@ -41,6 +42,7 @@ run ("admit" : supplied) = do
             )
         )
 run ("plan" : supplied) = UsePlan.run supplied
+run ("prepare" : supplied) = UsePrepare.run supplied
 run _ = die usage
 
 readContract :: O.Fields -> IO U.UseContract

@@ -7,6 +7,7 @@ module Invar.Use.Admission (
     AdmissionProblem (..),
     ReliedOn (..),
     admit,
+    validate,
     admissionContract,
     admissionScope,
     evidence,
