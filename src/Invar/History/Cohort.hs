@@ -69,10 +69,11 @@ admit settings (workload, observed) reported = do
     let bindings = updated : map Observation.binding observed
     unless (distinct (map V.boundCall bindings) && distinct (map V.boundAttempt bindings) && distinct (map V.boundInstance bindings)) (Left "History cohort reused an invocation identity")
     (program, payload, scored) <- numericalInput settings (workload, observed)
+    reportedProgram <- parseEither (withObject "update invocation" (.: "program")) (Report.invocation reported)
+    unless (reportedProgram == decodeUtf8 program) (Left Report.recordedElsewhere)
     expected <- Json.decode payload >>= parseEither Request.parse
     actual <- parseEither Request.parse (Report.request reported)
-    reportedProgram <- parseEither (withObject "update invocation" (.: "program")) (Report.invocation reported)
-    unless (reportedProgram == decodeUtf8 program && Request.logical actual == Request.logical expected) (Left "Consumed update differs from its declared tasks and actual inference observations")
+    unless (Request.logical actual == Request.logical expected) (Left "Consumed update differs from its declared tasks and actual inference observations")
     pure (Checked observed reported scored)
   where
     distinct values = length values == Set.size (Set.fromList values)

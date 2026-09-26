@@ -13,7 +13,7 @@ import Updates (alter, change, field, setup, wire)
 import Workloads (array, replace)
 
 observations :: Group
-observations = Group "Conditional update observations" [("report identity covers the entire supplied log", once identity), ("selected calls require one ordered pair and exact binding", once selected), ("numerical request and sample schemas are complete", once schema), ("cohort membership and response boundaries are mandatory", once membership), ("finite numerical coefficients and actual word domains are mandatory", once numbers), ("logical pairing retains all consumed inputs", once paired), ("duplicate keys and malformed unrelated events fail", once ambiguous), ("integral JSON syntax has core numeric semantics", once integral)]
+observations = Group "Conditional update observations" [("report identity covers the entire supplied log", once identity), ("selected calls require one ordered pair and exact binding", once selected), ("numerical request and sample schemas are complete", once schema), ("cohort membership and response boundaries are mandatory", once membership), ("finite numerical coefficients and actual word domains are mandatory", once numbers), ("logical pairing retains all consumed inputs", once paired), ("requests an earlier learning program recorded are refused at its boundary", once boundary), ("duplicate keys and malformed unrelated events fail", once ambiguous), ("integral JSON syntax has core numeric semantics", once integral)]
   where
     once = withTests 1 . property
 
@@ -97,6 +97,15 @@ paired = do
     rejected (Report.paired original changed)
     program <- accepted (alter 1 (change "program" (String "another program")) events)
     rejected (Report.paired original program)
+
+boundary :: PropertyT IO ()
+boundary = do
+    events <- fixture
+    let earlier = requests (sample (omit "reference_bits")) events
+        failure' = either Just (const Nothing) . Report.admit selectedCall . wire
+    failure' (alter 1 (change "program" (String "earlier program")) earlier) === Just ("Error in $: " ++ Report.recordedElsewhere)
+    current <- evalMaybe (failure' earlier)
+    assert (current /= "Error in $: " ++ Report.recordedElsewhere)
 
 ambiguous :: PropertyT IO ()
 ambiguous = do

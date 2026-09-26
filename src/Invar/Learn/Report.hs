@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Learn.Report (Report, admit, admitFrames, consumedPolicy, bindingValue, paired, sameInput, describe, invocation, request, result, output, gradient, artifact, logDigest) where
+module Invar.Learn.Report (Report, recordedElsewhere, admit, admitFrames, consumedPolicy, bindingValue, paired, sameInput, describe, invocation, request, checkedRequest, result, output, gradient, artifact, logDigest) where
 
 import Control.Monad (unless, when)
 import Crypto.Hash.SHA256 qualified as SHA256
@@ -12,10 +12,13 @@ import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as Bytes
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Data.Text.Encoding (decodeUtf8)
 import Invar.Artifact qualified as Artifact
 import Invar.Infer.Framing qualified as Framing
 import Invar.Json qualified as Json
+import Invar.Learn.Program qualified as Program
 import Invar.Learn.Request qualified as Request
+import Invar.Spec.Artifact qualified as A
 import Numeric.Natural (Natural)
 
 data Report = Report String Value Request.Request (Object, ByteString) String
@@ -27,7 +30,10 @@ invocation :: Report -> Value
 invocation (Report _ bound _ _ _) = bound
 
 request :: Report -> Value
-request (Report _ _ consumed _ _) = Request.value consumed
+request = Request.value . checkedRequest
+
+checkedRequest :: Report -> Request.Request
+checkedRequest (Report _ _ input _ _) = input
 
 result :: Report -> Value
 result (Report _ _ _ (fields, _) _) = Object fields
@@ -69,12 +75,21 @@ observation digest [(consumed, _), (returned, encoded)] = do
     when (Text.null program) (fail "Expected nonempty program text")
     actual <- returned .: "binding"
     unless (actual == bound) (fail "Update result binding differs from consumption")
-    input <- consumed .: "request" >>= Request.parse
+    requested <- consumed .: "request"
+    current <- either (fail . show) (pure . decodeUtf8 . A.bytes) Program.checked
+    input <- case parseEither Request.parse requested of
+        Right parsed -> pure parsed
+        Left problem
+            | program /= current -> fail recordedElsewhere
+            | otherwise -> fail problem
     actualRequest <- returned .: "request"
     unless (actualRequest == Request.value input) (fail "Update result input differs from consumption")
     identity <- returned .: "gradients" >>= Json.identity
     pure (Report digest (object ["binding" .= bound, "program" .= program]) input (returned, encoded) identity)
 observation _ _ = fail "Expected one consumed/result pair for the selected call"
+
+recordedElsewhere :: String
+recordedElsewhere = "Update was recorded by a different learning program; check it with the invar version that produced it"
 
 binding :: Value -> Parser Value
 binding = withObject "invocation binding" $ \fields -> do

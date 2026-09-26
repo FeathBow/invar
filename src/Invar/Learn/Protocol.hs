@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Learn.Protocol (Result, Permit, Error (..), observe, authorize, authorizeResident, validateSummary, loadProgram, loadedFact, completion, request, adapter, learner, gradients, probabilities) where
+module Invar.Learn.Protocol (Result, Permit, Error (..), observe, authorize, authorizeResident, validateSummary, loadProgram, loadedFact, completion, request, checkedRequest, adapter, learner, gradients, probabilities) where
 
 import Control.Monad (foldM, unless, void)
 import Data.Aeson (Object, Value (..), eitherDecodeStrict, object, withObject, (.:), (.=))
@@ -10,6 +10,7 @@ import Data.ByteString.Char8 qualified as Bytes
 import Data.Text.Encoding (encodeUtf8)
 import Invar.Digest qualified as Digest
 import Invar.Infer.Wire qualified as Binding
+import Invar.Learn.Request qualified as Request
 import Invar.Learn.Wire qualified as Wire
 import Invar.Load qualified as Load
 import Invar.Spec.Invocation qualified as V
@@ -19,14 +20,14 @@ import Numeric.Natural (Natural)
 data Artifacts = Artifacts String String (String, String)
     deriving (Eq, Show)
 
-data Result = Result V.Completion Value Artifacts
+data Result = Result V.Completion Request.Request Artifacts
     deriving (Eq, Show)
 
 data Error = Malformed String | Unexpected String | Mismatch String | Lowering Wire.Error | Lifecycle V.Error | Loading Load.Error | Registry L.Error
     deriving (Eq, Show)
 
 data Context = Context {bound :: V.Binding, numerical :: Value, loading :: Load.Plan, resident :: Bool}
-data Progress = Awaiting V.Runtime L.Registry | Loaded V.Runtime L.Registry L.Fact | Consumed V.Runtime L.Registry L.Fact Value | Finished Result
+data Progress = Awaiting V.Runtime L.Registry | Loaded V.Runtime L.Registry L.Fact | Consumed V.Runtime L.Registry L.Fact Request.Request | Finished Result
 
 data Permit = Permit Context ByteString Progress L.Fact
 
@@ -122,8 +123,8 @@ consumed _ _ _ = Left (Unexpected "Duplicate consumption or consumption before l
 finished :: Context -> (Progress, Object) -> ByteString -> Either Error Progress
 finished context (Consumed runtime _ _ actual, value) encoded = do
     binding <- matching (bound context) value
-    _ <- matchingRequest actual value
-    artifacts <- summary actual value
+    _ <- matchingRequest (Request.value actual) value
+    artifacts <- summary (Request.value actual) value
     final <- lifecycle (V.finish binding encoded runtime)
     reported <- lifecycle (V.completion final (V.boundAttempt binding))
     case reported of
@@ -181,11 +182,11 @@ matching expected value = do
     unless (actual == expected) (Left (Lifecycle (V.BindingMismatch expected actual)))
     pure actual
 
-matchingRequest :: Value -> Object -> Either Error Value
+matchingRequest :: Value -> Object -> Either Error Request.Request
 matchingRequest expected value = do
     actual <- parse (.: "request") value
     unless (actual == expected) (Left (Mismatch "Actual update input differs from the checked lowering"))
-    pure actual
+    parse Request.parse actual
 
 parse :: (input -> Parser value) -> input -> Either Error value
 parse parser = either (Left . Malformed) Right . parseEither parser
@@ -200,7 +201,10 @@ completion :: Result -> V.Completion
 completion (Result result _ _) = result
 
 request :: Result -> Value
-request (Result _ actual _) = actual
+request (Result _ actual _) = Request.value actual
+
+checkedRequest :: Result -> Request.Request
+checkedRequest (Result _ actual _) = actual
 
 adapter :: Result -> String
 adapter (Result _ _ (Artifacts policy _ _)) = policy

@@ -32,7 +32,7 @@ probability expected path = do
     encoded <- Bytes.readFile path
     digest <- either invalid pure (Report.artifact "probabilities" expected)
     unless (Artifact.hex (SHA256.hash encoded) == digest) (invalid "Probability file differs from its reported digest")
-    either invalid pure (Probability.observe (Report.invocation expected, Report.request expected, Report.output expected) encoded)
+    either invalid pure (Probability.observe (Report.invocation expected, Report.checkedRequest expected, Report.output expected) encoded)
 
 probabilityObjects :: Report.Report -> FilePath -> IO [Object]
 probabilityObjects expected path = map Probability.sampleObject <$> probability expected path

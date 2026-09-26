@@ -16,6 +16,7 @@ import Invar.Json qualified as Json
 import Numeric.Natural (Natural)
 
 data Request = Request Value Value
+    deriving (Eq, Show)
 
 value :: Request -> Value
 value (Request original _) = original

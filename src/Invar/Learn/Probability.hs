@@ -27,34 +27,30 @@ validate :: P.Result -> ByteString -> Either String ()
 validate expected encoded = do
     let completed = P.completion expected
         intended = Binding.invocationValue (V.completedBinding completed) (V.completedProgram completed)
-    _ <- observe (intended, P.request expected, V.completedOutput completed) encoded
+    _ <- observe (intended, P.checkedRequest expected, V.completedOutput completed) encoded
     pure ()
 
 data Sample = Sample {sampleObject :: Object, sampleName :: Text, behavior :: [Word32], proximal :: [Word32], fixed :: [Word32], current :: [Word32], linearized :: [Word32]}
 
-observe :: (Value, Value, ByteString) -> ByteString -> Either String [Sample]
+observe :: (Value, Request.Request, ByteString) -> ByteString -> Either String [Sample]
 observe (intended, consumed, completed) encoded = do
     output <- Json.decode completed
     reported <- Json.floatingAt ["update", "loss"] completed
     Json.decode encoded >>= parseEither (withObject "probability observation" (document (intended, consumed, output) reported))
 
-document :: (Value, Value, Value) -> Double -> Object -> Parser [Sample]
+document :: (Value, Request.Request, Value) -> Double -> Object -> Parser [Sample]
 document (intended, consumed, output) reported fields = do
     exact ["format", "invocation", "request", "samples", "scalar_reference", "loss"] fields
     format <- fields .: "format"
-    engine <- case format :: Text of
-        "invar-probabilities-v2" -> pure False
-        "invar-probabilities-v3" -> pure True
-        _ -> fail "Unknown probability observation format"
+    unless (format == ("invar-probabilities-v3" :: Text)) (fail "Unknown probability observation format")
     reference <- fields .: "scalar_reference"
     unless (reference == Objective.reference) (fail "Unknown scalar objective reference")
     invocation <- fields .: "invocation"
     unless (invocation == intended) (fail "Probability observation invocation mismatch")
     request <- fields .: "request"
-    unless (request == consumed) (fail "Probability observation request mismatch")
-    _ <- Request.parse request
+    unless (request == Request.value consumed) (fail "Probability observation request mismatch")
     observations <- fields .: "samples"
-    (expectedLoss, checked) <- withObject "probability request" (samples engine observations) request
+    (expectedLoss, checked) <- withObject "probability request" (samples observations) (Request.value consumed)
     observedLoss <- fields .: "loss"
     unless (observedLoss == expectedLoss) (fail "Reported loss differs from the core token mean")
     summary <- withObject "update result" (.: "update") output
@@ -63,8 +59,8 @@ document (intended, consumed, output) reported fields = do
     unless (tokens == fromIntegral (sum (map (length . behavior) checked))) (fail "Update summary differs from the scalar observation token count")
     pure checked
 
-samples :: Bool -> [Object] -> Object -> Parser (Word32, [Sample])
-samples engine observed request = do
+samples :: [Object] -> Object -> Parser (Word32, [Sample])
+samples observed request = do
     order <- request .: "order" :: Parser [String]
     delivered <- request .: "samples" :: Parser [Object]
     named <- traverse (\item -> (,) <$> item .: "sample" <*> pure item) delivered
@@ -82,22 +78,22 @@ samples engine observed request = do
   where
     reward item = Advantage.Reward <$> item .: "sample" <*> item .: "group" <*> item .: "reward"
     check settings expected (name, item) = case Map.lookup name expected of
-        Just (original, advantage) -> sample engine settings advantage (original, item)
+        Just (original, advantage) -> sample settings advantage (original, item)
         _ -> fail "Unknown probability sample"
 
-sample :: Bool -> (Objective.Profile, Int) -> Word32 -> (Object, Object) -> Parser ([Word32], Sample)
-sample engine settings advantage (original, fields) = do
-    exact (["sample", "dtype", "active", "objective"] ++ roles ++ ["linearized" | engine]) fields
+sample :: (Objective.Profile, Int) -> Word32 -> (Object, Object) -> Parser ([Word32], Sample)
+sample settings advantage (original, fields) = do
+    exact (["sample", "dtype", "active", "objective"] ++ roles ++ ["linearized"]) fields
     name <- fields .: "sample"
     dtype <- fields .: "dtype"
     unless (dtype == ("F32" :: Text)) (fail "Update probability observations must use FP32")
     consumed <- original .: "behavior_bits" :: Parser [Word32]
     [behaviorWords, proximalWords, fixedWords, currentWords, advantageWords] <- traverse (vector (length consumed) fields) roles
     unless (behaviorWords == consumed) (fail "Behavior probability words differ from consumed input")
-    linearizedWords <- if engine then vector (length consumed) fields "linearized" else pure proximalWords
-    unless (not engine || (proximalWords == behaviorWords && currentWords == behaviorWords)) (fail "Proximal and current probability words differ from the engine's behavior words")
-    scored <- if engine then original .: "reference_bits" else pure []
-    unless (not engine || fixedWords == (if null scored then behaviorWords else scored)) (fail "Reference probability words differ from the engine's reference scores")
+    linearizedWords <- vector (length consumed) fields "linearized"
+    unless (proximalWords == behaviorWords && currentWords == behaviorWords) (fail "Proximal and current probability words differ from the engine's behavior words")
+    scored <- original .: "reference_bits"
+    unless (fixedWords == (if null scored then behaviorWords else scored)) (fail "Reference probability words differ from the engine's reference scores")
     claimed <- original .: "advantage_bits"
     unless (claimed == advantage) (fail "Consumed advantage expectation differs from the core reference")
     unless (advantageWords == replicate (length consumed) advantage) (fail "Actual advantage words differ from the core reference")
