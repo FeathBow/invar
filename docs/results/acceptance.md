@@ -4,7 +4,7 @@ The release acceptance admits a new inference implementation of `Qwen/Qwen3.8-27
 
 ## Reference and candidate
 
-The reference is vLLM with the FP32 LoRA patches, as used in the CUDA training runs. The candidate adds two changes so that the numbers of each request do not depend on which requests share its batch: NF4 matrix multiplication always takes the same kernel path, and softmax reduces each row on its own in fixed blocks of 1024 columns. Both run the same model revision, tokenizer and frozen base weights at the initial adapter `08a9cd1e…`. The [vLLM backend page](../backends/vllm.md) describes the CUDA worker.
+The reference and the candidate are two frozen packages built for this acceptance, each with its own snapshot of the worker and its own overlays; the candidate's softmax kernel is not part of this repository. The admission applies to those two packages, not to the worker in the current repository. The reference is vLLM with the FP32 LoRA patches, as used in the CUDA training runs. The candidate adds two changes so that the numbers of each request do not depend on which requests share its batch: NF4 matrix multiplication always takes the same kernel path, and softmax reduces each row on its own in fixed blocks of 1024 columns. Both run the same model revision, tokenizer and frozen base weights at the initial adapter `08a9cd1e…`. The [vLLM backend page](../backends/vllm.md) describes the CUDA worker.
 
 ## Population and sealed draws
 

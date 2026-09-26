@@ -1,6 +1,6 @@
 # Performance
 
-The training loop orchestrated by the Invar core costs at most 1.1 times two baselines: the direct route, which runs the same worker code without the core, and the native route, which uses the backend library directly. Budgets fixed in advance decide it per platform and scope, on one GH200 and on Apple Silicon. See [the loop design](../design/loop.md) and [the release acceptance](acceptance.md).
+These results were measured on the code of commit `696514e` and have not been measured again for later code. On that code, the training loop orchestrated by the Invar core cost at most 1.1 times two baselines: the direct route, which runs the same worker code without the core, and the native route, which uses the backend library directly. Budgets fixed in advance decided it per platform and scope, on one GH200 and on Apple Silicon. See [the loop design](../design/loop.md) and [the release acceptance](acceptance.md).
 
 ## Routes and scopes
 

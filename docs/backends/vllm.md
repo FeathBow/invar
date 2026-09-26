@@ -73,7 +73,7 @@ Stock vLLM can give the same prompt slightly different numbers depending on whic
 
 `invar train` runs rollout and learning as two processes: `--inference-python` and `--inference` select the vLLM side, `--python` and `--learning` the PEFT learner, which loads the same model as NF4 with FP32 LoRA. Both share the policy and tokenizer identities and report their own base and assembly.
 
-The vLLM process reads each cohort's policy from the loop's current `adapter.safetensors` in checkpoint mode. The sampled behavior probabilities travel to the learner as exact FP32 words and stay separate from the proximal, current and reference probabilities the learner computes; the request's `behavior_model` field records which base and assembly produced them. Each update publishes a checkpoint, the next cohort consumes that published adapter, and after the last cycle an independent `entries/vllminfer.py` process loads the final checkpoint.
+The vLLM process reads each cohort's policy from the loop's current `adapter.safetensors` in checkpoint mode. The sampled behavior probabilities travel to the learner as exact FP32 words, and the request's `behavior_model` field records which base and assembly produced them. The objective uses them as the proximal and current probabilities, and uses as reference the words the engine scored under the reference slot in the same rollout, or the behavior words when the reference is the policy. The learner computes only its linearized probabilities at the rollout temperature and the gradient. Each update publishes a checkpoint, the next cohort consumes that published adapter, and after the last cycle an independent `entries/vllminfer.py` process loads the final checkpoint.
 
 ## Scoring and probes
 

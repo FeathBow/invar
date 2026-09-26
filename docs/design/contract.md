@@ -50,7 +50,7 @@ Budgets and alphas are exact rationals. The standard of evidence is `finite_doma
 
 A unit's loss is the mean loss of its members, and each metric is the mean over units, so every unit weighs the same and repeats add no samples. The metrics are the reference loss, the candidate loss and their difference.
 
-For a population standard, the reference loss is bounded at `reference_alpha` and the loss increase at `regression_alpha`, whose sum must be at most `family_alpha`. With `n` units, range `R` (1 for a loss, 2 for an increase) and alpha `a`, the empirical Bernstein width of Maurer and Pontil (2009, Theorem 4) is the square root of `2 V ln(2/a) / n` plus `7 R ln(2/a) / (3(n - 1))`, where `V` is the sample variance. The upper bound is the mean plus the width, capped at 1, and all arithmetic uses exact rational upper bounds. A bound above its ceiling gives Unknown, because the units are too few to decide.
+For a population standard, the reference loss is bounded at `reference_alpha` and the loss increase at `regression_alpha`, whose sum must be at most `family_alpha`. With `n` units, range `R` (1 for a loss, 2 for an increase) and alpha `a`, the empirical Bernstein width of Maurer and Pontil (2009, Theorem 4) is the square root of `2 V ln(2/a) / n` plus `7 R ln(2/a) / (3(n - 1))`, where `V` is the sample variance. The upper bound is the mean plus the width, capped at 1, and all arithmetic uses exact rational upper bounds. A bound above its ceiling gives Unknown: the current bound does not establish the requirement.
 
 ## Admission
 

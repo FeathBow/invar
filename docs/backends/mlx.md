@@ -35,8 +35,8 @@ The row independent profile fixes the shape every kernel sees in calls whose siz
 
 | Profile | Projection | LoRA | Attention | Learning projection |
 | --- | --- | --- | --- | --- |
-| `native-library-arithmetic/v1` (stock) | `nn.QuantizedLinear` | `LoRALinear` | `Qwen3NextAttention` | same |
-| `independent-native-rows/v5` (primary) | `RowLinear` | `ColumnLoRALinear` | `QueryAttention` | `nn.QuantizedLinear` |
+| `native-library-arithmetic/v4` (stock) | `nn.QuantizedLinear` | `LoRALinear` | `Qwen3NextAttention` | same |
+| `independent-native-rows/v8` (primary) | `RowLinear` | `ColumnLoRALinear` | `QueryAttention` | `nn.QuantizedLinear` |
 
 The stock profile runs the library kernels and serves as the ordinary native baseline. The primary profile has three parts.
 
@@ -64,9 +64,9 @@ Because the description comes from the installed modules, the two profiles share
 
 ## Learning
 
-`worker/mlx/step.py` and `worker/mlx/learning.py` follow the core's advantage and scalar objective contracts. For each update the worker checks the advantages, emits `loaded_learner`, evaluates proximal and reference probabilities, emits `consumed` and waits for permission. It then takes each trajectory in the declared order, computes current probabilities through the model's VJP, obtains the objective and reward cotangents from the shared scalar objective, and accumulates both gradients. One AdamW step follows, then the probabilities, gradients and successor checkpoint are written.
+`worker/mlx/step.py` and `worker/mlx/learning.py` follow the core's advantage and scalar objective contracts. For each update the worker checks the advantages, emits `loaded_learner`, emits `consumed` and waits for permission. The objective takes the proximal and current probabilities from the engine's behavior words and the reference probabilities from the words the engine scored under the reference adapter in the rollout, or the behavior words when the reference is the policy. The worker then takes each trajectory in the declared order, evaluates the learner graph at the rollout temperature for the linearized probabilities and the gradient, obtains the objective and reward cotangents from the shared scalar objective, and accumulates both gradients. One AdamW step follows, then the probabilities, gradients and successor checkpoint are written.
 
-With the primary profile, `Profile.learning` switches `RowLinear` back to `nn.QuantizedLinear` for the learning computations and restores it afterwards, including on failure. Each learning call carries one complete trajectory, so its row count is fixed by that trajectory. `worker/mlx/backward.py` retains every decoder layer's input and evaluates one layer's VJP at a time. The current probabilities entering the objective are the VJP's own forward values.
+With the primary profile, `learning` in `worker/mlx/training.py` switches `RowLinear` back to `nn.QuantizedLinear` for the learning computations and restores it afterwards, including on failure. Each learning call carries one complete trajectory, so its row count is fixed by that trajectory. `worker/mlx/backward.py` retains every decoder layer's input and evaluates one layer's VJP at a time. The VJP's own forward values are the linearized probabilities that `learner_engine` compares with behavior.
 
 ## Checkpoints and RNG state
 
