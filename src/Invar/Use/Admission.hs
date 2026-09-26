@@ -55,6 +55,7 @@ data AdmissionProblem
     | UnresolvedClaim Evidence.Claim
     | UnsupportedPremise Evidence.Obligation
     | MissingReliance Evidence.Obligation
+    | TransferredViolation
     deriving (Eq, Show)
 
 admit :: C.UseContract -> Finding -> Decision
@@ -62,7 +63,9 @@ admit contract (Finding target result)
     | not (null problems) = Undetermined problems
     | otherwise = case result of
         Evidence.Unknown reason -> Undetermined [FindingUnknown reason]
-        Evidence.Refute counterexample -> Rejected counterexample
+        Evidence.Refute counterexample
+            | transferred contract target -> Undetermined [TransferredViolation]
+            | otherwise -> Rejected counterexample
         Evidence.Accept certificate
             | Evidence.conclusion certificate /= goal target -> Undetermined [FindingConclusionMismatch]
             | Evidence.Hypothesis `elem` Evidence.methods certificate -> Undetermined [AssumedEvidence]
@@ -187,6 +190,18 @@ supported contract (Evidence.External premise) = case C.premiseKind premise of
         Nothing -> Left (MissingReliance premise)
         Just justification -> Right (ReliedOn premise justification)
 supported _ premise = Left (UnresolvedClaim premise)
+
+transferred :: C.UseContract -> U.Claim -> Bool
+transferred contract target =
+    or
+        [ Numerical.sourcePolicy source /= C.implementation contract side
+        | sample <- toList samples
+        , (side, source) <-
+            [(Numerical.Reference, U.source Numerical.Reference sample), (Numerical.Candidate, U.source Numerical.Candidate sample)]
+                ++ [(Numerical.Candidate, source) | observed <- U.invariance sample, let Numerical.Scope _ previous next _ _ _ = Numerical.scope observed, source <- [previous, next]]
+        ]
+  where
+    U.Scope _ _ _ samples = U.claimScope target
 
 admissible :: C.UseContract -> Numerical.Side -> Policy.Description -> Bool
 admissible contract side actual = actual == C.implementation contract side || any declared (C.transfers contract)

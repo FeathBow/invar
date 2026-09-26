@@ -126,6 +126,11 @@ numericalViolation = do
         requested = contract {U.criterion = criterion}
         result = U.admit requested (established requested observed)
     U.mean U.LossIncrease observed === Just (1 % 6)
+    let recorded = U.candidateImplementation requested
+    current <- evalEither (Policy.describe (Policy.model recorded, Policy.revision recorded) (Policy.adapter recorded, Policy.tokenizer recorded, Policy.base recorded, replicate 64 '1'))
+    let carried = requested {U.referenceImplementation = current, U.candidateImplementation = current, U.transfers = [U.Transfer side recorded "Reviewed diff" | side <- [N.Reference, N.Candidate]]}
+    forM_ [carried, carried {U.reliance = filter ((/= U.ImplementationPreservation) . U.premise) (U.reliance carried)}] $ \declared ->
+        U.admit declared (established declared observed) === U.Undetermined [U.TransferredViolation]
     case result of
         U.Rejected counterexample -> case E.witness counterexample of
             E.NumericalWitness measured -> field "witness" (field "finding" (U.describeDecision result)) === N.describe measured
