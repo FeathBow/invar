@@ -53,7 +53,7 @@ shared = do
 
 finite :: PropertyT IO ()
 finite = case Plan.estimate (Just (requirement U.FiniteDomain (3 % 10) (1 % 20))) assumptions of
-    Plan.NotApplicable _ -> success
+    Plan.NotApplicable "finite_domain" _ -> success
     other -> annotateShow other >> failure
 
 widthOnly :: PropertyT IO ()

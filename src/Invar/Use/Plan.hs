@@ -41,17 +41,17 @@ data Bound = Bound
     }
     deriving (Eq, Show)
 
-data PlanEstimate = NotApplicable String | Estimated Standard Natural [Bound]
+data PlanEstimate = NotApplicable String String | Estimated Standard Natural [Bound]
     deriving (Eq, Show)
 
 searchLimit :: Natural
 searchLimit = 10000000
 
 estimate :: Maybe Contract.LossRequirement -> Assumptions -> PlanEstimate
-estimate Nothing _ = NotApplicable "the contract has no loss requirement"
+estimate Nothing _ = NotApplicable "none" "the contract has no loss requirement"
 estimate (Just requirement) assumptions = case Contract.standard requirement of
-    Contract.FiniteDomain -> NotApplicable "the decision is the exact mean over the declared units"
-    Contract.ConditionalDerivation _ -> NotApplicable "a conditional derivation is always Unknown"
+    Contract.FiniteDomain -> NotApplicable "finite_domain" "the decision is the exact mean over the declared units"
+    Contract.ConditionalDerivation _ -> NotApplicable "conditional_derivation" "a conditional derivation is always Unknown"
     Contract.HoeffdingPopulation population -> bounds Hoeffding population
     Contract.EmpiricalBernsteinPopulation population -> bounds Bernstein population
   where

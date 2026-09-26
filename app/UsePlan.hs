@@ -106,7 +106,7 @@ readRational text = case break (== '/') text of
     valid part = not (null part) && all isDigit part
 
 encodeEstimate :: Plan.PlanEstimate -> [Pair]
-encodeEstimate (Plan.NotApplicable reason) = ["standard" .= ("not applicable" :: String), "bound" .= ("not applicable: " ++ reason)]
+encodeEstimate (Plan.NotApplicable standard reason) = ["standard" .= standard, "bound" .= ("not applicable: " ++ reason)]
 encodeEstimate (Plan.Estimated standard count bounds) =
     [ "standard" .= (case standard of Plan.Hoeffding -> "population_hoeffding"; Plan.Bernstein -> "population_bernstein_mp2009" :: String)
     , "units" .= count
