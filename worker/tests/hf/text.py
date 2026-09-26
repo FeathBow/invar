@@ -16,7 +16,8 @@ from worker.hf.tensors import assert_equal
 from worker.hf.step import file_digest, restore_inputs
 from worker.tests.hf.step import prepared
 from worker.hf.operation import digest
-from worker.tokenization import validate
+from worker.cohort import validate
+from worker.tokenization import prompt
 
 
 class TextCheckpointTests(unittest.TestCase):
@@ -35,7 +36,7 @@ class TextCheckpointTests(unittest.TestCase):
     def test_unused_vocabulary_change_cannot_consume_the_original_update(self):
         _, _, request, options = prepared()
         options.tokenizer.add_tokens(["unused_added_word"])
-        validate(options.tokenizer, request.samples)
+        validate(options.tokenizer, request.samples, encode=prompt)
         self.assertNotEqual(digest(options.tokenizer), request.tokenizer)
         self.rejected(request, options, "requested tokenizer identity")
 
@@ -44,7 +45,7 @@ class TextCheckpointTests(unittest.TestCase):
         saved = torch.load(options.checkpoint / "learner.pt", weights_only=True)
         self.assertEqual(saved["tokenizer"], request.tokenizer)
         options.tokenizer.add_tokens(["unused_added_word"])
-        validate(options.tokenizer, request.samples)
+        validate(options.tokenizer, request.samples, encode=prompt)
         changed = replace(request, tokenizer=digest(options.tokenizer))
         self.rejected(changed, options, "requested tokenizer identity")
 

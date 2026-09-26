@@ -13,7 +13,8 @@ from transformers import PreTrainedTokenizerFast
 
 from worker.cohort import decode
 from worker.tests.hf.cohort import request
-from worker.tokenization import prompt, validate
+from worker.cohort import validate
+from worker.tokenization import prompt
 from worker.hf.operation import digest
 
 WORDS = ("[UNK]", "[EOS]", "Compute", "the", "answer", ".", "####", "437", "438", "assistant", "think")
@@ -53,7 +54,7 @@ class TokenizationTests(unittest.TestCase):
                              "limit": truncated["limit"] - 1}]
         parsed = decode(value)
         rng = torch.get_rng_state()
-        validate(tokenizer, parsed.samples)
+        validate(tokenizer, parsed.samples, encode=prompt)
         self.assertEqual(prompt(tokenizer, completed["prompt"])[0].tolist(), [2, 3, 4, 5, 9])
         self.assertTrue(torch.equal(rng, torch.get_rng_state()))
         self.assertEqual(parsed, decode(value))
@@ -72,18 +73,18 @@ class TokenizationTests(unittest.TestCase):
             with self.subTest(changed=changed):
                 parsed = decode({**value, "samples": [{**original, **changed}, value["samples"][1]]})
                 with self.assertRaisesRegex(ValueError, "loaded tokenizer|after EOS"):
-                    validate(tokenizer, parsed.samples)
+                    validate(tokenizer, parsed.samples, encode=prompt)
 
     def test_chat_template_and_eos_changes_are_observable(self):
         tokenizer = make_tokenizer()
         parsed = decode(admitted_request(tokenizer))
         tokenizer.chat_template = "{{ messages[0]['content'] }}"
         with self.assertRaisesRegex(ValueError, "prompt tokens"):
-            validate(tokenizer, parsed.samples)
+            validate(tokenizer, parsed.samples, encode=prompt)
         tokenizer.chat_template = TEMPLATE
         tokenizer.eos_token = "437"
         with self.assertRaisesRegex(ValueError, "after EOS"):
-            validate(tokenizer, parsed.samples)
+            validate(tokenizer, parsed.samples, encode=prompt)
 
 
 if __name__ == "__main__":

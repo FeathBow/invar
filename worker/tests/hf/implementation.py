@@ -41,6 +41,29 @@ def package_modules(root):
             for path in root.rglob("*.py") if "tests" not in path.relative_to(root).parts and path.stem != "__init__"}
 
 
+def defined(path):
+    return {node.name for node in ast.parse(path.read_text()).body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}
+
+
+def referenced(paths):
+    names = set()
+    for path in paths:
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.Name):
+                names.add(node.id)
+            elif isinstance(node, ast.Attribute):
+                names.add(node.attr)
+            elif isinstance(node, ast.alias):
+                names.add(node.name.rsplit(".", 1)[-1])
+    return names
+
+
+def crossed(root, manifest, closures):
+    used = {role: referenced(root / name for name in closures[role] - set(manifest.IRRELEVANT[role])) for role in closures}
+    return {(role, name, symbol) for role, bound in manifest.ROLES.items() for name in bound for symbol in defined(root / name)
+            if symbol not in used[role] and any(symbol in names for other, names in used.items() if other != role)}
+
+
 def copied_worker():
     original = Path(__file__).resolve().parents[2]
     copied = Path(tempfile.mkdtemp(prefix="invar-implementation-")) / "worker"
@@ -112,6 +135,10 @@ class ImplementationTests(unittest.TestCase):
                 excluded = set(implementation.NEUTRAL) | set(implementation.IRRELEVANT[role])
                 self.assertEqual(closure(role) - excluded, set(bound))
                 self.assertFalse(set(bound) & excluded)
+
+    def test_bound_files_hold_no_code_used_only_by_the_other_role(self):
+        root = Path(__file__).resolve().parents[2]
+        self.assertEqual(crossed(root, implementation, {role: closure(role) for role in implementation.ROLES}), set())
 
     def test_learner_only_changes_keep_the_inference_identity(self):
         root = copied_worker()

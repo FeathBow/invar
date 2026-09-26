@@ -20,6 +20,7 @@ from worker.mlx import rollout as mlx_rollout
 from worker.mlx import tensors as mlx_tensors
 from worker.tests.mlx.rollout import model, WORDS
 from worker.trajectory import Request, Trajectory
+from worker.mlx import training as mlx_training
 
 TOKEN_COUNT = 37
 PROMPT_COUNT = 4
@@ -45,13 +46,13 @@ class BackwardTests(unittest.TestCase):
                                 prompt_length=PROMPT_COUNT, behavior=mx.zeros((request.limit,)),
                                 text="", truncated=True)
         cotangent = mx.linspace(-0.2, 0.3, request.limit)
-        with mlx_numerics.PRIMARY.learning(numerical):
+        with mlx_training.learning(mlx_numerics.PRIMARY, numerical):
             self.compare(numerical, trajectory, cotangent=cotangent, parameters=parameters)
         self.assertTrue(mlx_tensors.equal(mlx_adapter.state(numerical), parameters))
 
     def compare(self, numerical, trajectory, *, cotangent, parameters):
-        reference, whole = mlx_learning.linearize(numerical, trajectory, evaluate=mlx_rollout.logprobs)
-        current, layered = mlx_backward.linearize(numerical, trajectory, evaluate=mlx_rollout.logprobs)
+        reference, whole = mlx_learning.linearize(numerical, trajectory, evaluate=mlx_training.logprobs)
+        current, layered = mlx_backward.linearize(numerical, trajectory, evaluate=mlx_training.logprobs)
         self.assertEqual(mlx_probability.words(current), mlx_probability.words(reference))
         expected = whole(cotangent=cotangent)
         actual = layered(cotangent=cotangent)

@@ -28,11 +28,12 @@ def restore_inputs(model, request, options, *, tokenizer):
     from worker.hf.model import adapter_state
     from worker.hf.tensors import digest
     from worker.hf.checkpoint import restore_state
-    from worker.tokenization import validate
+    from worker.cohort import validate
+    from worker.tokenization import prompt
     from worker.hf.operation import verify
 
     tokenizer_digest = verify(tokenizer, request.tokenizer)
-    validate(tokenizer, request.samples)
+    validate(tokenizer, request.samples, encode=prompt)
     policy = read_adapter(options.checkpoint / "adapter.safetensors", request.policy)
     reference = read_adapter(options.reference, request.reference)
     schema = adapter_state(model)

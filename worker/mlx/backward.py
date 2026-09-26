@@ -6,7 +6,7 @@ from mlx_lm.models.base import create_attention_mask, create_ssm_mask
 
 from worker.mlx.adapter import state as adapter
 from worker.mlx.words import words
-from worker.mlx.rollout import selected_logprobs
+from worker.mlx.training import selected_logprobs
 from worker.mlx import tensors as mlx_tensors
 from worker.mlx import recurrentvjp as mlx_recurrent_backward
 

@@ -21,13 +21,15 @@ from worker.mlx import inference as mlx_inference
 from worker.mlx.crossscore import score
 from worker.mlx import tensors as mlx_tensors
 from worker.mlx.probability import words
-from worker.mlx.rollout import generate, logprobs
+from worker.mlx.rollout import generate
+from worker.mlx.training import logprobs
 from worker.record import ROLES
 from worker.scalar import Profile
 from worker.tests.mlx.crossscore import SAMPLING, loaded
 from worker.batch import Reference
 from worker.scoring import TokenPath
 from worker.trajectory import Request
+from worker.mlx import training as mlx_training
 
 SCALE = 0.05
 LONG = 12
@@ -61,7 +63,7 @@ class ConsistencyTests(unittest.TestCase):
                       profile=Profile(epsilon=0.2, penalty=0.04))
         learner = Learner(model=self.runtime.model, optimizer=optim.AdamW(learning_rate=0.0001), evaluate=logprobs)
         try:
-            with mlx_numerics.PRIMARY.learning(self.runtime.model):
+            with mlx_training.learning(mlx_numerics.PRIMARY, self.runtime.model):
                 result = mlx_learning.update(learner, batch, linearize=mlx_backward.linearize)
         finally:
             mlx_adapter.install(self.runtime.model, self.policy)

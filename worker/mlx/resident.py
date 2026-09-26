@@ -34,7 +34,7 @@ def inference(loaded, learner, group):
 
 def released(learner):
     if learner is not None:
-        mlx_learner.release(learner)
+        mlx_learner.evict(learner)
     else:
         gc.collect()
         mx.clear_cache()

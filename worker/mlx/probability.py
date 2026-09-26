@@ -2,7 +2,11 @@ import mlx.core as mx
 
 from worker import record as record
 from worker import scalar
-from worker.mlx.words import tensor, words
+from worker.mlx.words import words
+
+
+def tensor(encoded):
+    return mx.array(encoded, dtype=mx.uint32).view(mx.float32)
 
 
 def checked(sample, roles, active, *, advantage, count):

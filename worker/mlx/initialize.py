@@ -8,7 +8,7 @@ from worker.cohort import Optimizer, identity
 from worker.logical import Learner
 from worker.mlx import model as mlx_model
 from worker.mlx.metrics import measure
-from worker.mlx.rollout import logprobs
+from worker.mlx.training import logprobs
 from worker.mlx import step as mlx_step
 from worker.mlx import tokenization as mlx_tokenization
 from worker.resident import Transcript

@@ -1,4 +1,3 @@
-from contextlib import contextmanager
 from dataclasses import dataclass
 from importlib.metadata import version
 
@@ -9,8 +8,6 @@ from mlx_lm.tuner.lora import LoRALinear
 from worker.mlx import cache as mlx_cache
 from worker.mlx.attention import QUERY_TOKENS, SPLIT_QUERIES, QueryAttention
 from worker.mlx.projection import BITS, GROUP_SIZE, MINIMUM_COLUMNS, MODE, PHYSICAL_ROWS, SPLIT_ROWS, ColumnLoRALinear, RowLinear
-from worker.implementation import LEARNING
-from worker.mlx import implementation as mlx_implementation
 from worker.mlx import recurrence as mlx_recurrence
 
 
@@ -28,7 +25,6 @@ class Profile:
     linear: type
     lora: type
     attention: type
-    learning_linear: type | None = None
 
     def families(self):
         return ((nn.QuantizedLinear, self.linear), (LoRALinear, self.lora), (Qwen3NextAttention, self.attention))
@@ -47,25 +43,7 @@ class Profile:
         mlx_cache.install(model)
         mlx_recurrence.install(model)
 
-    @contextmanager
-    def learning(self, model):
-        if self.learning_linear is None:
-            yield
-            return
-        modules = tuple(inventory(model, nn.QuantizedLinear).values())
-        if not modules or any(type(module) is not self.linear for module in modules):
-            raise TypeError("Native learning requires its declared inference projection inventory")
-        try:
-            for module in modules:
-                object.__setattr__(module, "__class__", self.learning_linear)
-            yield
-            if any(type(module) is not self.learning_linear for module in modules):
-                raise TypeError("Actual native learning projections changed inside their owned operation")
-        finally:
-            for module in modules:
-                object.__setattr__(module, "__class__", self.linear)
-
-    def observe(self, model, role):
+    def observe(self, model):
         if type(model) is not mlx_cache.CachedModel:
             raise TypeError("Native numerical materialization differs from its declared cache model")
         mlx_recurrence.verify(model)
@@ -82,18 +60,7 @@ class Profile:
         expected = [mlx_cache.BoundedArraysCache if layer.is_linear else mlx_cache.TypedKVCache for layer in model.layers]
         if [type(cache) for cache in caches] != expected:
             raise TypeError("Actual native cache inventory differs from its declared layer roles")
-        learning = {} if role != LEARNING else {
-            "probabilities": {"proximal": "behavior words of the request policy's own rollout",
-                              "reference": "engine forced-path scoring inside the rollout transaction",
-                              "current": "proximal at the linearization point",
-                              "linearized": "learner graph at the rollout temperature", "temperature": "rollout request"},
-            **({} if self.learning_linear is None else {
-                "learning_projection": {"module": qualified(self.learning_linear),
-                                        "schedule": "one complete logical trajectory per native projection",
-                                        "roles": ["objective_vjp", "reward_vjp"],
-                                        "lifetime": "owned numerical operation; inference classes restored before state observation"}})}
-        return {"format": "invar-mlx-numerics/v2", "role": role, "name": self.name, "modules": observed, **learning,
-                "implementation": mlx_implementation.current(role),
+        return {"format": "invar-mlx-numerics/v3", "name": self.name, "modules": observed,
                 "projection_rows": PHYSICAL_ROWS if self.linear is RowLinear else None,
                 "projection_row_padding": "zero rows to the fixed block; discard padded outputs" if self.linear is RowLinear else None,
                 "lora_minimum_columns": MINIMUM_COLUMNS if self.lora is ColumnLoRALinear else None,
@@ -110,5 +77,5 @@ class Profile:
 
 
 PRIMARY = Profile(name="independent-native-rows/v8", linear=RowLinear, lora=ColumnLoRALinear,
-                  attention=QueryAttention, learning_linear=nn.QuantizedLinear)
+                  attention=QueryAttention)
 NATIVE = Profile(name="native-library-arithmetic/v4", linear=nn.QuantizedLinear, lora=LoRALinear, attention=Qwen3NextAttention)

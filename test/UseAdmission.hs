@@ -360,6 +360,10 @@ transfer = do
     admitted <- accepted (admitting carried)
     let relied = [U.premise (U.supporting condition) | condition <- U.conditions admitted]
     length (filter (== U.ImplementationPreservation) relied) === 2
+    let preserved result = [E.binding obligation | condition <- U.conditions result, let obligation = U.obligation condition, U.premise (U.supporting condition) == U.ImplementationPreservation]
+        narrower = carried {U.criterion = (U.criterion carried) {U.numericalRequirements = []}}
+    otherAdmission <- accepted (admitting narrower)
+    assert (all (`notElem` preserved otherAdmission) (preserved admitted))
     length (U.conditions admitted) === 59
     U.admissionScope admitted === U.scope observed
     uncovered <- unknown (admitting carried {U.reliance = filter ((/= U.ImplementationPreservation) . U.premise) (U.reliance carried)})

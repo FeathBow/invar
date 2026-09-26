@@ -11,7 +11,7 @@ from worker.mlx import backward as mlx_backward
 from worker.mlx import checkpoint as mlx_checkpoint
 from worker.mlx import learning as mlx_learning
 from worker.mlx import model as mlx_model
-from worker.mlx.rollout import logprobs
+from worker.mlx.training import learning, logprobs
 from worker.mlx import state as mlx_state
 from worker.mlx import tensors as mlx_tensors
 from worker.mlx import tokenization as mlx_tokenization
@@ -22,6 +22,7 @@ from worker.implementation import file_digest
 from worker.trajectory import Request, Trajectory
 from worker.update import consumed, snapshot
 from worker.implementation import LEARNING
+from worker.cohort import validate
 
 
 def optimizer(settings):
@@ -30,7 +31,7 @@ def optimizer(settings):
 
 
 def restore(runtime, request, paths):
-    mlx_tokenization.validate(runtime.tokenizer, request.samples)
+    validate(runtime.tokenizer, request.samples, encode=mlx_tokenization.prompt)
     policy = mlx_tensors.policy(paths.checkpoint / "adapter.safetensors", request.policy)
     reference = mlx_tensors.policy(paths.reference, request.reference)
     actual, encoded = snapshot(paths.checkpoint / "learner.pt")
@@ -92,7 +93,7 @@ def save(runtime, learner, output, *, expected=None):
 
 def execute(runtime, learner, call, output, *, admitted, actual, measure):
     request = call.request
-    with runtime.numerics.learning(learner.model):
+    with learning(runtime.numerics, learner.model):
         result = measure("reward_update", partial(mlx_learning.update, learner, admitted, linearize=mlx_backward.linearize))
     if result.summary["before"] != request.policy:
         raise RuntimeError("Native update input differs from the declared policy")

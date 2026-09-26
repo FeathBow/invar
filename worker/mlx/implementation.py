@@ -11,13 +11,14 @@ SHARED = {
     "mlx/recurrence.py": "segmented recurrence bound into the native gated delta call",
     "mlx/cache.py": "KV and recurrent caches",
     "mlx/adapter.py": "adapter installation and LoRA layers",
-    "mlx/rollout.py": "tempered distribution shared by the sampler and the learner",
+    "mlx/temperature.py": "tempered distribution shared by the sampler and the learner",
     "mlx/words.py": "FP32 word representation",
 }
 ROLES = {
     INFERENCE: {
         **SHARED,
         "mlx/inference.py": "execution order, sampler randomness and reference scoring",
+        "mlx/rollout.py": "sampling loop and batch generation",
         "mlx/crossscore.py": "forced-path scoring",
         "mlx/distribution.py": "full-vocabulary probe capture",
         "mlx/score.py": "scoring execution",
@@ -32,6 +33,7 @@ ROLES = {
     LEARNING: {
         **SHARED,
         "mlx/learning.py": "learner graph linearization and gradient accumulation",
+        "mlx/training.py": "learner log probabilities, the learning projection and its description",
         "mlx/backward.py": "layerwise vector-Jacobian products",
         "mlx/recurrentvjp.py": "recurrent vector-Jacobian products",
         "mlx/probability.py": "cotangent application",
@@ -77,9 +79,12 @@ UNREACHED = {
                  "hf/assembly.py", "hf/policy.py")
 }
 IRRELEVANT = {
-    INFERENCE: {},
+    INFERENCE: {
+        "mlx/training.py": "learner log probabilities and the learning description, used only for the learning role",
+    },
     LEARNING: {
         "mlx/inference.py": "inference execution, used by the learner process only for rollouts",
+        "mlx/rollout.py": "sampling loop and batch generation; the learner uses mlx/temperature.py",
         "mlx/crossscore.py": "forced-path scoring, inference only",
         "mlx/distribution.py": "probe capture, inference only",
         "mlx/tokenization.py": "tokenizer identity check only; the learner consumes token ids",

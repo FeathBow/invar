@@ -19,6 +19,3 @@ def digest(tokenizer):
 def verify(tokenizer, expected):
     return operation.verify(tokenizer, expected, prompt_settings=PROMPT_SETTINGS)
 
-
-def validate(tokenizer, samples):
-    tokenization.validate(tokenizer, samples, encode=prompt)

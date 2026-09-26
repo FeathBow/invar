@@ -206,7 +206,7 @@ contractPremises contract selected =
            , let Numerical.Scope _ previous next _ _ _ = Numerical.scope observed
                  (name, specification, observation) = C.premiseDescription C.ScheduleVariation
            ]
-        ++ [ Evidence.Obligation (name ++ "/" ++ show (C.transferSide transfer)) specification observation domain (digest (transfer, C.implementation contract (C.transferSide transfer)))
+        ++ [ Evidence.Obligation (name ++ "/" ++ show (C.transferSide transfer)) specification observation domain (digest (transfer, C.implementation contract (C.transferSide transfer), C.criterion contract, C.declaredDomain contract, C.declaredMeasurement contract))
            | let (name, specification, observation) = C.premiseDescription C.ImplementationPreservation
            , transfer <- C.transfers contract
            ]

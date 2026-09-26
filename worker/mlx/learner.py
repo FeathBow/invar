@@ -13,6 +13,7 @@ from worker.mlx import tensors as mlx_tensors
 from worker.mlx import tokenization as mlx_tokenization
 from worker.update import snapshot
 from worker.implementation import LEARNING
+from worker.cohort import validate
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -78,7 +79,7 @@ def activate(runtime, request, paths):
     expected = {"adapter": request.policy, **{name: getattr(request, name) for name in ("base", "assembly", "tokenizer")}}
     if actual != expected:
         raise ValueError("Native resident materialization differs from its requested update")
-    mlx_tokenization.validate(runtime.loaded.tokenizer, request.samples)
+    validate(runtime.loaded.tokenizer, request.samples, encode=mlx_tokenization.prompt)
     return runtime
 
 
@@ -94,7 +95,7 @@ def execute(runtime, call, output, *, measure, approve, emit):
     return replace(runtime, saved=saved)
 
 
-def release(runtime):
+def evict(runtime):
     gc.collect()
     mx.clear_cache()
     verify(runtime)

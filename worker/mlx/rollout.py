@@ -7,6 +7,7 @@ import mlx.nn as nn
 from mlx_lm.generate import BatchGenerator
 
 from worker.mlx.projection import SPLIT_ROWS, RowLinear
+from worker.mlx.temperature import tempered
 from worker.mlx.tokenization import prompt
 from worker.tokenization import decode
 from worker.trajectory import Trajectory
@@ -50,12 +51,6 @@ class Sampler:
 
     def consume(self, token):
         return consumed(self.pending, token, zero_support=False)
-
-
-def tempered(logprobs, temperature):
-    weights = mx.softmax(logprobs / temperature, axis=-1, precise=True)
-    total = mx.sum(weights, axis=-1, keepdims=True)
-    return weights / total, weights, total
 
 
 def consumed(pending, token, *, zero_support):
@@ -128,14 +123,3 @@ def collect(engine, uids, inputs, *, tokenizer):
                 del pending[response.uid]
     return tuple(completed[uid] for uid in uids)
 
-
-def logprobs(model, trajectory):
-    return selected_logprobs(model(trajectory.tokens[:, :-1]), trajectory)
-
-
-def selected_logprobs(logits, trajectory):
-    tokens = trajectory.tokens
-    response = tokens[:, trajectory.prompt_length:]
-    logits = logits[:, trajectory.prompt_length - 1:, :].astype(mx.float32)
-    distribution = tempered(logits - mx.logsumexp(logits, axis=-1, keepdims=True), trajectory.request.temperature)[0]
-    return mx.log(mx.take_along_axis(distribution, response[:, :, None], axis=-1)).reshape(-1)

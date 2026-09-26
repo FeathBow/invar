@@ -3,7 +3,7 @@ import unittest
 
 from worker.implementation import INFERENCE, LEARNING
 from worker.mlx import implementation
-from worker.tests.hf.implementation import copied_worker, local_imports, mutated, package_modules
+from worker.tests.hf.implementation import copied_worker, crossed, local_imports, mutated, package_modules
 
 ENTRY_POINTS = {INFERENCE: ("worker.mlx.infer", "worker.mlx.batch", "worker.mlx.scoring", "worker.mlx.cohort"),
                 LEARNING: ("worker.mlx.initialize", "worker.mlx.learner", "worker.mlx.step")}
@@ -27,6 +27,10 @@ class ManifestTests(unittest.TestCase):
                 excluded = set(implementation.NEUTRAL) | set(implementation.UNREACHED) | set(implementation.IRRELEVANT[role])
                 self.assertEqual(closure(role) - excluded, set(bound))
                 self.assertFalse(set(bound) & excluded)
+
+    def test_bound_files_hold_no_code_used_only_by_the_other_role(self):
+        root = Path(__file__).resolve().parents[2]
+        self.assertEqual(crossed(root, implementation, {role: closure(role) for role in implementation.ROLES}), set())
 
     def test_learner_only_changes_keep_the_inference_identity(self):
         root = copied_worker()

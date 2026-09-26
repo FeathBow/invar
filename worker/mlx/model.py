@@ -16,7 +16,9 @@ from worker.mlx import recurrence as mlx_recurrence
 from worker.mlx import tensors as mlx_tensors
 from worker.mlx import tokenization as mlx_tokenization
 from worker.hf import operation
-from worker.implementation import INFERENCE
+from worker.implementation import INFERENCE, LEARNING
+from worker.mlx import implementation as mlx_implementation
+from worker.mlx import training as mlx_training
 
 MODEL = "mlx-community/Qwen3.8-27B-4bit"
 REVISION = "3e6447f082e89cc7f0bc6e5441afd38dfce760ff"
@@ -87,7 +89,7 @@ def load(cache, *, scope, configuration, measure, emit, seed=DEFAULT_SEED, initi
             activate(loaded, initial[0], expected=initial[1])
         reported = profile(configuration, numerics=numerics.name)
         if identified:
-            reported["inference"] = mlx_adapter.images(model, config, numerics=numerics.observe(model, INFERENCE))
+            reported["inference"] = mlx_adapter.images(model, config, numerics=described(loaded, INFERENCE))
         emit("profile", reported)
         return loaded
 
@@ -116,15 +118,21 @@ def profile(configuration, *, numerics):
                        "optimizer_bias_correction": True}}
 
 
+def described(loaded, role):
+    observed = loaded.numerics.observe(loaded.model)
+    learning = mlx_training.description(loaded.numerics) if role == LEARNING else {}
+    return {**observed, **learning, "role": role, "implementation": mlx_implementation.current(role)}
+
+
 def identities(loaded, role):
-    numerical = loaded.numerics.observe(loaded.model, role)
+    numerical = described(loaded, role)
     return {"adapter": mlx_tensors.digest(mlx_adapter.state(loaded.model)),
             "tokenizer": mlx_tokenization.digest(loaded.tokenizer),
             **mlx_adapter.images(loaded.model, loaded.config, numerics=numerical)}
 
 
 def assembly(loaded, role):
-    return mlx_adapter.assembled(loaded.model, numerics=loaded.numerics.observe(loaded.model, role))
+    return mlx_adapter.assembled(loaded.model, numerics=described(loaded, role))
 
 
 def verify(loaded, expected, role):
