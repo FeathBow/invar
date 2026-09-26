@@ -32,7 +32,7 @@ An external obligation records something the core cannot check from the bytes it
 
 ## Use contracts
 
-A use contract is a JSON document with format `invar-use-contract`. It has six parts.
+A use contract is a JSON document with format `invar-use-contract/v2`. It has seven parts.
 
 - The domain declares the input population before anything runs: for each input, its cohort and key, its aggregation unit, the prompt, token limit, temperature, seed and named parameters, plus the provenance of the inputs.
 - The measurement is a semantic program whose sources are bound to observed result fields (such as `Response` or `Truncated`) or to input parameters. It emits one number in a declared range, which the orientation maps onto a loss in `[0, 1]`.
@@ -40,6 +40,7 @@ A use contract is a JSON document with format `invar-use-contract`. It has six p
 - The criterion holds numerical requirements (relations between reference and candidate), a loss requirement (ceilings on the mean reference loss and the mean loss increase under a standard of evidence), and invariance requirements (relations between repeated candidate executions of one input, with the number of executions).
 - The protocols describe how the contract was frozen, acceptance data isolated and selection controlled.
 - The reliance list names, for each premise kind, an authority and the SHA-256 digest of its basis.
+- The transfers list declares, for the reference or the candidate side, a previous implementation whose recorded evidence may stand for the one the contract names. The two descriptions may differ only in the model assembly, and each transfer states the relation it preserves, for example that the changed files do not alter numerical execution. Contracts in the original format `invar-use-contract` have no transfers.
 
 Budgets and alphas are exact rationals. The standard of evidence is `finite_domain` (the exact mean over the declared units), `population_hoeffding` or `population_bernstein_mp2009` (an upper confidence bound for a named population), or `conditional_derivation`, which always yields Unknown.
 
@@ -57,8 +58,10 @@ For a population standard, the reference loss is bounded at `reference_alpha` an
 
 1. `Invar.Use.Finding.establish` builds one evidence graph whose root is the conjunction of every requirement: the two loss claims, one numerical claim for each input and requirement, and one invariance claim for each repeated pair.
 2. `Evidence.check` evaluates the graph.
-3. `Invar.Use.Admission.admit` validates the contract, matches it against the observation, and adds the contract's own premises, including `ContractFrozen`, `AcceptanceIsolation` and one `ScheduleVariation` premise for each repeated execution, which states that the repeats ran under different schedules.
+3. `Invar.Use.Admission.admit` validates the contract, matches it against the observation, and adds the contract's own premises, including `ContractFrozen`, `AcceptanceIsolation`, one `ScheduleVariation` premise for each repeated execution, which states that the repeats ran under different schedules, and one `ImplementationPreservation` premise for each transfer.
 4. Every remaining assumption must be an external obligation whose premise kind the contract's reliance list names.
+
+A transfer does not rewrite evidence. The finding still describes the implementation that ran, admission accepts it only on the declared side, and the preservation premise needs reliance like any other. When a change leaves the model assembly unchanged, no transfer is needed, because the recorded description already equals the named one.
 
 The decision status is `admitted_under_declared_reliance`, `observed_violation` or `unknown`. An admission lists the methods used and every remaining condition with the authority and basis digest the contract declared for it. A violation carries its witness, and an unknown decision lists reasons such as `MissingReliance`.
 
