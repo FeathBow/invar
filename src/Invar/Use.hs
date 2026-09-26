@@ -25,6 +25,7 @@ module Invar.Use (
     Premise (..),
     Reliance (..),
     UseContract (..),
+    Transfer (..),
     Decision (..),
     Admission,
     AdmissionProblem (..),
@@ -66,7 +67,7 @@ import Invar.Spec.Measurement qualified as Measurement
 import Invar.Spec.Use (Claim (..), Confidence (..), Key (..), Metric (..), Observed, Problem (..), Scope, ScopeId, Unit (..), confidence, mean, scope, scopeId, units)
 import Invar.Spec.Use qualified as U
 import Invar.Use.Admission (Admission, AdmissionProblem (..), Decision (..), ReliedOn (..), admissionContract, admissionScope, admit, conditions, evidence)
-import Invar.Use.Contract (Budget (..), Criterion (..), InvarianceRequirement (..), LossRequirement (..), NumericalRequirement (..), Population (..), Premise (..), Reliance (..), Standard (..), UseContract (..))
+import Invar.Use.Contract (Budget (..), Criterion (..), InvarianceRequirement (..), LossRequirement (..), NumericalRequirement (..), Population (..), Premise (..), Reliance (..), Standard (..), Transfer (..), UseContract (..))
 import Invar.Use.Contract qualified as Contract
 import Invar.Use.Encoding (decodeContract, describeContract)
 import Invar.Use.Encoding qualified as Encoding

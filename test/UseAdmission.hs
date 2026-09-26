@@ -5,6 +5,7 @@ module UseAdmission (useAdmission, contractFor) where
 import Calls (change, field, request, wire)
 import Control.Monad (forM_)
 import Data.Aeson (Value (..), eitherDecodeStrict, encode, object, toJSON, (.=))
+import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString qualified as Bytes
 import Data.ByteString.Char8 qualified as Lines
 import Data.ByteString.Lazy qualified as Lazy
@@ -39,6 +40,7 @@ useAdmission =
         , ("repeated candidate executions certify only the declared invariance relation", once invariance)
         , ("a diverging repeat refutes invariance with that pair as the witness", once divergentRepeat)
         , ("invariance contracts need enough executions, exact relations and declared schedule variation", once invarianceContract)
+        , ("a declared transfer carries evidence only under a relied-on preservation premise", once transfer)
         ]
   where
     once = withTests 1 . property
@@ -63,6 +65,7 @@ contractFor supplied = do
             , U.isolationProtocol = "Fixture-only access declaration"
             , U.selectionProtocol = "One declared fixture comparison"
             , U.reliance = [U.Reliance kind "Test-only named authority" (Bytes.replicate 32 7) | kind <- [minBound .. maxBound]]
+            , U.transfers = []
             }
 
 established :: U.UseContract -> U.Observed -> U.Finding
@@ -337,3 +340,57 @@ mapLoss :: (U.LossRequirement -> U.LossRequirement) -> U.UseContract -> U.UseCon
 mapLoss transform contract = contract {U.criterion = selected {U.lossRequirement = transform <$> U.lossRequirement selected}}
   where
     selected = U.criterion contract
+
+transfer :: PropertyT IO ()
+transfer = do
+    supplied <- F.fixture F.trials
+    contract <- contractFor supplied
+    observed <- evalEither (U.observe supplied)
+    let recorded = U.candidateImplementation contract
+        described (adapter, assembly) = Policy.describe (Policy.model recorded, Policy.revision recorded) (adapter, Policy.tokenizer recorded, Policy.base recorded, assembly)
+    current <- evalEither (described (Policy.adapter recorded, replicate 64 '1'))
+    other <- evalEither (described (Policy.adapter recorded, replicate 64 '2'))
+    reweighted <- evalEither (described (replicate 64 'b', replicate 64 '1'))
+    assert (Policy.assembly recorded `notElem` [Policy.assembly current, Policy.assembly other])
+    let moved = contract {U.referenceImplementation = current, U.candidateImplementation = current}
+        carried = moved {U.transfers = [U.Transfer side recorded "Reviewed diff changes no numerical dependency" | side <- [N.Reference, N.Candidate]]}
+        admitting requested = U.admit requested (established requested observed)
+    mismatched <- unknown (admitting moved)
+    assert (not (null mismatched) && all isMismatch mismatched)
+    admitted <- accepted (admitting carried)
+    let relied = [U.premise (U.supporting condition) | condition <- U.conditions admitted]
+    length (filter (== U.ImplementationPreservation) relied) === 2
+    length (U.conditions admitted) === 59
+    U.admissionScope admitted === U.scope observed
+    uncovered <- unknown (admitting carried {U.reliance = filter ((/= U.ImplementationPreservation) . U.premise) (U.reliance carried)})
+    assert (not (null uncovered) && all isMissing uncovered)
+    forM_
+        [ carried {U.transfers = [U.Transfer N.Candidate current "Identical"]}
+        , carried {U.transfers = [U.Transfer N.Candidate recorded " "]}
+        , carried {U.referenceImplementation = reweighted, U.candidateImplementation = reweighted}
+        , carried {U.transfers = U.transfers carried ++ U.transfers carried}
+        ]
+        $ \changed -> do
+            reasons <- unknown (admitting changed)
+            assert (any isInvalid reasons)
+    unrelated <- unknown (admitting moved {U.transfers = [U.Transfer side other "Reviewed diff" | side <- [N.Reference, N.Candidate]]})
+    assert (any isMismatch unrelated)
+    oneSided <- unknown (admitting moved {U.transfers = [U.Transfer N.Candidate recorded "Reviewed diff"]})
+    assert (U.ImplementationMismatch N.Reference (fst (NonEmpty.head (U.numerical observed))) `elem` oneSided)
+    other' <- F.fixture [trial {F.answer = "#### 99"} | trial <- F.trials]
+    widened <- unknown (U.admit carried {U.declaredDomain = U.domain other'} (established carried observed))
+    assert (U.DomainMismatch `elem` widened)
+    U.decodeContract (Lazy.toStrict (encode (U.describeContract carried))) === Right carried
+    let original = U.describeContract contract
+        previous = change "format" (String "invar-use-contract") (Object (KeyMap.delete "transfers" (object' original)))
+    U.decodeContract (Lazy.toStrict (encode previous)) === Right contract
+    assert (isLeft (U.decodeContract (Lazy.toStrict (encode (change "format" (String "invar-use-contract") original)))))
+  where
+    isMismatch (U.ImplementationMismatch _ _) = True
+    isMismatch _ = False
+    isMissing (U.MissingReliance _) = True
+    isMissing _ = False
+    isInvalid (U.InvalidContract _) = True
+    isInvalid _ = False
+    object' (Object fields) = fields
+    object' _ = KeyMap.empty

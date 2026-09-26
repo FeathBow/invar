@@ -33,11 +33,14 @@ decodeContract bytes = Json.decode bytes >>= parseEither parseContract
 
 parseContract :: Value -> Parser C.UseContract
 parseContract = withObject "use contract" $ \fields -> do
-    Json.fields ["format", "purpose", "domain", "measurement", "reference", "candidate", "maximum_context", "criterion", "protocols", "reliance"] fields
     format <- fields .: "format"
-    unless (format == ("invar-use-contract" :: String)) (fail "Unknown use contract format")
-    reference <- fields .: "reference" >>= policy
-    candidate <- fields .: "candidate" >>= policy
+    let common = ["format", "purpose", "domain", "measurement", "reference", "candidate", "maximum_context", "criterion", "protocols", "reliance"]
+    declaredTransfers <- case format :: String of
+        "invar-use-contract" -> Json.fields common fields >> pure []
+        "invar-use-contract/v2" -> Json.fields (common ++ ["transfers"]) fields >> fields .: "transfers" >>= traverse parseTransfer
+        _ -> fail "Unknown use contract format"
+    reference <- fields .: "reference" >>= parsePolicy
+    candidate <- fields .: "candidate" >>= parsePolicy
     protocols <- fields .: "protocols"
     Json.fields ["freeze", "isolation", "selection"] protocols
     C.UseContract
@@ -52,9 +55,16 @@ parseContract = withObject "use contract" $ \fields -> do
         <*> protocols .: "isolation"
         <*> protocols .: "selection"
         <*> (fields .: "reliance" >>= traverse parseReliance)
-  where
-    policy :: Value -> Parser Policy.Description
-    policy = either fail pure . Policy.decodeDescription . Lazy.toStrict . encode
+        <*> pure declaredTransfers
+
+parsePolicy :: Value -> Parser Policy.Description
+parsePolicy = either fail pure . Policy.decodeDescription . Lazy.toStrict . encode
+
+parseTransfer :: Value -> Parser C.Transfer
+parseTransfer = withObject "implementation transfer" $ \fields -> do
+    Json.fields ["side", "previous", "preservation"] fields
+    side <- fields .: "side" >>= named [("reference", N.Reference), ("candidate", N.Candidate)]
+    C.Transfer side <$> (fields .: "previous" >>= parsePolicy) <*> fields .: "preservation"
 
 parseCriterion :: Value -> Parser C.Criterion
 parseCriterion = withObject "use criterion" $ \fields -> do
@@ -178,7 +188,7 @@ hexBytes text = do
 describeContract :: C.UseContract -> Value
 describeContract contract =
     object
-        [ "format" .= String "invar-use-contract"
+        [ "format" .= String "invar-use-contract/v2"
         , "purpose" .= C.purpose contract
         , "domain" .= domainValue (C.declaredDomain contract)
         , "measurement" .= fmap methodValue (C.declaredMeasurement contract)
@@ -188,6 +198,7 @@ describeContract contract =
         , "criterion" .= criterionValue (C.criterion contract)
         , "protocols" .= object ["freeze" .= C.freezeProtocol contract, "isolation" .= C.isolationProtocol contract, "selection" .= C.selectionProtocol contract]
         , "reliance" .= [object ["premise" .= show (C.premise value), "authority" .= C.authority value, "basis_sha256" .= Artifact.hex (C.basis value)] | value <- C.reliance contract]
+        , "transfers" .= [object ["side" .= String (case C.transferSide value of N.Reference -> "reference"; N.Candidate -> "candidate"), "previous" .= policyValue (C.previous value), "preservation" .= C.preservation value] | value <- C.transfers contract]
         ]
 
 policyValue :: Policy.Description -> Value

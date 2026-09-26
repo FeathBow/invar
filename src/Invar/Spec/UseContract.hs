@@ -91,6 +91,7 @@ data Premise
     | ContractFrozen
     | AcceptanceIsolation
     | SelectionControl
+    | ImplementationPreservation
     deriving (Eq, Ord, Show, Enum, Bounded)
 
 data Reliance = Reliance
@@ -127,6 +128,7 @@ premiseDescription selected = case selected of
     ContractFrozen -> admission "candidate-and-contract-frozen-before-acceptance"
     AcceptanceIsolation -> admission "acceptance-data-isolated-from-search"
     SelectionControl -> admission "selection-and-multiplicity-control"
+    ImplementationPreservation -> describe "implementation-preservation" "use-contract/v2" "declared-implementation-transfer/v1"
   where
     describe name specification observation = (name, Bytes.pack specification, observation)
     generation name = describe name "finite-paired-inference/v1" "selected-token-behavior/v1"

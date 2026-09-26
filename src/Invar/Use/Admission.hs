@@ -23,6 +23,7 @@ import Data.Maybe (isJust, isNothing)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as Text
 import Invar.Infer qualified as Infer
+import Invar.Policy.Description qualified as Policy
 import Invar.Spec.Evidence qualified as Evidence
 import Invar.Spec.Numerical qualified as Numerical
 import Invar.Spec.Use qualified as U
@@ -88,7 +89,7 @@ meaningful :: String -> Bool
 meaningful = not . all isSpace
 
 validate :: C.UseContract -> [AdmissionProblem]
-validate contract = fields ++ budgets ++ numerical ++ invariance ++ standard ++ reliance
+validate contract = fields ++ budgets ++ numerical ++ invariance ++ standard ++ reliance ++ transfers
   where
     criterion = C.criterion contract
     fields =
@@ -109,6 +110,18 @@ validate contract = fields ++ budgets ++ numerical ++ invariance ++ standard ++ 
         [InvalidContract "duplicate premise reliance" | length (nub (map C.premise declared)) /= length declared]
             ++ [InvalidContract ("reliance for " ++ show (C.premise value)) | value <- declared, not (meaningful (C.authority value)) || Bytes.length (C.basis value) /= digestBytes]
     digestBytes = 32
+    transfers =
+        [InvalidContract "one transfer per side" | length (nub (map C.transferSide (C.transfers contract))) /= length (C.transfers contract)]
+            ++ concatMap (validTransfer contract) (C.transfers contract)
+
+validTransfer :: C.UseContract -> C.Transfer -> [AdmissionProblem]
+validTransfer contract transfer =
+    [InvalidContract "transfer preservation" | not (meaningful (C.preservation transfer))]
+        ++ [InvalidContract "transfer between identical implementations" | previous == current]
+        ++ [InvalidContract "transfer beyond the implementation assembly" | previous {Policy.assembly = Policy.assembly current} /= current]
+  where
+    previous = C.previous transfer
+    current = C.implementation contract (C.transferSide transfer)
 
 validNumerical :: C.NumericalRequirement -> [AdmissionProblem]
 validNumerical requirement = [InvalidContract "numerical requirement rationale" | not (meaningful (C.numericalRationale requirement))] ++ steps
@@ -134,15 +147,15 @@ matches contract target = requested ++ domain ++ method ++ implementations ++ re
     implementations =
         [ ImplementationMismatch side (U.key sample)
         | sample <- toList samples
-        , (side, expected) <- [(Numerical.Reference, C.referenceImplementation contract), (Numerical.Candidate, C.candidateImplementation contract)]
-        , Numerical.sourcePolicy (U.source side sample) /= expected
+        , side <- [Numerical.Reference, Numerical.Candidate]
+        , not (admissible contract side (Numerical.sourcePolicy (U.source side sample)))
         ]
     repeated =
         [ ImplementationMismatch Numerical.Candidate (U.key sample)
         | sample <- toList samples
         , observed <- U.invariance sample
         , let Numerical.Scope _ previous next _ _ _ = Numerical.scope observed
-        , any ((/= C.candidateImplementation contract) . Numerical.sourcePolicy) [previous, next]
+        , not (all (admissible contract Numerical.Candidate . Numerical.sourcePolicy) [previous, next])
         ]
     executions =
         [ InsufficientExecutions (U.key sample) required actual
@@ -175,6 +188,11 @@ supported contract (Evidence.External premise) = case C.premiseKind premise of
         Just justification -> Right (ReliedOn premise justification)
 supported _ premise = Left (UnresolvedClaim premise)
 
+admissible :: C.UseContract -> Numerical.Side -> Policy.Description -> Bool
+admissible contract side actual = actual == C.implementation contract side || any declared (C.transfers contract)
+  where
+    declared transfer = C.transferSide transfer == side && C.previous transfer == actual
+
 contractPremises :: C.UseContract -> U.Scope -> [Evidence.Obligation]
 contractPremises contract selected =
     [ Evidence.Obligation name specification observation domain binding
@@ -187,6 +205,10 @@ contractPremises contract selected =
            , (index, observed) <- zip [0 :: Natural ..] (U.invariance sample)
            , let Numerical.Scope _ previous next _ _ _ = Numerical.scope observed
                  (name, specification, observation) = C.premiseDescription C.ScheduleVariation
+           ]
+        ++ [ Evidence.Obligation (name ++ "/" ++ show (C.transferSide transfer)) specification observation domain (digest (transfer, C.implementation contract (C.transferSide transfer)))
+           | let (name, specification, observation) = C.premiseDescription C.ImplementationPreservation
+           , transfer <- C.transfers contract
            ]
   where
     U.Scope (U.ScopeId domain) _ _ samples = selected
