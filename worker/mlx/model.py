@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from functools import partial
 from importlib.metadata import version
 from pathlib import Path
 
@@ -28,15 +27,24 @@ CACHE_BYTES = 256 * 1024 * 1024
 PREFILL_STEP = 512
 
 
+PROFILES = {"primary": mlx_numerics.PRIMARY, "native": mlx_numerics.NATIVE}
+
+
 @dataclass(frozen=True, kw_only=True)
 class Configuration:
     batch_size: int = 1
     prefill_step: int = PREFILL_STEP
     cache_bytes: int = CACHE_BYTES
+    numerics: str = "primary"
 
     def __post_init__(self):
         if any(type(value) is not int or value <= 0 for value in (self.batch_size, self.prefill_step)) or type(self.cache_bytes) is not int or self.cache_bytes < 0:
             raise ValueError("Native batch/prefill sizes must be positive integers and the free-buffer cache nonnegative")
+        if type(self.numerics) is not str or self.numerics not in PROFILES:
+            raise ValueError("Native numerics must be primary or native")
+
+    def profile(self):
+        return PROFILES[self.numerics]
 
     def sampling(self):
         return Sampling(batch_size=self.batch_size, prefill_step=self.prefill_step)
@@ -55,7 +63,7 @@ def configuration(path):
     if path is None:
         return Configuration()
     value = core.decode(Path(path).read_text())
-    fields(value, "format batch_size prefill_step cache_bytes")
+    fields(value, "format batch_size prefill_step cache_bytes" + (" numerics" if "numerics" in value else ""))
     if value["format"] != "invar-mlx-runtime-v1":
         raise ValueError("Expected native MLX runtime configuration")
     return Configuration(**{name: item for name, item in value.items() if name != "format"})
@@ -67,7 +75,8 @@ def resolve(cache):
     return Path(snapshot_download(MODEL, revision=REVISION, cache_dir=cache, local_files_only=True))
 
 
-def load(cache, *, scope, configuration, measure, emit, seed=DEFAULT_SEED, initial=None, numerics=mlx_numerics.PRIMARY, identified=False):
+def load(cache, *, scope, configuration, measure, emit, seed=DEFAULT_SEED, initial=None, identified=False):
+    numerics = configuration.profile()
     if not mx.metal.is_available() or mx.default_device() != mx.gpu:
         raise RuntimeError("The native MLX Metal device is required")
     previous = mx.set_cache_limit(configuration.cache_bytes)
@@ -94,9 +103,6 @@ def load(cache, *, scope, configuration, measure, emit, seed=DEFAULT_SEED, initi
         return loaded
 
     return measure("load", prepare)
-
-
-load_native = partial(load, numerics=mlx_numerics.NATIVE)
 
 
 def profile(configuration, *, numerics):

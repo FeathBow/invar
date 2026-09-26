@@ -40,11 +40,7 @@ def main():
     parser.add_argument("--tokenizer-digest", required=True)
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--config", type=Path)
-    loaders = {"primary": mlx_model.load, "native": mlx_model.load_native}
-    parser.add_argument("--numerics", choices=loaders, default="primary",
-                        help="Materialize the primary numerical rule or ordinary native benchmark arithmetic")
-    options = parser.parse_args()
-    run(options, loader=loaders[options.numerics])
+    run(parser.parse_args())
 
 
 if __name__ == "__main__":

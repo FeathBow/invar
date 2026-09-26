@@ -16,7 +16,6 @@ from worker.cohort import identity
 from worker.distribution import FP32_BYTES, PROBE_FORMAT, Probe
 from worker.invocation import request as request_value
 from worker.mlx import model as mlx_model
-from worker.mlx import numerics as mlx_numerics
 from worker.mlx import tensors as mlx_tensors
 from worker.mlx.crossscore import score, validate
 from worker.mlx.metrics import measure
@@ -82,7 +81,6 @@ def run(options, *, loader=mlx_model.load):
     if selected.tokenizer != expected["tokenizer"]:
         raise ValueError("Scoring target tokenizer differs from the source operation")
     configuration = mlx_model.configuration(options.config)
-    numerics = {"primary": mlx_numerics.PRIMARY, "native": mlx_numerics.NATIVE}[options.numerics]
     records = []
 
     def emit(stage, values):
@@ -93,7 +91,7 @@ def run(options, *, loader=mlx_model.load):
         store = None if probe is None else Store(storage.enter_context(tempfile.TemporaryFile()), probe=probe)
         with redirect_stdout(sys.stderr), ExitStack() as scope:
             loaded = loader(options.cache, scope=scope, configuration=configuration, measure=measured,
-                            emit=emit, initial=(options.adapter, expected), numerics=numerics)
+                            emit=emit, initial=(options.adapter, expected))
             result = observe(loaded, selected, expected=expected, sampling=configuration.sampling(),
                              measured=measured, probe=probe, store=store)
         value = {**result, "measurements": records}
@@ -118,7 +116,6 @@ def main():
     parser.add_argument("--cache", type=Path, required=True)
     parser.add_argument("--adapter", type=Path, required=True)
     parser.add_argument("--config", type=Path)
-    parser.add_argument("--numerics", choices=("primary", "native"), default="primary")
     parser.add_argument("--probe-steps", help="Preselected zero-based response steps as a JSON array; retain full behavior vectors")
     for name in ("digest", "tokenizer-digest", "base-digest", "assembly-digest"):
         parser.add_argument("--" + name, required=True)

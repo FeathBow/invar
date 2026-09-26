@@ -20,7 +20,6 @@ from worker.mlx import infer as mlx_infer
 from worker.mlx import cohort as mlx_inference_resident
 from worker.mlx import initialize as mlx_initialize
 from worker.mlx import model as mlx_model
-from worker.mlx import numerics as mlx_numerics
 from worker.mlx import resident as mlx_resident
 from worker.tests.mlx.rollout import model, tokenizer
 from worker.implementation import INFERENCE
@@ -36,10 +35,11 @@ def load(cache, *, scope, configuration, measure, emit, seed=17, initial=None, i
     def prepare():
         emit("loading", {"model": IDENTITY[0], "revision": IDENTITY[1]})
         numerical, config = model()
-        mlx_numerics.PRIMARY.install(numerical)
+        configuration.profile().install(numerical)
         numerical.eval()
         scope.enter_context(wired_limit(numerical))
-        loaded = mlx_model.Loaded(model=numerical, tokenizer=tokenizer(), config=config, identity=IDENTITY)
+        loaded = mlx_model.Loaded(model=numerical, tokenizer=tokenizer(), config=config, identity=IDENTITY,
+                                  numerics=configuration.profile())
         if initial is not None:
             mlx_model.activate(loaded, initial[0], expected=initial[1])
         reported = {"model": IDENTITY[0], "revision": IDENTITY[1],

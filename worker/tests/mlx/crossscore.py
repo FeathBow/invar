@@ -113,15 +113,15 @@ class ArtifactTests(unittest.TestCase):
         config.write_text(json.dumps({"format": "invar-mlx-runtime-v1", "batch_size": 2,
                                      "prefill_step": 2, "cache_bytes": 1048576}))
 
-        def tiny_loader(cache, *, scope, configuration, measure, emit, initial, numerics):
+        def tiny_loader(cache, *, scope, configuration, measure, emit, initial):
             self.assertEqual(cache, root)
-            self.assertEqual(numerics, self.runtime.numerics)
+            self.assertEqual(configuration.profile(), self.runtime.numerics)
             previous = mx.set_cache_limit(configuration.cache_bytes)
             scope.callback(mx.set_cache_limit, previous)
             return measure("load", lambda: mlx_model.activate(loaded(71), initial[0], expected=initial[1]))
 
         options = SimpleNamespace(path=source, cache=root, adapter=adapter, config=config,
-                                  numerics="primary", probe_steps=None, digest=self.expected["adapter"],
+                                  probe_steps=None, digest=self.expected["adapter"],
                                   **{key + "_digest": self.expected[key] for key in ("tokenizer", "base", "assembly")})
         output = io.StringIO()
         with redirect_stdout(output):

@@ -5,6 +5,9 @@ try:
 except ImportError as missing:
     raise unittest.SkipTest(f"{missing.name} is not installed") from missing
 
+import json
+from pathlib import Path
+import tempfile
 import unittest
 
 import mlx.core as mx
@@ -12,6 +15,7 @@ import mlx.nn as nn
 from mlx_lm.tuner.lora import LoRALinear
 
 from worker.mlx import adapter as mlx_adapter
+from worker.mlx import model as mlx_model
 from worker.mlx import numerics as mlx_numerics
 from worker.mlx.projection import SPLIT_ROWS, ColumnLoRALinear, RowLinear
 from worker.mlx import rollout as mlx_rollout
@@ -75,6 +79,18 @@ class NumericsTests(unittest.TestCase):
         ordinary, _ = model()
         mlx_numerics.NATIVE.install(ordinary)
         self.assertEqual(mlx_rollout.prefill_batch_size(ordinary, mlx_rollout.Sampling(batch_size=4, prefill_step=2)), 4)
+
+    def test_runtime_configuration_selects_the_profile(self):
+        path = Path(tempfile.mkdtemp(prefix="invar-mlx-numerics-")) / "config.json"
+        declared = {"format": "invar-mlx-runtime-v1", "batch_size": 1, "prefill_step": 16, "cache_bytes": 0}
+        for extra, expected in (({}, mlx_numerics.PRIMARY), ({"numerics": "primary"}, mlx_numerics.PRIMARY),
+                                ({"numerics": "native"}, mlx_numerics.NATIVE)):
+            path.write_text(json.dumps({**declared, **extra}))
+            self.assertIs(mlx_model.configuration(path).profile(), expected)
+        for invalid in ("stock", ["native"], None):
+            path.write_text(json.dumps({**declared, "numerics": invalid}))
+            with self.assertRaisesRegex(ValueError, "primary or native"):
+                mlx_model.configuration(path)
 
     def test_stock_profile_observation_carries_no_row_independent_fields(self):
         ordinary, _ = model()
