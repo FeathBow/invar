@@ -1,4 +1,9 @@
-<h1 align="center">Invar</h1>
+<p align="center">
+<picture>
+<source media="(prefers-color-scheme: dark)" srcset="docs/images/logo-dark.svg">
+<img alt="Invar" src="docs/images/logo-light.svg" width="360">
+</picture>
+</p>
 
 <h3 align="center">Noise or real change?</h3>
 
