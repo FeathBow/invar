@@ -8,7 +8,6 @@ import Control.Monad (join, unless)
 import Crypto.Hash.SHA256 qualified as SHA256
 import Data.Aeson (Value (Null), object, (.=))
 import Data.Aeson.Types (Pair)
-import Data.ByteString qualified as Bytes
 import Data.Char (isDigit)
 import Data.Foldable (toList)
 import Data.Maybe (isJust)
@@ -24,6 +23,7 @@ import System.Directory (doesFileExist, makeAbsolute, withCurrentDirectory)
 import System.Exit (ExitCode)
 import System.FilePath (takeDirectory)
 import Text.Read (readMaybe)
+import UseInput (readContract)
 import UseRuns qualified
 
 format :: String
@@ -35,7 +35,7 @@ run supplied = do
     contractPath <- required fields "contract"
     unitsText <- required fields "units"
     count <- maybe (refuse format [Problem "invalid-value" "argv:--units" "The planned unit count must be a natural number"]) pure (readMaybe unitsText :: Maybe Natural)
-    (contract, contractBytes) <- readContract "contract" contractPath
+    (contract, contractBytes) <- readContract format "contract" contractPath
     referenceVariance <- parameter fields "reference-variance"
     increaseVariance <- parameter fields "increase-variance"
     referenceMean <- parameter fields "assumed-reference-loss"
@@ -70,16 +70,9 @@ run supplied = do
 
 data Probe = Probe {probeReferenceVariance, probeIncreaseVariance, probeReferenceMean, probeIncreaseMean :: Maybe Plan.Parameter}
 
-readContract :: String -> FilePath -> IO (U.UseContract, Bytes.ByteString)
-readContract name path = do
-    present <- doesFileExist path
-    if present then pure () else refuse format [Problem "artifact-missing" ("argv:--" ++ name) (path ++ " does not exist")]
-    bytes <- Bytes.readFile path
-    either (\problem -> refuse format [Problem "artifact-invalid" ("artifact:" ++ path) problem]) (\contract -> pure (contract, bytes)) (U.decodeContract bytes)
-
 readProbe :: FilePath -> FilePath -> IO Probe
 readProbe contractPath runsPath = do
-    (contract, bytes) <- readContract "probe-contract" contractPath
+    (contract, bytes) <- readContract format "probe-contract" contractPath
     present <- doesFileExist runsPath
     if present then pure () else refuse format [Problem "artifact-missing" "argv:--probe" (runsPath ++ " does not exist")]
     absolute <- makeAbsolute runsPath

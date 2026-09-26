@@ -1,7 +1,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module UsePrepare (run, readDeclared) where
+module UsePrepare (run) where
 
 import Check (Check, andThen, problem, value)
 import Check qualified
@@ -31,6 +31,7 @@ import System.Console.GetOpt (OptDescr)
 import System.Directory (doesFileExist)
 import System.FilePath (takeDirectory, (</>))
 import UseExecution qualified as Execution
+import UseInput (readDeclared)
 
 format :: String
 format = "invar-use-prepared-v1"
@@ -57,8 +58,8 @@ run supplied = do
     output <- required fields "output"
     exists <- doesFileExist output
     when exists (refuse format [Problem "invalid-value" "argv:--output" (output ++ " already exists; prepare never overwrites a contract")])
-    (declarationValue, declarationBytes) <- readDeclared "declaration" declarationPath
-    (executionValue, executionBytes) <- readDeclared "execution" executionPath
+    (declarationValue, declarationBytes) <- readDeclared format "declaration" declarationPath
+    (executionValue, executionBytes) <- readDeclared format "execution" executionPath
     method <- either (\found -> refuse format [Problem "internal-error" "artifact:measurement" (show found)]) pure Decimal.method
     (declared, plan) <- either (\found -> refuse format (found ++ uncovered method declarationValue)) pure (Check.run ((,) <$> declaration declarationValue <*> Execution.decode executionValue))
     let base = takeDirectory declarationPath
@@ -130,13 +131,6 @@ uncovered method document =
     declared = case at ["decisions", "reliance"] of
         Just (Array entries) -> [Text.unpack premise | Object entry <- toList entries, Just (String premise) <- [Fields.lookup "premise" entry]]
         _ -> []
-
-readDeclared :: String -> FilePath -> IO (Value, Bytes.ByteString)
-readDeclared name path = do
-    present <- doesFileExist path
-    unless present (refuse format [Problem "artifact-missing" ("argv:--" ++ name) (path ++ " does not exist")])
-    bytes <- Bytes.readFile path
-    either (\found -> refuse format [Problem "artifact-invalid" ("artifact:" ++ path) found]) (\parsed -> pure (parsed, bytes)) (eitherDecodeStrict bytes)
 
 readWorkload :: FilePath -> IO U.Domain
 readWorkload path = do

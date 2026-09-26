@@ -50,8 +50,8 @@ executable invar
   import: defaults
   hs-source-dirs: app
   main-is: Main.hs
-  other-modules: Use, UseRuns, UsePlan, UsePrepare, UseExecution, Check, Located, Envelope, Scoring, Numerical, Options, InferenceInput, InferenceBatch, PolicyInput, NativeCodec, HistoryInput, Dataset, Training, Evaluation, Quality, Inspection, Comparison
-  build-depends: invar, text >= 2.1 && < 2.2, aeson >= 2.3.1 && < 2.4, cryptohash-sha256 >= 0.11.102.1 && < 0.12, directory >= 1.3 && < 1.4, filepath >= 1.5 && < 1.6
+  other-modules: Use, UseRuns, UsePlan, UsePrepare, UseExecution, UseInput, UseRun, Check, Located, Envelope, Scoring, Numerical, Options, InferenceInput, InferenceBatch, PolicyInput, NativeCodec, HistoryInput, Dataset, Training, Evaluation, Quality, Inspection, Comparison
+  build-depends: invar, text >= 2.1 && < 2.2, aeson >= 2.3.1 && < 2.4, cryptohash-sha256 >= 0.11.102.1 && < 0.12, directory >= 1.3 && < 1.4, filepath >= 1.5 && < 1.6, process >= 1.6.26 && < 1.7
 
 source-repository head
   type: git

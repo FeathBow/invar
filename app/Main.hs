@@ -43,7 +43,7 @@ main = do
         _ -> die usage
 
 usage :: String
-usage = usageInfo "Usage: invar use inspect|admit OPTIONS | invar infer OPTIONS | invar infer batch OPTIONS < calls.json | invar score OPTIONS | invar policy OPTIONS | invar train OPTIONS < tasks.json | invar evaluate OPTIONS < tasks.json | invar quality OPTIONS | invar inspect KIND OPTIONS | invar compare KIND OPTIONS\nUse the command's --help for its options. Inference selects --checkpoint, or an explicit --adapter with all four digest options. --checkpoint reads the published policy description. --worker-config is optional." options
+usage = usageInfo "Usage: invar use prepare|plan|run|inspect|admit OPTIONS | invar infer OPTIONS | invar infer batch OPTIONS < calls.json | invar score OPTIONS | invar policy OPTIONS | invar train OPTIONS < tasks.json | invar evaluate OPTIONS < tasks.json | invar quality OPTIONS | invar inspect KIND OPTIONS | invar compare KIND OPTIONS\nUse the command's --help for its options. Inference selects --checkpoint, or an explicit --adapter with all four digest options. --checkpoint reads the published policy description. --worker-config is optional." options
 
 options :: [OptDescr (String, String)]
 options = O.descriptions [("python", "Python executable"), ("worker", "Inference worker script"), ("worker-config", "Optional worker launch configuration"), ("cache", "Pinned model cache"), ("adapter", "Explicit adapter file or native handoff directory"), ("checkpoint", "Checkpoint containing policy.json and adapter.safetensors")] ++ InferenceInput.options
