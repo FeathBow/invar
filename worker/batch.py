@@ -4,7 +4,8 @@ from pathlib import Path
 
 from worker.cohort import fields
 from worker.invocation import decode as invocation
-from worker.hf.session import Call, Reference, decode as call, reference, unique
+from worker.cohort import unique
+from worker.hf.session import Call, Reference, decode as call, reference
 
 FORMAT = "invar-inference-batch-v1"
 

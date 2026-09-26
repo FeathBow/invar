@@ -23,11 +23,12 @@ from worker.mlx import model as mlx_model
 from worker.mlx import numerics as mlx_numerics
 from worker.mlx import resident as mlx_resident
 from worker.tests.mlx.rollout import model, tokenizer
+from worker.implementation import INFERENCE
 
 IDENTITY = ("invar-native-hybrid-test", "fixture-v1")
 
 
-def load(cache, *, scope, configuration, measure, emit, seed=17, initial=None):
+def load(cache, *, scope, configuration, measure, emit, seed=17, initial=None, identified=False):
     mx.random.seed(seed)
     previous = mx.set_cache_limit(configuration.cache_bytes)
     scope.callback(mx.set_cache_limit, previous)
@@ -41,9 +42,13 @@ def load(cache, *, scope, configuration, measure, emit, seed=17, initial=None):
         loaded = mlx_model.Loaded(model=numerical, tokenizer=tokenizer(), config=config, identity=IDENTITY)
         if initial is not None:
             mlx_model.activate(loaded, initial[0], expected=initial[1])
-        emit("profile", {"model": IDENTITY[0], "revision": IDENTITY[1],
-                         "native_test": {"layers": len(numerical.layers), "uniform_head": True,
-                                         "batch_size": configuration.batch_size}})
+        reported = {"model": IDENTITY[0], "revision": IDENTITY[1],
+                    "native_test": {"layers": len(numerical.layers), "uniform_head": True,
+                                    "batch_size": configuration.batch_size}}
+        if identified:
+            reported["inference"] = {name: value for name, value in mlx_model.identities(loaded, INFERENCE).items()
+                                     if name in ("base", "assembly")}
+        emit("profile", reported)
         with (cache / "loads.txt").open("a") as output:
             output.write(str(os.getpid()) + "\n")
         return loaded

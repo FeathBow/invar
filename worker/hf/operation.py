@@ -43,7 +43,7 @@ def load(path):
 
 def main():
     from huggingface_hub import snapshot_download
-    from worker.hf.probe import MODEL, REVISION
+    from worker.hf.model import MODEL, REVISION
 
     parser = argparse.ArgumentParser(description="Identify the pinned tokenizer operation without loading model weights")
     parser.add_argument("--cache", type=Path, required=True)

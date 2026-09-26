@@ -23,6 +23,7 @@ from worker.mlx import tensors as mlx_tensors
 from worker.mlx import tokenization as mlx_tokenization
 from worker import scalar
 from worker.trajectory import Request
+from worker.implementation import INFERENCE
 
 WORDS = ("[UNK]", "[EOS]", "one", "two", "three", "four", "five", "assistant")
 LAYERS = 4
@@ -64,7 +65,7 @@ class RolloutTests(unittest.TestCase):
                                   seed=17 + index, limit=limit, temperature=0.8)
                          for index, (prompt, limit) in enumerate((("one", 2), ("one two three", 4), ("two", 3))))
         before = {"key": mx.array(mx.random.state[0])}
-        identity = mlx_adapter.images(numerical, config, numerics=mlx_numerics.PRIMARY.observe(numerical))
+        identity = mlx_adapter.images(numerical, config, numerics=mlx_numerics.PRIMARY.observe(numerical, INFERENCE))
         trajectories = mlx_rollout.generate(numerical, text, requests, sampling=mlx_rollout.Sampling(batch_size=2, prefill_step=2))
         self.assertEqual(tuple(value.request for value in trajectories), requests)
         expected = scalar.word(math.log(1 / len(WORDS)))
@@ -77,7 +78,7 @@ class RolloutTests(unittest.TestCase):
             self.assertEqual(value.tokens[0, :value.prompt_length].tolist(), prefix[0].tolist())
             self.assertEqual(value.truncated, value.tokens[0, -1].item() != text.eos_token_id)
         self.assertTrue(mlx_tensors.equal(before, {"key": mx.random.state[0]}))
-        self.assertEqual(mlx_adapter.images(numerical, config, numerics=mlx_numerics.PRIMARY.observe(numerical)), identity)
+        self.assertEqual(mlx_adapter.images(numerical, config, numerics=mlx_numerics.PRIMARY.observe(numerical, INFERENCE)), identity)
 
 
 if __name__ == "__main__":

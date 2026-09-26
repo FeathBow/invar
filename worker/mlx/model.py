@@ -16,6 +16,7 @@ from worker.mlx import recurrence as mlx_recurrence
 from worker.mlx import tensors as mlx_tensors
 from worker.mlx import tokenization as mlx_tokenization
 from worker.hf import operation
+from worker.implementation import INFERENCE
 
 MODEL = "mlx-community/Qwen3.8-27B-4bit"
 REVISION = "3e6447f082e89cc7f0bc6e5441afd38dfce760ff"
@@ -64,7 +65,7 @@ def resolve(cache):
     return Path(snapshot_download(MODEL, revision=REVISION, cache_dir=cache, local_files_only=True))
 
 
-def load(cache, *, scope, configuration, measure, emit, seed=DEFAULT_SEED, initial=None, numerics=mlx_numerics.PRIMARY):
+def load(cache, *, scope, configuration, measure, emit, seed=DEFAULT_SEED, initial=None, numerics=mlx_numerics.PRIMARY, identified=False):
     if not mx.metal.is_available() or mx.default_device() != mx.gpu:
         raise RuntimeError("The native MLX Metal device is required")
     previous = mx.set_cache_limit(configuration.cache_bytes)
@@ -84,7 +85,10 @@ def load(cache, *, scope, configuration, measure, emit, seed=DEFAULT_SEED, initi
         loaded = Loaded(model=model, tokenizer=operation.load(path), config=config, identity=(MODEL, REVISION), numerics=numerics)
         if initial is not None:
             activate(loaded, initial[0], expected=initial[1])
-        emit("profile", profile(configuration, numerics=numerics.name))
+        reported = profile(configuration, numerics=numerics.name)
+        if identified:
+            reported["inference"] = mlx_adapter.images(model, config, numerics=numerics.observe(model, INFERENCE))
+        emit("profile", reported)
         return loaded
 
     return measure("load", prepare)
@@ -112,15 +116,19 @@ def profile(configuration, *, numerics):
                        "optimizer_bias_correction": True}}
 
 
-def identities(loaded):
-    numerical = loaded.numerics.observe(loaded.model)
+def identities(loaded, role):
+    numerical = loaded.numerics.observe(loaded.model, role)
     return {"adapter": mlx_tensors.digest(mlx_adapter.state(loaded.model)),
             "tokenizer": mlx_tokenization.digest(loaded.tokenizer),
             **mlx_adapter.images(loaded.model, loaded.config, numerics=numerical)}
 
 
-def verify(loaded, expected):
-    actual = identities(loaded)
+def assembly(loaded, role):
+    return mlx_adapter.assembled(loaded.model, numerics=loaded.numerics.observe(loaded.model, role))
+
+
+def verify(loaded, expected, role):
+    actual = identities(loaded, role)
     if actual != expected:
         raise ValueError("Actual native model, policy or tokenizer differs from its requested materialization")
     return actual
@@ -128,5 +136,5 @@ def verify(loaded, expected):
 
 def activate(loaded, path, *, expected):
     mlx_adapter.install(loaded.model, mlx_tensors.policy(path, expected["adapter"]))
-    verify(loaded, expected)
+    verify(loaded, expected, INFERENCE)
     return loaded

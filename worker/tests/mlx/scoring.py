@@ -14,6 +14,7 @@ import mlx.core as mx
 
 from worker.mlx import adapter, model, scoring, tensors
 from worker.tests.mlx.crossscore import loaded
+from worker.implementation import INFERENCE
 
 CORE = os.environ.get("INVAR_CORE", "invar")
 SOURCE_ENTRY = Path(__file__).with_name("scoresource.py").resolve()
@@ -51,7 +52,7 @@ class BoundScoreFixture:
             cache.mkdir()
             (cache / "fixture.json").write_text(json.dumps({"seed": seed}))
             runtime = loaded(seed)
-            identity = model.identities(runtime)
+            identity = model.identities(runtime, INFERENCE)
             checkpoint = cache / "adapter.safetensors"
             tensors.save_policy(checkpoint, adapter.state(runtime.model))
             cls.targets.append((cache, checkpoint, identity))

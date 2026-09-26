@@ -15,8 +15,10 @@ import unittest
 from pathlib import Path
 
 from worker import implementation
+from worker.implementation import INFERENCE, LEARNING
 
-ENTRY_POINTS = ("worker.hf.initialize", "worker.hf.infer", "worker.hf.session", "worker.hf.step", "worker.hf.resident", "worker.hf.probe")
+ENTRY_POINTS = {implementation.INFERENCE: ("worker.hf.infer", "worker.hf.session"),
+                implementation.LEARNING: ("worker.hf.initialize", "worker.hf.step", "worker.hf.resident")}
 TIMEOUT_SECONDS = 60
 TEST_THREADS = 2
 ADAPTER_SHIFT = 1
@@ -53,7 +55,9 @@ def exercise_boundaries():
     from worker.hf.learning import update
     from worker.tests.hf.learning import batch
     from worker.hf.policy import activate
-    from worker.hf.probe import adapter_state, assert_equal, restore
+    from worker.hf.model import adapter_state
+    from worker.hf.tensors import assert_equal
+    from worker.hf.checkpoint import restore
     from worker.hf.step import checkpoint_update
     from worker.tests.hf.step import prepared
     from worker.tests.hf.successor import observed
@@ -62,16 +66,18 @@ def exercise_boundaries():
     check = unittest.TestCase()
     learner, _, request, options = prepared()
     state = adapter_state(learner.model)
-    base, binding = frozen.digest(learner.model), assembly.digest(learner.model)
-    activate(learner.model, state, base=base, assembly=binding)
+    base, binding = frozen.digest(learner.model), assembly.digest(learner.model, LEARNING)
+    inference = assembly.digest(learner.model, INFERENCE)
+    activate(learner.model, state, base=base, assembly=binding, role=LEARNING)
     summary = update(learner, batch()).summary
     path = Path(__file__).resolve().parents[2] / "hf" / "objective.py"
     path.write_bytes(path.read_bytes() + b"\n# Changed implementation artifact.\n")
-    check.assertNotEqual(binding, assembly.digest(learner.model))
+    check.assertNotEqual(binding, assembly.digest(learner.model, LEARNING))
+    check.assertEqual(inference, assembly.digest(learner.model, INFERENCE))
     before = observed(learner, options.tokenizer)
     shifted = {name: value + ADAPTER_SHIFT for name, value in state.items()}
     with check.assertRaisesRegex(RuntimeError, "model assembly binding mismatch"):
-        activate(learner.model, shifted, base=base, assembly=binding)
+        activate(learner.model, shifted, base=base, assembly=binding, role=LEARNING)
     assert_equal(before, observed(learner, options.tokenizer))
     with check.assertRaisesRegex(RuntimeError, "model assembly binding mismatch"):
         restore(learner.model, learner.optimizer, options.checkpoint, tokenizer=options.tokenizer)
@@ -83,35 +89,70 @@ def exercise_boundaries():
     assert_equal(before, observed(learner, options.tokenizer))
 
 
+def closure(role):
+    root = Path(__file__).resolve().parents[2]
+    modules = package_modules(root)
+    pending, visited = set(ENTRY_POINTS[role]), set()
+    while pending:
+        name = pending.pop()
+        visited.add(name)
+        pending.update(local_imports(modules[name], modules.keys()) - visited)
+    return {str(modules[name].relative_to(root)) for name in visited}
+
+
+def mutated(root, name):
+    path = root / name
+    path.write_bytes(path.read_bytes() + b"\n# Different source bytes.\n")
+
+
 class ImplementationTests(unittest.TestCase):
-    def test_inventory_closes_actual_worker_imports(self):
-        root = Path(__file__).resolve().parents[2]
-        modules = package_modules(root)
-        pending, visited = set(ENTRY_POINTS), set()
-        while pending:
-            name = pending.pop()
-            visited.add(name)
-            pending.update(local_imports(modules[name], modules.keys()) - visited)
-        self.assertEqual({str(modules[name].relative_to(root)) for name in visited}, set(implementation.SOURCE_FILES))
-        self.assertEqual(len(implementation.SOURCE_FILES), len(visited))
+    def test_every_imported_module_is_bound_to_its_role_or_excluded_with_a_reason(self):
+        for role, bound in implementation.ROLES.items():
+            with self.subTest(role=role):
+                excluded = set(implementation.NEUTRAL) | set(implementation.IRRELEVANT[role])
+                self.assertEqual(closure(role) - excluded, set(bound))
+                self.assertFalse(set(bound) & excluded)
+
+    def test_learner_only_changes_keep_the_inference_identity(self):
+        root = copied_worker()
+        before = {role: implementation.description(root, role) for role in implementation.ROLES}
+        learner = set(implementation.ROLES[implementation.LEARNING]) - set(implementation.ROLES[implementation.INFERENCE])
+        for name in sorted(learner):
+            mutated(root, name)
+        self.assertEqual(implementation.description(root, implementation.INFERENCE), before[implementation.INFERENCE])
+        self.assertNotEqual(implementation.description(root, implementation.LEARNING), before[implementation.LEARNING])
+
+    def test_each_inference_dependency_changes_the_inference_identity(self):
+        for name in implementation.ROLES[implementation.INFERENCE]:
+            with self.subTest(name=name):
+                root = copied_worker()
+                before = implementation.description(root, implementation.INFERENCE)
+                mutated(root, name)
+                self.assertNotEqual(implementation.description(root, implementation.INFERENCE), before)
+
+    def test_neutral_changes_keep_both_identities(self):
+        root = copied_worker()
+        before = {role: implementation.description(root, role) for role in implementation.ROLES}
+        for name in implementation.NEUTRAL:
+            mutated(root, name)
+        self.assertEqual({role: implementation.description(root, role) for role in implementation.ROLES}, before)
+        for role, irrelevant in implementation.IRRELEVANT.items():
+            for name in irrelevant:
+                mutated(root, name)
+            self.assertEqual(implementation.description(root, role), before[role])
 
     def test_actual_bytes_are_bound_independently_of_directory(self):
         root = copied_worker()
-        description = implementation.description(root)
-        self.assertEqual(description, implementation.current())
-        expected = {name: hashlib.sha256((root / name).read_bytes()).hexdigest()
-                    for name in implementation.SOURCE_FILES}
-        self.assertEqual(description["files"], expected)
-        path = root / "hf" / "rollout.py"
-        path.write_bytes(path.read_bytes() + b"\n# Different source bytes.\n")
-        actual = implementation.description(root)
-        self.assertEqual({name for name in expected if actual["files"][name] != expected[name]}, {"hf/rollout.py"})
-        self.assertEqual(description, implementation.current())
+        for role in implementation.ROLES:
+            description = implementation.description(root, role)
+            self.assertEqual(description, implementation.current(role))
+            expected = {name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in implementation.ROLES[role]}
+            self.assertEqual(description["files"], expected)
 
     def test_missing_source_is_an_error(self):
         root = Path(tempfile.mkdtemp(prefix="invar-implementation-missing-"))
         with self.assertRaises(FileNotFoundError):
-            implementation.description(root)
+            implementation.description(root, implementation.INFERENCE)
 
     def test_changed_source_prevents_actual_activation_restore_and_successor(self):
         root = copied_worker()

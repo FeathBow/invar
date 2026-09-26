@@ -27,12 +27,12 @@ def validate_state(state, expected):
         raise ValueError("Adapter contents do not match the requested tensor identity")
 
 
-def verify(model, expected, *, base, assembly):
-    from worker.hf.probe import adapter_state
+def verify(model, expected, *, base, assembly, role):
+    from worker.hf.model import adapter_state
     from worker.hf import assembly as model_assembly
     from worker.hf import frozen
 
-    model_assembly.verify(model, assembly)
+    model_assembly.verify(model, assembly, role)
     frozen.verify(model, base)
     validate_state(adapter_state(model), expected)
     return expected
@@ -47,13 +47,13 @@ def validate_schema(expected, received):
             raise ValueError(f"Adapter tensor metadata mismatch: {name}")
 
 
-def activate(model, state, *, base, assembly):
+def activate(model, state, *, base, assembly, role):
     from peft import set_peft_model_state_dict
-    from worker.hf.probe import adapter_state
+    from worker.hf.model import adapter_state
     from worker.hf import assembly as model_assembly
     from worker.hf import frozen
 
-    model_assembly.verify(model, assembly)
+    model_assembly.verify(model, assembly, role)
     frozen.verify(model, base)
     validate_schema(adapter_state(model), state)
     set_peft_model_state_dict(model, state)

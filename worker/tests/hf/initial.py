@@ -15,7 +15,8 @@ import torch
 
 from worker.hf import codec
 from worker import core
-from worker.hf.probe import checkpoint, digest
+from worker.hf.checkpoint import checkpoint
+from worker.hf.tensors import digest
 from worker.tests.hf.learning import make_learner
 from worker.tests.hf.states import sha
 from worker.tests.hf.tokenization import make_tokenizer

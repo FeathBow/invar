@@ -7,7 +7,7 @@ import torch
 from worker.hf import state as learner_state
 from worker.hf.learning import Learner, check_optimizer
 from worker.hf.step import consume, execute as update, loaded_inputs, optimizer_options, restore_inputs
-from worker.hf.probe import digest
+from worker.hf.tensors import digest
 from worker.tokenization import validate
 
 

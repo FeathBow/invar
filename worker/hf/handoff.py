@@ -14,7 +14,10 @@ from worker.hf import operation
 from worker.implementation import file_digest
 from worker.hf.artifact import CONFIG, FORMAT, WEIGHTS
 from worker.hf.policy import validate_state, verify
-from worker.hf.probe import CheckpointIdentity, adapter_state, assert_equal
+from worker.implementation import LEARNING
+from worker.hf.checkpoint import CheckpointIdentity
+from worker.hf.model import adapter_state
+from worker.hf.tensors import assert_equal
 
 ADAPTER = "default"
 
@@ -44,7 +47,7 @@ def configuration(model):
 
 def export(model, output, *, tokenizer, expected):
     operation.verify(tokenizer, expected.tokenizer)
-    verify(model, expected.adapter, base=expected.base, assembly=expected.assembly)
+    verify(model, expected.adapter, base=expected.base, assembly=expected.assembly, role=LEARNING)
     configured = configuration(model)
     state = adapter_state(model)
     validate_state(state, expected.adapter)

@@ -12,7 +12,7 @@ def run(options):
         from worker.hf.runtime import close
         from worker.hf.metrics import measure
         from worker.resident import Owner, Transcript
-        from worker.hf.rollout import logprobs
+        from worker.hf.probability import logprobs
         from worker.hf.step import load_with
 
         transcript = Transcript(output)

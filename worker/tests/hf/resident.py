@@ -21,8 +21,9 @@ from worker.advantage import check
 from worker import binding
 from worker.invocation import approve
 from worker.hf import runtime as learner_runtime
-from worker.hf.probe import adapter_state, assert_equal
-from worker.hf.rollout import logprobs
+from worker.hf.model import adapter_state
+from worker.hf.tensors import assert_equal
+from worker.hf.probability import logprobs
 from worker.hf import step
 from worker.tests.hf.inference import IDENTITY, measured, model
 from worker.tests.hf.learner import fixture

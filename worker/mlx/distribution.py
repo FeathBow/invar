@@ -1,7 +1,7 @@
 import mlx.core as mx
 
 from worker.distribution import Observed, Probe, Snapshot
-from worker.mlx.probability import words
+from worker.mlx.words import words
 
 
 class Capture:

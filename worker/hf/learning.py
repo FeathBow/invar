@@ -2,7 +2,8 @@
 import torch
 
 from worker.hf.objective import Tokens
-from worker.hf.probe import adapter_state, digest
+from worker.hf.model import adapter_state
+from worker.hf.tensors import digest
 from worker.hf.probability import checked, cotangents, loss, tensor
 from worker.logical import Batch, Learner, Result, Sample, ordered
 from worker.scalar import number

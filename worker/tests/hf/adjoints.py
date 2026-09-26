@@ -10,7 +10,7 @@ from dataclasses import replace
 import torch
 
 from worker.hf.learning import accumulate_objective, parameter_vjps, update
-from worker.hf.probe import adapter_state
+from worker.hf.model import adapter_state
 from worker.hf.tensors import assert_equal
 from worker.tests.hf.learning import batch, make_learner
 

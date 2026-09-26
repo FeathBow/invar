@@ -18,7 +18,7 @@ import torch
 
 from worker.learner import FORMAT, serve
 from worker.resident import FORMAT as RESIDENT_FORMAT, Owner, Transcript
-from worker.hf.rollout import logprobs
+from worker.hf.probability import logprobs
 from worker.tests.hf.inference import IDENTITY, model
 from worker.tests.hf.learner import fixture
 from worker.tests.hf.handshake import cpu_measure

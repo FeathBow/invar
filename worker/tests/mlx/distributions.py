@@ -11,6 +11,7 @@ from worker.mlx.distribution import Capture
 from worker.mlx.probability import tensor, words
 from worker.mlx.rollout import Sampling, generate
 from worker.tests.mlx.crossscore import SAMPLING, loaded, path, requests
+from worker.implementation import INFERENCE
 
 
 class DistributionTests(unittest.TestCase):
@@ -25,7 +26,7 @@ class DistributionTests(unittest.TestCase):
 
     def test_actual_full_vectors_preserve_selected_words_rng_and_model_state(self):
         before = {str(index): mx.array(value) for index, value in enumerate(mx.random.state)}
-        identity = model.identities(self.reference)
+        identity = model.identities(self.reference, INFERENCE)
         collected = []
         for sampling in (SAMPLING, Sampling(batch_size=1, prefill_step=3)):
             measured = score(self.reference.model, self.reference.tokenizer, self.requests,
@@ -44,19 +45,19 @@ class DistributionTests(unittest.TestCase):
             collected.append(tuple(value.probe for value in measured))
         self.assertEqual(*collected)
         self.assertTrue(tensors.equal(before, {str(index): value for index, value in enumerate(mx.random.state)}))
-        self.assertEqual(model.identities(self.reference), identity)
+        self.assertEqual(model.identities(self.reference, INFERENCE), identity)
 
     def test_distinct_model_captures_its_own_distributions_on_the_reference_prefixes(self):
         observations = []
         for runtime in (self.reference, self.candidate):
-            identity = model.identities(runtime)
+            identity = model.identities(runtime, INFERENCE)
             actual = score(runtime.model, runtime.tokenizer, self.requests, paths=self.paths,
                            probes=self.probes, sampling=SAMPLING)
             self.assertEqual(tuple(value.path for value in actual), self.paths)
             observations.append(tuple(value.probe for value in actual))
-            self.assertEqual(model.identities(runtime), identity)
+            self.assertEqual(model.identities(runtime, INFERENCE), identity)
         self.assertNotEqual(*observations)
-        self.assertNotEqual(model.identities(self.reference)["base"], model.identities(self.candidate)["base"])
+        self.assertNotEqual(model.identities(self.reference, INFERENCE)["base"], model.identities(self.candidate, INFERENCE)["base"])
 
     def test_zero_support_is_retained_and_unused_lookahead_is_excluded(self):
         sampler = PathSampler(self.requests[0], TokenPath(prefix=(2,), response=(0,)), probe=Probe(steps=(0,)))

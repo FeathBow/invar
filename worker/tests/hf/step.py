@@ -17,7 +17,9 @@ from safetensors.torch import save_file
 from worker.cohort import decode
 from worker.hf.learning import update
 from worker.tests.hf.learning import batch, make_learner
-from worker.hf.probe import adapter_state, assert_equal, checkpoint, digest
+from worker.hf.model import adapter_state
+from worker.hf.tensors import assert_equal, digest
+from worker.hf.checkpoint import checkpoint
 from worker.hf.step import file_digest, restore_inputs
 from worker.tests.hf.tokenization import admitted_request, make_tokenizer
 

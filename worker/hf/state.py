@@ -4,7 +4,7 @@ import io
 import torch
 
 from worker import binding
-from worker.hf.probe import checkpoint_state
+from worker.hf.checkpoint import checkpoint_state
 from worker.hf.tensors import fingerprint
 from worker.update import snapshot
 

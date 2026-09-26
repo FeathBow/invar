@@ -22,10 +22,13 @@ from worker.hf import operation
 from worker.hf.handoff import CONFIG, WEIGHTS, export
 from worker.implementation import file_digest
 from worker.hf.learning import update
-from worker.hf.probe import CheckpointIdentity, adapter_state, assert_equal, digest
+from worker.hf.checkpoint import CheckpointIdentity
+from worker.hf.model import adapter_state
+from worker.hf.tensors import assert_equal, digest
 from worker.tests.hf.learning import batch, make_learner
 from worker.tests.hf.decoding import hybrid
 from worker.tests.hf.tokenization import make_tokenizer
+from worker.implementation import LEARNING
 
 
 class HandoffTests(unittest.TestCase):
@@ -40,7 +43,7 @@ class HandoffTests(unittest.TestCase):
     def identity(self):
         model = self.learner.model
         return CheckpointIdentity(adapter=digest(adapter_state(model)), base=frozen.digest(model),
-                                  assembly=assembly.digest(model), tokenizer=operation.digest(self.tokenizer))
+                                  assembly=assembly.digest(model, LEARNING), tokenizer=operation.digest(self.tokenizer))
 
     def test_two_real_updates_export_and_reload_exact_fp32_outputs(self):
         prior = None
@@ -121,7 +124,7 @@ class HandoffTests(unittest.TestCase):
                 parameter.fill_((index + 1) / 100)
         base = copy.deepcopy(model).unload()
         expected = CheckpointIdentity(adapter=digest(adapter_state(model)), base=frozen.digest(model),
-                                      assembly=assembly.digest(model), tokenizer=operation.digest(self.tokenizer))
+                                      assembly=assembly.digest(model, LEARNING), tokenizer=operation.digest(self.tokenizer))
         destination = self.directory / "qwen"
         export(model, destination, tokenizer=self.tokenizer, expected=expected)
         config = PeftConfig.from_pretrained(destination, local_files_only=True)

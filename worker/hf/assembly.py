@@ -9,7 +9,7 @@ from worker.hf import backend
 from worker.hf import decoding
 from worker import implementation
 
-FORMAT = "invar-model-assembly-v3"
+FORMAT = "invar-model-assembly-v4"
 LOCATION_FIELDS = {"_name_or_path", "base_model_name_or_path"}
 BACKENDS = ("_attn_implementation", "_experts_implementation")
 LORA_SETTINGS = ("r", "lora_alpha", "scaling", "use_dora", "use_rslora", "lora_bias",
@@ -71,10 +71,11 @@ def parameters(model):
             for name, value in model.named_parameters(remove_duplicate=False) if value.requires_grad}
 
 
-def description(model):
+def description(model, role):
     modules = dict(model.named_modules(remove_duplicate=False))
-    return {"format": FORMAT, "numerical": backend.description(), "implementation": implementation.current(),
-            "generation": decoding.description(),
+    generation = {"generation": decoding.description()} if role == implementation.INFERENCE else {}
+    return {"format": FORMAT, "role": role, "numerical": backend.description(), "implementation": implementation.current(role),
+            **generation,
             "classes": {name: kind(value) for name, value in modules.items()},
             "parameters": parameters(model),
             "module_settings": {name: {key: getattr(value, key) for key in MODULE_SETTINGS if hasattr(value, key)}
@@ -84,11 +85,11 @@ def description(model):
             "layers": {name: layer(value) for name, value in modules.items() if isinstance(value, LoraLayer)}}
 
 
-def digest(model):
-    encoded = json.dumps(description(model), default=encode, sort_keys=True, separators=(",", ":"), allow_nan=False)
+def digest(model, role):
+    encoded = json.dumps(description(model, role), default=encode, sort_keys=True, separators=(",", ":"), allow_nan=False)
     return hashlib.sha256(encoded.encode()).hexdigest()
 
 
-def verify(model, expected):
-    if not isinstance(expected, str) or expected != digest(model):
+def verify(model, expected, role):
+    if not isinstance(expected, str) or expected != digest(model, role):
         raise RuntimeError("Checkpoint model assembly binding mismatch")

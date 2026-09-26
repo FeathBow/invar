@@ -9,6 +9,8 @@ from mlx_lm.tuner.lora import LoRALinear
 from worker.mlx import cache as mlx_cache
 from worker.mlx.attention import QUERY_TOKENS, SPLIT_QUERIES, QueryAttention
 from worker.mlx.projection import BITS, GROUP_SIZE, MINIMUM_COLUMNS, MODE, PHYSICAL_ROWS, SPLIT_ROWS, ColumnLoRALinear, RowLinear
+from worker.implementation import LEARNING
+from worker.mlx import implementation as mlx_implementation
 from worker.mlx import recurrence as mlx_recurrence
 
 
@@ -63,7 +65,7 @@ class Profile:
             for module in modules:
                 object.__setattr__(module, "__class__", self.linear)
 
-    def observe(self, model):
+    def observe(self, model, role):
         if type(model) is not mlx_cache.CachedModel:
             raise TypeError("Native numerical materialization differs from its declared cache model")
         mlx_recurrence.verify(model)
@@ -80,16 +82,18 @@ class Profile:
         expected = [mlx_cache.BoundedArraysCache if layer.is_linear else mlx_cache.TypedKVCache for layer in model.layers]
         if [type(cache) for cache in caches] != expected:
             raise TypeError("Actual native cache inventory differs from its declared layer roles")
-        learning = {} if self.learning_linear is None else {
-            "learning_projection": {"module": qualified(self.learning_linear),
-                                    "schedule": "one complete logical trajectory per native projection",
-                                    "roles": ["objective_vjp", "reward_vjp"],
-                                    "lifetime": "owned numerical operation; inference classes restored before state observation"}}
-        return {"format": "invar-mlx-numerics/v1", "name": self.name, "modules": observed, **learning,
-                "probabilities": {"proximal": "behavior words of the request policy's own rollout",
-                                  "reference": "engine forced-path scoring inside the rollout transaction",
-                                  "current": "proximal at the linearization point",
-                                  "linearized": "learner graph at the rollout temperature", "temperature": "rollout request"},
+        learning = {} if role != LEARNING else {
+            "probabilities": {"proximal": "behavior words of the request policy's own rollout",
+                              "reference": "engine forced-path scoring inside the rollout transaction",
+                              "current": "proximal at the linearization point",
+                              "linearized": "learner graph at the rollout temperature", "temperature": "rollout request"},
+            **({} if self.learning_linear is None else {
+                "learning_projection": {"module": qualified(self.learning_linear),
+                                        "schedule": "one complete logical trajectory per native projection",
+                                        "roles": ["objective_vjp", "reward_vjp"],
+                                        "lifetime": "owned numerical operation; inference classes restored before state observation"}})}
+        return {"format": "invar-mlx-numerics/v2", "role": role, "name": self.name, "modules": observed, **learning,
+                "implementation": mlx_implementation.current(role),
                 "projection_rows": PHYSICAL_ROWS if self.linear is RowLinear else None,
                 "projection_row_padding": "zero rows to the fixed block; discard padded outputs" if self.linear is RowLinear else None,
                 "lora_minimum_columns": MINIMUM_COLUMNS if self.lora is ColumnLoRALinear else None,

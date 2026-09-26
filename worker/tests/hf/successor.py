@@ -17,9 +17,12 @@ from worker.hf import assembly
 from worker.hf import operation
 from worker.hf.learning import update
 from worker.tests.hf.learning import batch, make_learner
-from worker.hf.probe import adapter_state, assert_equal, checkpoint, digest, restore
+from worker.hf.model import adapter_state
+from worker.hf.tensors import assert_equal, digest
+from worker.hf.checkpoint import checkpoint, restore
 from worker.hf.step import checkpoint_update
 from worker.tests.hf.step import prepared
+from worker.implementation import LEARNING
 
 OTHER_IDENTITY = "0" * 64
 
@@ -38,7 +41,7 @@ def changed(learner, tokenizer, field):
 def observed(learner, tokenizer):
     return (copy.deepcopy(learner.model.state_dict()), copy.deepcopy(learner.optimizer.state_dict()),
             torch.get_rng_state(), torch.cuda.get_rng_state_all(),
-            assembly.digest(learner.model), operation.digest(tokenizer))
+            assembly.digest(learner.model, LEARNING), operation.digest(tokenizer))
 
 
 class SuccessorTests(unittest.TestCase):

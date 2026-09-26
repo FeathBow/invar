@@ -19,9 +19,12 @@ from worker.hf import frozen
 from worker.tests.hf.checkpoint import advance_square, square_learner
 from worker.tests.hf.learning import make_learner
 from worker.tests.hf.tokenization import make_tokenizer
-from worker.hf.probe import adapter_state, assert_equal, checkpoint, restore
+from worker.hf.model import adapter_state
+from worker.hf.tensors import assert_equal
+from worker.hf.checkpoint import checkpoint, restore
 from worker.hf.step import restore_inputs
 from worker.tests.hf.step import prepared
+from worker.implementation import LEARNING
 
 
 def lora(model):
@@ -57,15 +60,15 @@ class AssemblyTests(unittest.TestCase):
 
     def test_declared_and_realized_lora_settings_are_separate_inputs(self):
         model, _ = square_learner()
-        original = assembly.digest(model)
+        original = assembly.digest(model, LEARNING)
         model.peft_config["default"].lora_alpha += 1
-        self.assertNotEqual(original, assembly.digest(model))
+        self.assertNotEqual(original, assembly.digest(model, LEARNING))
         model.peft_config["default"].lora_alpha -= 1
         lora(model).lora_dropout["default"] = torch.nn.Dropout(p=0.25)
-        dropped = assembly.digest(model)
+        dropped = assembly.digest(model, LEARNING)
         self.assertNotEqual(original, dropped)
         lora(model).lora_dropout["default"].p = 0.5
-        self.assertNotEqual(dropped, assembly.digest(model))
+        self.assertNotEqual(dropped, assembly.digest(model, LEARNING))
 
     def test_attention_choice_omitted_by_transformers_serialization_is_bound(self):
         config = Qwen3_5Config()
@@ -80,28 +83,28 @@ class AssemblyTests(unittest.TestCase):
         from worker.tests.hf.decoding import hybrid
 
         model = hybrid()
-        original, base = assembly.digest(model), frozen.digest(model)
+        original, base = assembly.digest(model, LEARNING), frozen.digest(model)
         self.assertFalse(model.is_gradient_checkpointing)
         model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
         self.assertTrue(model.is_gradient_checkpointing)
         self.assertEqual(base, frozen.digest(model))
         with self.assertRaisesRegex(RuntimeError, "model assembly binding mismatch"):
-            assembly.verify(model, original)
+            assembly.verify(model, original, LEARNING)
         model.gradient_checkpointing_disable()
-        self.assertEqual(original, assembly.digest(model))
+        self.assertEqual(original, assembly.digest(model, LEARNING))
 
     def test_configuration_locations_and_transient_train_mode_do_not_define_identity(self):
         model, _ = square_learner()
         config = Qwen3_5Config()
         model.get_base_model().config = config
-        original = assembly.digest(model)
+        original = assembly.digest(model, LEARNING)
         config._name_or_path = "/relocated/model"
         config.text_config._name_or_path = "/relocated/text"
         model.peft_config["default"].base_model_name_or_path = "/relocated/model"
         model.eval()
-        self.assertEqual(original, assembly.digest(model))
+        self.assertEqual(original, assembly.digest(model, LEARNING))
         config.text_config.rms_norm_eps *= 2
-        self.assertNotEqual(original, assembly.digest(model))
+        self.assertNotEqual(original, assembly.digest(model, LEARNING))
 
     def test_missing_assembly_binding_fails_without_reconstruction(self):
         model, optimizer = square_learner()

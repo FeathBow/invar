@@ -22,6 +22,7 @@ from worker.mlx.crossscore import score, validate
 from worker.mlx.metrics import measure
 from worker.scoring import Source, provenance, source
 from worker.probestore import Store
+from worker.implementation import INFERENCE
 
 FORMAT = "invar-cached-path-score-v1"
 IMPLEMENTATIONS = ("worker.scoring", "worker.mlx.score", "worker.mlx.crossscore", "worker.mlx.rollout",
@@ -38,13 +39,13 @@ def observe(loaded, selected, *, expected, sampling, measured, probe=None, store
     validate(selected.request, selected.path, loaded.tokenizer)
     if selected.truncated != (selected.path.response[-1] != loaded.tokenizer.eos_token_id):
         raise ValueError("Source stopping report differs from the actual target EOS")
-    actual = measured("verify_before", lambda: mlx_model.verify(loaded, expected))
+    actual = measured("verify_before", lambda: mlx_model.verify(loaded, expected, INFERENCE))
     before = {str(index): mx.array(value) for index, value in enumerate(mx.random.state)}
     observed, = measured("cross_score", lambda: score(loaded.model, loaded.tokenizer, (selected.request,),
                                                       paths=(selected.path,), sampling=sampling, probes=(probe,), stores=(store,)))
     if not mlx_tensors.equal(before, {str(index): value for index, value in enumerate(mx.random.state)}):
         raise RuntimeError("Cached scoring advanced the learner PRNG state")
-    measured("verify_after", lambda: mlx_model.verify(loaded, actual))
+    measured("verify_after", lambda: mlx_model.verify(loaded, actual, INFERENCE))
     result = {"format": FORMAT, "role": "cached_behavior_cross_score", "use_admission": "not_evaluated",
             "source_inspection_sha256": hashlib.sha256(selected.inspection).hexdigest(),
             "source": core.decode(selected.inspection),

@@ -58,6 +58,15 @@ class Cohort:
     optimizer: Optimizer
 
 
+def unique(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("Duplicate inference request field")
+        value[key] = item
+    return value
+
+
 def fields(value, expected):
     if not isinstance(value, dict) or set(value) != set(expected.split()):
         raise ValueError(f"Expected exactly these request fields: {expected}")

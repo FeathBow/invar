@@ -20,10 +20,12 @@ from worker.hf.handoff import export
 from worker.hf.learning import update
 from worker.implementation import file_digest
 from worker.hf.artifact import CONFIG, RECEIPT, WEIGHTS, read, read_checkpoint
-from worker.hf.probe import CheckpointIdentity, adapter_state
+from worker.hf.checkpoint import CheckpointIdentity
+from worker.hf.model import adapter_state
 from worker.hf.tensors import assert_equal, digest
 from worker.tests.hf.learning import batch, make_learner
 from worker.tests.hf.tokenization import make_tokenizer
+from worker.implementation import LEARNING
 
 
 class PackageTests(unittest.TestCase):
@@ -33,7 +35,7 @@ class PackageTests(unittest.TestCase):
         self.model = self.learner.model
         self.tokenizer = make_tokenizer()
         expected = CheckpointIdentity(adapter=digest(adapter_state(self.model)), base=frozen.digest(self.model),
-                                      assembly=assembly.digest(self.model), tokenizer=operation.digest(self.tokenizer))
+                                      assembly=assembly.digest(self.model, LEARNING), tokenizer=operation.digest(self.tokenizer))
         self.receipt = export(self.model, self.directory, tokenizer=self.tokenizer, expected=expected)
         self.identity = file_digest(self.directory / RECEIPT)
 

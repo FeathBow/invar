@@ -25,6 +25,7 @@ from worker.mlx.metrics import measure
 from worker.mlx.probability import words
 from worker.mlx.rollout import Sampler, Sampling, generate
 from worker.trajectory import Request
+from worker.implementation import INFERENCE
 
 SAMPLING = Sampling(batch_size=2, prefill_step=2)
 ZERO_SUPPORT = 0xff800000
@@ -57,7 +58,7 @@ def inspection(runtime, trajectory):
              "behavior_bits": list(words(trajectory.behavior)), "text": trajectory.text,
              "truncated": trajectory.truncated, "request": request_value(trajectory.request),
              "model": runtime.identity[0], "revision": runtime.identity[1],
-             **mlx_model.identities(runtime)}
+             **mlx_model.identities(runtime, INFERENCE)}
     value["log_sha256"] = hashlib.sha256(json.dumps(value).encode()).hexdigest()
     return json.dumps(value, allow_nan=False).encode()
 
@@ -69,7 +70,7 @@ class ArtifactTests(unittest.TestCase):
         cls.request = requests()[0]
         cls.trajectory, = generate(cls.runtime.model, cls.runtime.tokenizer, (cls.request,), sampling=SAMPLING)
         cls.encoded = inspection(cls.runtime, cls.trajectory)
-        cls.expected = mlx_model.identities(cls.runtime)
+        cls.expected = mlx_model.identities(cls.runtime, INFERENCE)
 
     def test_actual_model_artifact_preserves_role_path_and_materialization(self):
         records = []
@@ -161,7 +162,7 @@ class CachedPathTests(unittest.TestCase):
         self.assertGreater(max(len(value.response) for value in self.paths), 2)
         self.assertGreater(len({word for value in self.generated for word in words(value.behavior)}), 1)
         before = {str(index): mx.array(value) for index, value in enumerate(mx.random.state)}
-        identity = mlx_model.identities(self.reference)
+        identity = mlx_model.identities(self.reference, INFERENCE)
         for sampling in (SAMPLING, Sampling(batch_size=1, prefill_step=3)):
             with self.subTest(sampling=sampling):
                 observed = score(self.reference.model, self.reference.tokenizer, self.requests,
@@ -173,19 +174,19 @@ class CachedPathTests(unittest.TestCase):
                     self.assertEqual(actual.truncated, original.truncated)
                     self.assertEqual(actual.lookahead_draws, 1)
         self.assertTrue(tensors.equal(before, {str(index): value for index, value in enumerate(mx.random.state)}))
-        self.assertEqual(mlx_model.identities(self.reference), identity)
+        self.assertEqual(mlx_model.identities(self.reference, INFERENCE), identity)
 
     def test_different_actual_model_scores_reference_paths_using_its_own_probabilities(self):
         freely = generate(self.candidate.model, self.candidate.tokenizer, self.requests, sampling=SAMPLING)
         self.assertNotEqual(tuple(path(value) for value in freely), self.paths)
-        identity = mlx_model.identities(self.candidate)
-        self.assertNotEqual(identity["base"], mlx_model.identities(self.reference)["base"])
+        identity = mlx_model.identities(self.candidate, INFERENCE)
+        self.assertNotEqual(identity["base"], mlx_model.identities(self.reference, INFERENCE)["base"])
         scored = score(self.candidate.model, self.candidate.tokenizer, self.requests,
                        paths=self.paths, sampling=SAMPLING)
         self.assertEqual(tuple(value.path for value in scored), self.paths)
         self.assertNotEqual(tuple(value.log_probability_bits for value in scored),
                             tuple(words(value.behavior) for value in self.generated))
-        self.assertEqual(mlx_model.identities(self.candidate), identity)
+        self.assertEqual(mlx_model.identities(self.candidate, INFERENCE), identity)
 
     def test_paths_reject_wrong_prefix_vocabulary_termination_and_inventory(self):
         request = self.requests[0]

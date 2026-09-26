@@ -13,6 +13,7 @@ from worker.mlx import inference as mlx_inference
 from worker.mlx.metrics import measure
 from worker.mlx import model as mlx_model
 from worker.resident import Owner, Transcript
+from worker.implementation import INFERENCE
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -22,7 +23,7 @@ class Selected:
 
 
 def activate(runtime, path, *, expected):
-    mlx_model.verify(runtime.loaded, runtime.identities)
+    mlx_model.verify(runtime.loaded, runtime.identities, INFERENCE)
     if expected != runtime.identities:
         mlx_model.activate(runtime.loaded, path, expected=expected)
     return Selected(loaded=runtime.loaded, identities=expected)

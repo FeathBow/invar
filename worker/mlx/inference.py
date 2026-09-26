@@ -10,10 +10,11 @@ from worker.mlx import model as mlx_model
 from worker.mlx.rollout import generate
 from worker.mlx import tensors as mlx_tensors
 from worker.scoring import TokenPath
+from worker.implementation import INFERENCE
 
 
 def execute(runtime, call, *, approve, measure, emit, sampling, previous=None):
-    identities = mlx_model.verify(runtime, call.identities)
+    identities = mlx_model.verify(runtime, call.identities, INFERENCE)
     ready(call, identities, model=runtime.identity, previous=previous, emit=emit)
     approve(call.invocation)
     trajectory, = measure("inference", lambda: sample(runtime, (call.request,), sampling=sampling))
@@ -24,7 +25,7 @@ def execute_batch(runtime, calls, *, approve, measure, emit, sampling, reference
     expected = calls[0].identities
     if any(call.identities != expected for call in calls):
         raise ValueError("Native batch members require the same model materialization")
-    identities = mlx_model.verify(runtime, expected)
+    identities = mlx_model.verify(runtime, expected, INFERENCE)
     readiness = [capture(partial(ready, call, identities, model=runtime.identity, previous=None)) for call in calls]
     emit("consumed", {"format": FORMAT, "calls": readiness})
     approve(tuple(call.invocation for call in calls))

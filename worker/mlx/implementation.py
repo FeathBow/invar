@@ -1,0 +1,100 @@
+from pathlib import Path
+
+from worker.implementation import INFERENCE, LEARNING, file_digest
+
+FORMAT = "invar-mlx-implementation-v1"
+SHARED = {
+    "mlx/model.py": "model loading, quantization and numerical profile installation",
+    "mlx/numerics.py": "numerical profile installation and observation",
+    "mlx/projection.py": "row-blocked projection and LoRA column padding",
+    "mlx/attention.py": "query-blocked attention",
+    "mlx/recurrence.py": "segmented recurrence bound into the native gated delta call",
+    "mlx/cache.py": "KV and recurrent caches",
+    "mlx/adapter.py": "adapter installation and LoRA layers",
+    "mlx/rollout.py": "tempered distribution shared by the sampler and the learner",
+    "mlx/words.py": "FP32 word representation",
+}
+ROLES = {
+    INFERENCE: {
+        **SHARED,
+        "mlx/inference.py": "execution order, sampler randomness and reference scoring",
+        "mlx/crossscore.py": "forced-path scoring",
+        "mlx/distribution.py": "full-vocabulary probe capture",
+        "mlx/score.py": "scoring execution",
+        "mlx/tokenization.py": "prompt tokens",
+        "hf/operation.py": "tokenizer loading: chat template and special tokens",
+        "tokenization.py": "response text decoding",
+        "scoring.py": "prescribed token paths",
+        "distribution.py": "probe snapshot values",
+        "probestore.py": "probe word storage",
+        "probeoutput.py": "probe word encoding",
+    },
+    LEARNING: {
+        **SHARED,
+        "mlx/learning.py": "learner graph linearization and gradient accumulation",
+        "mlx/backward.py": "layerwise vector-Jacobian products",
+        "mlx/recurrentvjp.py": "recurrent vector-Jacobian products",
+        "mlx/probability.py": "cotangent application",
+        "mlx/step.py": "restored inputs, trajectory tensors and the optimizer step",
+        "mlx/checkpoint.py": "optimizer and parameter state saved and restored",
+        "mlx/state.py": "random and optimizer state restored between updates",
+        "mlx/learner.py": "resident learner state carried across updates",
+        "logical.py": "logical sample order of gradient accumulation",
+    },
+}
+NEUTRAL = {
+    "implementation.py": "identity computation",
+    "mlx/implementation.py": "identity computation",
+    "mlx/tensors.py": "identity and equality checks",
+    "mlx/metrics.py": "time and memory measurement",
+    "mlx/infer.py": "process entry and argument parsing",
+    "mlx/batch.py": "process entry and argument parsing",
+    "mlx/scoring.py": "process entry and argument parsing",
+    "mlx/cohort.py": "process entry and group dispatch",
+    "mlx/initialize.py": "initial checkpoint; its effect is fixed by the checkpoint content digests",
+    "hf/infer.py": "request decoding; the request is echoed in the result and checked by the core",
+    "hf/session.py": "request decoding; the request is echoed in the result and checked by the core",
+    "hf/metrics.py": "time and memory measurement",
+    "hf/tensors.py": "identity and equality checks",
+    "hf/frozen.py": "identity computation",
+    "batch.py": "batch protocol checked by the core",
+    "cohort.py": "request field decoding checked by the core",
+    "core.py": "core invocation protocol",
+    "dispatch.py": "resident dispatch protocol checked by the core",
+    "invocation.py": "binding and permission protocol checked by the core",
+    "registry.py": "load registry protocol checked by the core",
+    "report.py": "result records checked by the core",
+    "resident.py": "owner protocol checked by the core",
+    "update.py": "update request decoding checked by the core",
+    "trajectory.py": "record types",
+    "advantage.py": "advantage words recomputed bit for bit by the core",
+    "scalar.py": "objective scalars and cotangents recomputed bit for bit by the core",
+    "record.py": "probability records recomputed bit for bit by the core",
+}
+UNREACHED = {
+    name: "Hugging Face inference path, imported only by the Hugging Face entry in hf/session"
+    for name in ("hf/inference.py", "hf/model.py", "hf/rollout.py", "hf/decoding.py", "hf/backend.py",
+                 "hf/assembly.py", "hf/policy.py")
+}
+IRRELEVANT = {
+    INFERENCE: {},
+    LEARNING: {
+        "mlx/inference.py": "inference execution, used by the learner process only for rollouts",
+        "mlx/crossscore.py": "forced-path scoring, inference only",
+        "mlx/distribution.py": "probe capture, inference only",
+        "mlx/tokenization.py": "tokenizer identity check only; the learner consumes token ids",
+        "hf/operation.py": "tokenizer loading, inference only",
+        "tokenization.py": "text decoding, inference only",
+        "scoring.py": "prescribed paths, inference only",
+        "distribution.py": "probe values, inference only",
+        "probestore.py": "probe storage, inference only",
+    },
+}
+
+
+def description(root, role):
+    return {"format": FORMAT, "role": role, "files": {name: file_digest(root / name) for name in ROLES[role]}}
+
+
+def current(role):
+    return description(Path(__file__).resolve().parents[1], role)

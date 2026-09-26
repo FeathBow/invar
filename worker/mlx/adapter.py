@@ -78,14 +78,22 @@ def assembly(model):
     return observed
 
 
-def images(model, config, *, numerics):
+def frozen(model, config):
     trainable = state(model)
     base = hashlib.sha256(json.dumps(["invar-mlx-base/v1", config], sort_keys=True, separators=(",", ":")).encode())
     for name, value in sorted(tree_flatten(model.parameters())):
         if name not in trainable:
             base.update(json.dumps([name, str(value.dtype), list(value.shape)]).encode())
             base.update(mlx_tensors.view(value))
-    structure = {"format": "invar-mlx-assembly/v2", "layers": len(model.layers), "numerics": numerics,
+    return base.hexdigest()
+
+
+def assembled(model, *, numerics):
+    structure = {"format": "invar-mlx-assembly/v3", "layers": len(model.layers), "numerics": numerics,
                  "model_type": type(model).__module__ + "." + type(model).__qualname__, "adapter": assembly(model)}
     encoded = json.dumps(structure, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
-    return {"base": base.hexdigest(), "assembly": hashlib.sha256(encoded).hexdigest()}
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def images(model, config, *, numerics):
+    return {"base": frozen(model, config), "assembly": assembled(model, numerics=numerics)}

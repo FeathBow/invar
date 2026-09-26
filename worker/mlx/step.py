@@ -18,9 +18,10 @@ from worker.mlx import tokenization as mlx_tokenization
 from worker.record import save as save_probabilities
 from worker import registry
 from worker.scalar import Profile
-from worker.hf.step import file_digest
+from worker.implementation import file_digest
 from worker.trajectory import Request, Trajectory
 from worker.update import consumed, snapshot
+from worker.implementation import LEARNING
 
 
 def optimizer(settings):
@@ -79,7 +80,7 @@ def consume(call, *, checked, measure, emit, runtime):
 
 
 def save(runtime, learner, output, *, expected=None):
-    identities = mlx_model.identities(runtime)
+    identities = mlx_model.identities(runtime, LEARNING)
     if expected is not None and identities != expected:
         raise RuntimeError("Native successor differs from its observed updated materialization")
     parameters = mlx_adapter.state(learner.model)

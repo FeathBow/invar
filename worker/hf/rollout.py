@@ -1,14 +1,10 @@
 import math
-import re
-from decimal import Decimal
 
 import torch
 
 from worker.hf.decoding import forward
 from worker.tokenization import decode, prompt
-from worker.trajectory import Request, Trajectory
-
-ANSWER = re.compile(r"#### ([+-]?[0-9]+(?:\.[0-9]+)?)")
+from worker.trajectory import Trajectory
 
 
 def generate(model, tokenizer, request, *, device="cuda"):
@@ -39,23 +35,3 @@ def generate(model, tokenizer, request, *, device="cuda"):
                       behavior=torch.stack(observations), truncated=not stopped,
                       text=decode(tokenizer, tokens[0, prompt_length:]))
 
-
-def logprobs(model, trajectory, *, device="cuda"):
-    tokens = trajectory.tokens.to(device)
-    response = tokens[:, trajectory.prompt_length:]
-    logits = model(input_ids=tokens, attention_mask=torch.ones_like(tokens), use_cache=False,
-                   logits_to_keep=response.shape[1] + 1).logits[:, :-1, :].float()
-    selected = torch.log_softmax(logits / trajectory.request.temperature, dim=-1).gather(-1, response.unsqueeze(-1)).reshape(-1)
-    if not selected.isfinite().all():
-        raise RuntimeError("Non-finite selected model log probability")
-    return selected
-
-
-def reward(text, answer, truncated):
-    expected = ANSWER.fullmatch(answer.strip())
-    if expected is None:
-        raise ValueError("Invalid frozen expected-answer grammar")
-    if truncated or not text.strip():
-        return 0.0
-    actual = ANSWER.fullmatch(text.strip().splitlines()[-1])
-    return float(actual is not None and Decimal(actual[1]) == Decimal(expected[1]))

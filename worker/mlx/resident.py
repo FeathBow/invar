@@ -16,6 +16,7 @@ from worker.mlx.metrics import measure
 from worker.mlx import model as mlx_model
 from worker.mlx import tensors as mlx_tensors
 from worker import resident
+from worker.implementation import INFERENCE
 
 
 def inference(loaded, learner, group):
@@ -24,7 +25,7 @@ def inference(loaded, learner, group):
         raise ValueError("Shared inference members require the same materialization")
     if learner is None:
         return mlx_model.activate(loaded, group.adapter, expected=expected)
-    actual = mlx_learner.verify(learner)
+    actual = {**mlx_learner.verify(learner), "assembly": mlx_model.assembly(loaded, INFERENCE)}
     if expected != actual:
         raise ValueError("Shared inference must consume the completed native successor")
     mlx_tensors.policy(group.adapter, expected["adapter"])

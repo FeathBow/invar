@@ -4,8 +4,10 @@ import torch
 
 from worker.report import ready, result
 from worker.hf.policy import activate, read_adapter, verify as verify_adapter
-from worker.hf.probe import CPU_THREADS, DEFAULT_SEED, MODEL, REVISION, load_model, measure, report
+from worker.hf.model import CPU_THREADS, DEFAULT_SEED, MODEL, REVISION, load_model
+from worker.hf.metrics import measure, report
 from worker.hf.rollout import generate
+from worker.implementation import INFERENCE
 from worker.hf.operation import load as load_tokenizer
 from worker.hf.operation import verify
 
@@ -30,8 +32,8 @@ def load(cache, adapter, *, expected):
     path = snapshot_download(MODEL, revision=REVISION, cache_dir=cache, local_files_only=True)
     tokenizer = load_tokenizer(path)
     verify(tokenizer, expected["tokenizer"])
-    model = measure("load", lambda: load_model(path))
-    activate(model, state, base=expected["base"], assembly=expected["assembly"])
+    model = measure("load", lambda: load_model(path, role=INFERENCE))
+    activate(model, state, base=expected["base"], assembly=expected["assembly"], role=INFERENCE)
     return Runtime(model=model, tokenizer=tokenizer, adapter=adapter, device="cuda", identity=(MODEL, REVISION))
 
 
@@ -41,7 +43,7 @@ def execute(runtime, call, *, approve, measure, previous=None, emit=report, refe
     requested = call.identities
     tokenizer = verify(runtime.tokenizer, requested["tokenizer"])
     consumed = verify_adapter(runtime.model, requested["adapter"],
-                              base=requested["base"], assembly=requested["assembly"])
+                              base=requested["base"], assembly=requested["assembly"], role=INFERENCE)
     identities = {"adapter": consumed, "tokenizer": tokenizer, "base": requested["base"], "assembly": requested["assembly"]}
     ready(call, identities, model=runtime.identity, previous=previous, emit=emit)
     approve(call.invocation)

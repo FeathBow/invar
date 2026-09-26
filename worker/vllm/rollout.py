@@ -3,7 +3,7 @@ import math
 
 import torch
 
-from worker.hf.rollout import Trajectory
+from worker.trajectory import Trajectory
 from worker.tokenization import decode, prompt
 
 LOGPROBS_MODE = "processed_logprobs"

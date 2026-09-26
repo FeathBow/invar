@@ -8,7 +8,7 @@ import torch
 from vllm.forward_context import get_forward_context
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
 
-from worker.hf.rollout import Request
+from worker.trajectory import Request
 from worker.hf.tensors import assert_equal
 from worker.vllm.context import response_history
 from worker.vllm.mapping import Selection, observe

@@ -12,7 +12,9 @@ import torch
 from peft import LoraConfig, get_peft_model
 from transformers import Qwen3_5Config, Qwen3_5ForConditionalGeneration
 
-from worker.hf.rollout import Request, generate, logprobs
+from worker.hf.probability import logprobs
+from worker.hf.rollout import generate
+from worker.trajectory import Request
 from worker.hf.tensors import assert_equal
 from worker.tests.hf.inference import MODEL_SEED, model
 from worker.tests.hf.tokenization import WORDS, make_tokenizer

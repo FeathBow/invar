@@ -41,11 +41,13 @@ class LifecycleTests(unittest.TestCase):
         root = Path(tempfile.mkdtemp(prefix="invar-mlx-lifecycle-"))
         initial = root / "initial"
         log = root / "initial.jsonl"
-        observed = self.command([sys.executable, "-B", ENTRY, *flags({"cache": root, "output": initial,
-                                "seed": 17, "tokenizer-digest": mlx_tokenization.digest(tokenizer())})], log)[-1]
+        records = self.command([sys.executable, "-B", ENTRY, *flags({"cache": root, "output": initial,
+                               "seed": 17, "tokenizer-digest": mlx_tokenization.digest(tokenizer())})], log)
+        observed = records[-1]
+        inference = next(record["inference"] for record in records if record["stage"] == "profile")
         settings = {"policy": observed["policy"], "learner": observed["learner"], "reference-digest": observed["policy"],
                     **{name + "-digest": observed[name] for name in ("tokenizer", "base", "assembly")},
-                    **{"behavior-" + name + "-digest": observed[name] for name in ("base", "assembly")},
+                    **{"behavior-" + name + "-digest": inference[name] for name in ("base", "assembly")},
                     "clip": 0.2, "penalty": 0, "delta": 0.0001, "rate": 0.0001,
                     "beta1": 0.9, "beta2": 0.999, "optimizer-epsilon": 0.00000001, "decay": 0}
         tasks = [{"tasks": [{"name": str(index), "group": "group", "prompt": "one two", "tokens": 2,
@@ -56,7 +58,7 @@ class LifecycleTests(unittest.TestCase):
         configuration = root / "configuration.json"
         configuration.write_text(json.dumps({"format": "invar-mlx-runtime-v1", "batch_size": 2,
                                              "prefill_step": 16, "cache_bytes": 1048576}))
-        selected = seal(root, initial, observed=observed, configuration=configuration, executable=CORE)
+        selected = seal(root, initial, observed={**observed, **inference}, configuration=configuration, executable=CORE)
         output = root / "train"
         shared = {"inference-mode": "shared", "learning-mode": "shared", "checkpoint": initial,
                   "reference": initial / "adapter.safetensors", "publication": "reference", "output": output}
@@ -79,7 +81,7 @@ class LifecycleTests(unittest.TestCase):
         native = mlx_checkpoint.load((output / "generation2/learner.pt").read_bytes())
         self.assertEqual(native["optimizer"]["state"]["step"].item(), 2)
         final = {"digest": publications[-1]["policy"], "tokenizer-digest": observed["tokenizer"],
-                 "base-digest": observed["base"], "assembly-digest": observed["assembly"],
+                 "base-digest": inference["base"], "assembly-digest": inference["assembly"],
                  "prompt": "one two", "tokens": 2, "temperature": 0.8, "seed": 17, "call": 6, "attempt": 6, "instance": 6}
         final_inputs = {name: final[name] for name in ("prompt", "tokens", "temperature", "seed", "call", "attempt", "instance")}
         self.command([CORE, "infer", *flags({**final_inputs, "python": sys.executable, "worker": ENTRY, "cache": root,

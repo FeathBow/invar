@@ -13,6 +13,7 @@ from worker.mlx.metrics import measure
 from worker.resident import Transcript
 from worker.probestore import Store
 from worker.scoring import decode
+from worker.implementation import INFERENCE
 
 
 def run(options, *, loader=mlx_model.load, source=None, output=None):
@@ -31,7 +32,7 @@ def run(options, *, loader=mlx_model.load, source=None, output=None):
     with redirect_stdout(sys.stderr), ExitStack() as scope:
         loaded = loader(options.cache, scope=scope, configuration=configuration, measure=measured,
                         emit=emit, initial=(options.adapter, call.identities))
-        actual = mlx_model.verify(loaded, call.identities)
+        actual = mlx_model.verify(loaded, call.identities, INFERENCE)
         transcript.emit("loaded_adapter", {"binding": call.invocation.binding(),
                         "load": registry.invocation(call.load), "image": registry.image(actual),
                         "requested": call.identities["adapter"], "consumed": actual["adapter"],

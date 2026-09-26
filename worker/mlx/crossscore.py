@@ -4,7 +4,7 @@ import mlx.core as mx
 
 from worker.distribution import Observed, Probe
 from worker.mlx.distribution import Capture
-from worker.mlx.probability import words
+from worker.mlx.words import words
 from worker.mlx.rollout import Sampler, consumed, execute
 from worker.mlx.tokenization import prompt
 from worker.trajectory import Request

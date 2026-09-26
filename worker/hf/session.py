@@ -5,7 +5,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from worker.cohort import fields, identity, number
+from worker.cohort import fields, identity, number, unique
 from worker.invocation import Invocation, approve
 from worker.invocation import decode as invocation
 from worker.trajectory import Request
@@ -67,15 +67,6 @@ def decode(value):
     requested = Request(sample="inference", group="inference", prompt=request["prompt"],
                         seed=request["seed"], limit=request["tokens"], temperature=thermal)
     return Call(invocation=bound, load=loading, request=requested, identities=identities)
-
-
-def unique(pairs):
-    value = {}
-    for key, item in pairs:
-        if key in value:
-            raise ValueError("Duplicate inference request field")
-        value[key] = item
-    return value
 
 
 def serve(options, *, source, loader, execute, permission):

@@ -28,7 +28,9 @@ from worker.tests.hf.learning import batch, make_learner
 from worker.hf.objective import Reward
 from worker.tests.hf.tokenization import make_tokenizer
 from worker.hf.operation import digest as tokenizer_digest
-from worker.hf.probe import adapter_state, checkpoint, digest, restore
+from worker.hf.model import adapter_state
+from worker.hf.checkpoint import checkpoint, restore
+from worker.hf.tensors import digest
 from worker.update import observation
 
 SEED = 17

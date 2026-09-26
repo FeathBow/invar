@@ -1,50 +1,71 @@
 import hashlib
 from pathlib import Path
 
-FORMAT = "invar-worker-source-v1"
-SOURCE_FILES = (
-    "advantage.py",
-    "binding.py",
-    "cohort.py",
-    "implementation.py",
-    "inputs.py",
-    "invocation.py",
-    "learner.py",
-    "logical.py",
-    "record.py",
-    "registry.py",
-    "report.py",
-    "resident.py",
-    "scalar.py",
-    "tokenization.py",
-    "hf/assembly.py",
-    "hf/backend.py",
-    "hf/decoding.py",
-    "hf/frozen.py",
-    "hf/infer.py",
-    "hf/inference.py",
-    "hf/initialize.py",
-    "hf/learning.py",
-    "hf/metrics.py",
-    "hf/objective.py",
-    "hf/operation.py",
-    "hf/policy.py",
-    "hf/probability.py",
-    "hf/probe.py",
-    "hf/resident.py",
-    "hf/rollout.py",
-    "hf/runtime.py",
-    "hf/session.py",
-    "hf/state.py",
-    "hf/step.py",
-    "hf/tensors.py",
-    "trajectory.py",
-    "update.py",
-)
+FORMAT = "invar-worker-implementation-v2"
+INFERENCE = "inference"
+LEARNING = "learning"
+SHARED = {
+    "hf/model.py": "model loading: quantization, dtype, attention implementation and LoRA wrapping",
+    "hf/backend.py": "torch numerical switches: matmul precision, TF32 and determinism",
+    "hf/policy.py": "adapter tensors installed into the model",
+}
+ROLES = {
+    INFERENCE: {
+        **SHARED,
+        "hf/inference.py": "runtime construction, device placement and thread count",
+        "hf/rollout.py": "sampling loop: temperature, softmax, seeded generator and EOS stop",
+        "hf/decoding.py": "forward pass with the KV cache",
+        "hf/operation.py": "tokenizer loading: chat template and special tokens",
+        "tokenization.py": "prompt token construction",
+    },
+    LEARNING: {
+        **SHARED,
+        "hf/checkpoint.py": "optimizer, parameter and random state saved and restored between updates",
+        "hf/learning.py": "learner graph, vector-Jacobian products and the AdamW step",
+        "hf/objective.py": "token surrogate differentiated by the learner",
+        "hf/probability.py": "learner log probabilities at the rollout temperature and cotangent application",
+        "hf/step.py": "restored inputs and trajectory tensors given to the learner",
+        "hf/runtime.py": "resident learner state carried across updates",
+        "binding.py": "optimizer parameter groups",
+        "logical.py": "logical sample order of gradient accumulation",
+    },
+}
+NEUTRAL = {
+    "implementation.py": "identity computation",
+    "hf/assembly.py": "identity computation",
+    "hf/frozen.py": "identity computation",
+    "hf/tensors.py": "identity and equality checks",
+    "hf/metrics.py": "time and memory measurement",
+    "hf/infer.py": "request decoding; the request is echoed in the result and checked by the core",
+    "hf/session.py": "request decoding; the request is echoed in the result and checked by the core",
+    "hf/resident.py": "learner protocol; the consumed request is checked by the core",
+    "hf/initialize.py": "initial checkpoint; its effect is fixed by the checkpoint content digests",
+    "hf/state.py": "state observation and attestation",
+    "invocation.py": "binding and permission protocol checked by the core",
+    "registry.py": "load registry protocol checked by the core",
+    "report.py": "result records checked by the core",
+    "resident.py": "owner protocol checked by the core",
+    "learner.py": "learner protocol checked by the core",
+    "inputs.py": "input paths",
+    "update.py": "update request decoding checked by the core",
+    "cohort.py": "request field decoding checked by the core",
+    "trajectory.py": "record types",
+    "advantage.py": "advantage words recomputed bit for bit by the core",
+    "scalar.py": "objective scalars and cotangents recomputed bit for bit by the core",
+    "record.py": "probability records recomputed bit for bit by the core",
+}
+IRRELEVANT = {
+    INFERENCE: {},
+    LEARNING: {
+        "hf/operation.py": "tokenizer identity check only; the learner consumes token ids",
+        "tokenization.py": "token id validation only",
+        "hf/decoding.py": "generation settings, used only by inference",
+    },
+}
 
 
-def description(root):
-    return {"format": FORMAT, "files": {name: file_digest(root / name) for name in SOURCE_FILES}}
+def description(root, role):
+    return {"format": FORMAT, "role": role, "files": {name: file_digest(root / name) for name in ROLES[role]}}
 
 
 def file_digest(path):
@@ -52,5 +73,5 @@ def file_digest(path):
         return hashlib.file_digest(source, "sha256").hexdigest()
 
 
-def current():
-    return description(Path(__file__).resolve().parent)
+def current(role):
+    return description(Path(__file__).resolve().parent, role)

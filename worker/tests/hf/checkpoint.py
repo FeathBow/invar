@@ -17,7 +17,9 @@ from peft import LoraConfig, get_peft_model
 from worker.hf.learning import update
 from worker.tests.hf.learning import batch, make_learner
 from worker.tests.hf.tokenization import make_tokenizer
-from worker.hf.probe import DEFAULT_SEED, adapter_state, assert_equal, checkpoint, restore
+from worker.hf.model import DEFAULT_SEED, adapter_state
+from worker.hf.tensors import assert_equal
+from worker.hf.checkpoint import checkpoint, restore
 
 SQUARE_WIDTH = 2
 

@@ -25,7 +25,7 @@ def run(options, *, loader=mlx_model.load):
         transcript = Transcript(output)
         measured = partial(measure, emit=transcript.emit)
         loaded = loader(options.cache, scope=scope, configuration=configuration, measure=measured,
-                        emit=transcript.emit, seed=options.seed)
+                        emit=transcript.emit, seed=options.seed, identified=True)
         mlx_tokenization.verify(loaded.tokenizer, options.tokenizer_digest)
         learner = Learner(model=loaded.model, optimizer=mlx_step.optimizer(INITIAL_OPTIMIZER), evaluate=logprobs)
         saved = measured("checkpoint", partial(mlx_step.save, loaded, learner, options.output))

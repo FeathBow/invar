@@ -23,8 +23,12 @@ from worker.tests.hf.inference import IDENTITY, measured, model, TEST_THREADS
 from worker.invocation import approve
 from worker.hf.learning import parameters
 from worker.registry import learning
-from worker.hf.probe import adapter_state, assert_equal, checkpoint, digest
-from worker.hf.rollout import Request, generate, logprobs, reward
+from worker.hf.model import adapter_state
+from worker.hf.tensors import assert_equal, digest
+from worker.hf.checkpoint import checkpoint
+from worker.hf.probability import logprobs
+from worker.hf.rollout import generate
+from worker.trajectory import Request
 from worker.hf.step import file_digest, optimizer_options, run
 from worker.tests.hf.tokenization import make_tokenizer
 from worker.update import decode
@@ -53,7 +57,7 @@ def fixture(*, directory=None):
                         "prompt_length": actual.prompt_length, "text": actual.text,
                         "truncated": actual.truncated,
                         "behavior_bits": actual.behavior.view(torch.uint32).tolist(), "reference_bits": [],
-                        "reward": reward(actual.text, "#### 437", actual.truncated),
+                        "reward": (1.0, 0.0)[index],
                         "advantage_bits": (0x3F7FF2E5, 0xBF7FF2E5)[index]})
     actual = {**request(), "policy": digest(state), "learner": file_digest(initial / "learner.pt"),
               "tokenizer": saved["tokenizer"], "base": saved["base"], "assembly": saved["assembly"],

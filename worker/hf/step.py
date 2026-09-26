@@ -25,7 +25,9 @@ def restore_inputs(model, request, options, *, tokenizer):
     import torch
     from worker.hf.learning import check_optimizer, parameters
     from worker.hf.policy import read_adapter, validate_schema
-    from worker.hf.probe import adapter_state, digest, restore_state
+    from worker.hf.model import adapter_state
+    from worker.hf.tensors import digest
+    from worker.hf.checkpoint import restore_state
     from worker.tokenization import validate
     from worker.hf.operation import verify
 
@@ -65,7 +67,7 @@ def loaded_inputs(optimizer, identities):
 
 def trajectory(item):
     import torch
-    from worker.hf.rollout import Request, Trajectory
+    from worker.trajectory import Request, Trajectory
 
     numerical = Request(sample=item.sample, group=item.group, prompt=item.prompt,
                         seed=item.seed, limit=item.limit, temperature=item.temperature)
@@ -96,7 +98,7 @@ def batch(request, *, checked, measure, emit):
 
 
 def checkpoint_update(learner, request, output, *, tokenizer, summary):
-    from worker.hf.probe import CheckpointIdentity, checkpoint
+    from worker.hf.checkpoint import CheckpointIdentity, checkpoint
 
     if summary["before"] != request.policy:
         raise RuntimeError("Update input differs from the declared policy")
@@ -106,7 +108,7 @@ def checkpoint_update(learner, request, output, *, tokenizer, summary):
 
 
 def load(options, request):
-    from worker.hf.probe import measure, report
+    from worker.hf.metrics import measure, report
 
     return load_with(options, request, measure=measure, emit=report)
 
@@ -115,7 +117,8 @@ def load_with(options, request, *, measure, emit):
     import torch
     from huggingface_hub import snapshot_download
     from worker.hf.operation import load as load_tokenizer, verify
-    from worker.hf.probe import CPU_THREADS, DEFAULT_SEED, MODEL, REVISION, load_model
+    from worker.hf.model import CPU_THREADS, DEFAULT_SEED, MODEL, REVISION, load_model
+    from worker.implementation import LEARNING
 
     torch.set_num_threads(CPU_THREADS)
     torch.set_float32_matmul_precision("highest")
@@ -125,14 +128,14 @@ def load_with(options, request, *, measure, emit):
     path = snapshot_download(MODEL, revision=REVISION, cache_dir=options.cache, local_files_only=True)
     tokenizer = load_tokenizer(path)
     verify(tokenizer, request.tokenizer)
-    model = measure("load", lambda: load_model(path, emit=emit))
+    model = measure("load", lambda: load_model(path, role=LEARNING, emit=emit))
     return model, tokenizer, (MODEL, REVISION)
 
 
 def run(call, options, *, loader, measure, permission, evaluate):
     from worker.advantage import check
     from worker.hf.learning import Learner
-    from worker.hf.probe import report
+    from worker.hf.metrics import report
 
     checked = check(call.request)
     options.output.mkdir(exist_ok=False)
@@ -162,7 +165,7 @@ def execute(learner, call, output, *, batch, actual, tokenizer, measure):
     from worker.hf.learning import update
     from safetensors.torch import save_file
     from worker.hf.probability import save as save_probabilities
-    from worker.hf.probe import digest
+    from worker.hf.tensors import digest
 
     request = call.request
     bound = call.invocation.binding()
@@ -192,9 +195,9 @@ def arguments():
 
 
 def main():
-    from worker.hf.session import unique
-    from worker.hf.probe import measure
-    from worker.hf.rollout import logprobs
+    from worker.cohort import unique
+    from worker.hf.metrics import measure
+    from worker.hf.probability import logprobs
 
     options = arguments()
     call = decode(json.loads(sys.stdin.readline(), object_pairs_hook=unique))

@@ -29,8 +29,9 @@ from worker import registry
 from worker.hf import tensors
 from worker.hf import operation
 from worker.hf.policy import read_adapter
-from worker.hf.probe import adapter_state
+from worker.hf.model import adapter_state
 from worker.tests.hf.tokenization import WORDS, make_tokenizer
+from worker.implementation import INFERENCE
 
 MODEL_SEED = 41
 HIDDEN_SIZE = 16
@@ -58,7 +59,7 @@ def fixture():
     state = adapter_state(loaded)
     save_file(state, adapter)
     identities = {"adapter": tensors.digest(state), "base": frozen.digest(loaded),
-                  "assembly": assembly.digest(loaded), "tokenizer": operation.digest(tokenizer)}
+                  "assembly": assembly.digest(loaded, INFERENCE), "tokenizer": operation.digest(tokenizer)}
     runtime = inference.Runtime(model=loaded, tokenizer=tokenizer, adapter=adapter, device="cpu", identity=IDENTITY)
     return runtime, identities
 

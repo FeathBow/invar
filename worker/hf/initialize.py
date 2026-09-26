@@ -23,8 +23,11 @@ def main():
     from huggingface_hub import snapshot_download
 
     from worker.hf.learning import parameters
-    from worker.hf.probe import (ADAM_BETAS, ADAM_EPSILON, CPU_THREADS, LEARNING_RATE, MODEL,
-                       REVISION, checkpoint, digest, load_model, measure, report)
+    from worker.hf.checkpoint import ADAM_BETAS, ADAM_EPSILON, LEARNING_RATE, checkpoint
+    from worker.hf.model import CPU_THREADS, MODEL, REVISION, load_model
+    from worker.implementation import LEARNING
+    from worker.hf.tensors import digest
+    from worker.hf.metrics import measure, report
     from worker.hf.step import file_digest
     from worker.hf.operation import load, verify
 
@@ -36,7 +39,7 @@ def main():
     path = snapshot_download(MODEL, revision=REVISION, cache_dir=options.cache, local_files_only=True)
     tokenizer = load(path)
     observed = verify(tokenizer, options.tokenizer_digest)
-    model = measure("load", lambda: load_model(path))
+    model = measure("load", lambda: load_model(path, role=LEARNING))
     optimizer = torch.optim.AdamW(parameters(model), lr=LEARNING_RATE, betas=ADAM_BETAS,
                                   eps=ADAM_EPSILON, weight_decay=0.0, foreach=False, fused=False)
     options.output.mkdir(exist_ok=False)

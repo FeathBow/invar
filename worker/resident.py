@@ -5,7 +5,7 @@ import json
 
 from worker.cohort import fields
 from worker.invocation import decode as invocation
-from worker.hf.session import unique
+from worker.cohort import unique
 
 FORMAT = "invar-resident-v1"
 

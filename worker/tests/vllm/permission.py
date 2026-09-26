@@ -6,7 +6,7 @@ try:
 except ImportError as missing:
     raise unittest.SkipTest(f"{missing.name} is not installed") from missing
 
-from worker.hf.rollout import Request
+from worker.trajectory import Request
 from worker.vllm.mapping import Selection
 from worker.vllm.state import Binding, Monitor
 

@@ -37,48 +37,80 @@ MODULE_FIELDS = ("eps", "epsilon", "variance_epsilon", "hidden_size", "intermedi
                  "mrope_section", "mrope_interleaved", "activation", "use_bias", "input_size", "output_size",
                  "output_sizes", "output_partition_sizes", "output_slices", "tp_rank", "tp_size")
 METHOD_FIELDS = ("forward", "_forward_method", "forward_qkv", "forward_core", "apply", "sample")
-SOURCE_MODULES = ("worker.vllm.identity", "worker.vllm.profile", "worker.vllm.quantization", "worker.vllm.lora",
-                  "worker.vllm.rollout", "worker.vllm.worker", "worker.vllm.mapping", "worker.vllm.execution",
-                  "worker.vllm.state", "worker.vllm.context", "worker.vllm.prescribed", "worker.vllm.probes", "worker.vllm.distribution",
-                  "worker.distribution", "worker.probepacked", "worker.scalar", "worker.probeschema", "worker.vllm.resources",
-                  "torch.overrides", "worker.vllm.gdn", "worker.vllm.recurrence",
-                  "vllm.v1.sample.ops.topk_topp_sampler", "vllm.model_executor.layers.batch_invariant",
-                  "vllm.v1.engine.core_client", "vllm.v1.engine.core", "vllm.v1.engine.llm_engine",
-                  "vllm.v1.core.sched.scheduler", "vllm.v1.core.kv_cache_manager",
-                  "vllm.lora.model_manager", "vllm.lora.worker_manager",
-                  "vllm.config.lora", "vllm.lora.ops.triton_ops.kernel_utils",
-                  "vllm.lora.ops.triton_ops.lora_shrink_op", "vllm.lora.ops.triton_ops.lora_expand_op")
-ENTRY_FILES = (
-    "probeoutput.py",
-    "vllm/configuration.py",
-    "vllm/runtime.py",
-    "vllm/entry.py",
-    "vllm/infer.py",
-    "vllm/session.py",
-    "vllm/resident.py",
-    "vllm/residency.py",
-    "dispatch.py",
-    "resident.py",
-    "vllm/batch.py",
-    "vllm/inspect.py",
-    "batch.py",
-    "report.py",
-    "hf/infer.py",
-    "hf/session.py",
-    "hf/operation.py",
-    "tokenization.py",
-    "hf/decoding.py",
-    "invocation.py",
-    "registry.py",
-    "hf/metrics.py",
-    "cohort.py",
-    "core.py",
-    "hf/artifact.py",
-    "hf/policy.py",
-    "hf/tensors.py",
-    "hf/rollout.py",
-    "hf/frozen.py",
-)
+NUMERICAL = {
+    "worker.vllm.configuration": "engine arguments and runtime configuration",
+    "worker.vllm.runtime": "engine load, adapter slot selection and reference scoring",
+    "worker.vllm.residency": "policy activation under a fresh adapter ID in a resident engine",
+    "worker.vllm.worker": "adapter preparation inside the engine worker",
+    "worker.vllm.lora": "LoRA tensor transform and activation",
+    "worker.vllm.mapping": "LoRA row selection and kernel mapping",
+    "worker.vllm.quantization": "BitsAndBytes consumers and the loaded CUDA library",
+    "worker.vllm.gdn": "gated delta network kernel installation",
+    "worker.vllm.recurrence": "recurrent state update",
+    "worker.vllm.rollout": "sampling parameters and behavior log probability extraction",
+    "worker.vllm.execution": "request submission and batch formation",
+    "worker.vllm.state": "forward and sampler observation hooks installed on the runner",
+    "worker.vllm.prescribed": "forced-path token prescription",
+    "worker.vllm.crossscore": "forced-path scoring under the policy and reference slots",
+    "worker.vllm.scoring": "scoring execution",
+    "worker.vllm.scoreobservation": "probability words taken from scores",
+    "worker.vllm.probes": "full-vocabulary probe capture",
+    "worker.vllm.distribution": "probe mass capture",
+    "worker.distribution": "probe snapshot values",
+    "worker.probepacked": "probe row packing",
+    "worker.probeoutput": "probe word encoding",
+    "worker.scoring": "prescribed token paths",
+    "worker.tokenization": "prompt token construction",
+    "worker.hf.operation": "tokenizer loading: chat template and special tokens",
+    "torch.overrides": "torch function dispatch overrides",
+    "vllm.v1.sample.ops.topk_topp_sampler": "native sampler",
+    "vllm.model_executor.layers.batch_invariant": "batch-invariant kernels",
+    "vllm.v1.engine.core_client": "engine request path",
+    "vllm.v1.engine.core": "engine request path",
+    "vllm.v1.engine.llm_engine": "engine request path",
+    "vllm.v1.core.sched.scheduler": "batch scheduling",
+    "vllm.v1.core.kv_cache_manager": "KV cache allocation",
+    "vllm.lora.model_manager": "LoRA slot management",
+    "vllm.lora.worker_manager": "LoRA slot management",
+    "vllm.config.lora": "LoRA configuration",
+    "vllm.lora.ops.triton_ops.kernel_utils": "LoRA kernels",
+    "vllm.lora.ops.triton_ops.lora_shrink_op": "LoRA kernels",
+    "vllm.lora.ops.triton_ops.lora_expand_op": "LoRA kernels",
+}
+NEUTRAL = {
+    "vllm/profile.py": "identity computation",
+    "vllm/identity.py": "identity computation",
+    "vllm/context.py": "response history checks",
+    "vllm/resources.py": "resource accounting",
+    "vllm/entry.py": "process entry and argument parsing",
+    "vllm/infer.py": "process entry and argument parsing",
+    "vllm/session.py": "process entry and argument parsing",
+    "vllm/resident.py": "process entry and argument parsing",
+    "vllm/inspect.py": "process entry and argument parsing",
+    "probeschema.py": "cost records",
+    "scalar.py": "number parsing only",
+    "core.py": "core invocation protocol",
+    "batch.py": "batch protocol checked by the core",
+    "cohort.py": "request field decoding checked by the core",
+    "dispatch.py": "resident dispatch protocol checked by the core",
+    "invocation.py": "binding and permission protocol checked by the core",
+    "registry.py": "load registry protocol checked by the core",
+    "report.py": "result records checked by the core",
+    "resident.py": "owner protocol checked by the core",
+    "trajectory.py": "record types",
+    "hf/infer.py": "request decoding; the request is echoed in the result and checked by the core",
+    "hf/session.py": "request decoding; the request is echoed in the result and checked by the core",
+    "hf/metrics.py": "time and memory measurement",
+    "hf/tensors.py": "identity and equality checks",
+    "hf/frozen.py": "identity computation",
+    "hf/artifact.py": "adapter package reading; tensors are bound by content digest",
+    "hf/policy.py": "adapter content checks",
+}
+UNREACHED = {
+    name: "Hugging Face inference path, imported only by the Hugging Face entry in hf/session"
+    for name in ("hf/inference.py", "hf/model.py", "hf/rollout.py", "hf/decoding.py", "hf/backend.py",
+                 "hf/assembly.py", "implementation.py")
+}
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -149,8 +181,8 @@ def declared_sources(names):
 
 
 def description(runner, native):
-    sources = declared_sources(SOURCE_MODULES)
-    result = {"format": "invar-native-assembly-v1", "configuration": configuration(runner),
+    sources = declared_sources(NUMERICAL)
+    result = {"format": "invar-native-assembly-v2", "configuration": configuration(runner),
               "numerical": numerical(), "modules": modules(native.model, sources),
               "quantization": quantization(native.model),
               "sampler": component(runner.sampler, sources),
@@ -160,9 +192,12 @@ def description(runner, native):
                                for name, module in native.modules.items()}}
     result["sources"] = {name: hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest()
                          for name, module in sources.items()}
-    root = Path(__file__).resolve().parents[1]
-    result["entry_sources"] = {name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in ENTRY_FILES}
     return result
+
+
+def transformed(package, targets):
+    return {"configuration": json.loads(package.configuration), "targets": [asdict(value) for value in targets],
+            "transform": TRANSFORM, "source_model": {name: package.source[name] for name in ("base", "tokenizer")}}
 
 
 def inspection(runner, native, *, policies):
@@ -170,10 +205,8 @@ def inspection(runner, native, *, policies):
     assembled = description(runner, native)
     result = []
     for adapter_id, (package, targets) in policies.items():
-        policy = {"configuration": json.loads(package.configuration), "targets": [asdict(value) for value in targets],
-                  "transform": TRANSFORM,
-                  "source_model": {name: package.source[name] for name in ("base", "assembly", "tokenizer")}}
-        result.append(Loaded(adapter_id=adapter_id, base=frozen, assembly=digest({"native": assembled, "policy": policy})))
+        result.append(Loaded(adapter_id=adapter_id, base=frozen,
+                             assembly=digest({"native": assembled, "policy": transformed(package, targets)})))
     return tuple(result), assembled
 
 

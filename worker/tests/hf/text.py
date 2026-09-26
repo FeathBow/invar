@@ -12,7 +12,7 @@ from dataclasses import replace
 import torch
 
 from worker.tests.hf.learning import make_learner
-from worker.hf.probe import assert_equal
+from worker.hf.tensors import assert_equal
 from worker.hf.step import file_digest, restore_inputs
 from worker.tests.hf.step import prepared
 from worker.hf.operation import digest

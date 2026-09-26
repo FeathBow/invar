@@ -14,9 +14,10 @@ from peft.tuners.lora.layer import LoraLayer
 from worker.hf import assembly
 from worker.hf import runtime as learner_runtime
 from worker.hf import operation
-from worker.hf.probe import assert_equal
+from worker.hf.tensors import assert_equal
 from worker.hf.tensors import fingerprint
 from worker.tests.hf import resident as Fixture
+from worker.implementation import LEARNING
 
 
 def snapshot(runtime):
@@ -24,7 +25,7 @@ def snapshot(runtime):
                           runtime.reference, torch.get_rng_state(), torch.cuda.get_rng_state_all(),
                           [module.training for module in runtime.learner.model.modules()],
                           [value.grad for value in runtime.learner.model.parameters()],
-                          operation.digest(runtime.tokenizer), assembly.digest(runtime.learner.model)))
+                          operation.digest(runtime.tokenizer), assembly.digest(runtime.learner.model, LEARNING)))
 
 
 def mutate(runtime, field):

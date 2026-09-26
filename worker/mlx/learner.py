@@ -12,6 +12,7 @@ from worker.mlx import step as mlx_step
 from worker.mlx import tensors as mlx_tensors
 from worker.mlx import tokenization as mlx_tokenization
 from worker.update import snapshot
+from worker.implementation import LEARNING
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -32,7 +33,7 @@ class Runtime:
 
 
 def observe(loaded, learner):
-    identities = mlx_model.identities(loaded)
+    identities = mlx_model.identities(loaded, LEARNING)
     return mlx_checkpoint.observe(learner.optimizer, identities=identities, parameters=mlx_adapter.state(learner.model))
 
 
