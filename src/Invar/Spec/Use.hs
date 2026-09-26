@@ -16,6 +16,7 @@ module Invar.Spec.Use (
     scopeId,
     units,
     mean,
+    measurements,
     source,
     judge,
     premises,

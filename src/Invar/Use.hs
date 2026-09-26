@@ -44,6 +44,7 @@ module Invar.Use (
     scopeId,
     units,
     mean,
+    measurements,
     numerical,
     describe,
     describeFinding,
@@ -64,7 +65,7 @@ import Invar.Numerical qualified as Numerical
 import Invar.Spec.Domain (Domain (..), Input (..))
 import Invar.Spec.Evidence qualified as Evidence
 import Invar.Spec.Measurement qualified as Measurement
-import Invar.Spec.Use (Claim (..), Confidence (..), Key (..), Metric (..), Observed, Problem (..), Scope, ScopeId, Unit (..), confidence, mean, scope, scopeId, units)
+import Invar.Spec.Use (Claim (..), Confidence (..), Key (..), Metric (..), Observed, Problem (..), Scope, ScopeId, Unit (..), confidence, mean, measurements, scope, scopeId, units)
 import Invar.Spec.Use qualified as U
 import Invar.Use.Admission (Admission, AdmissionProblem (..), Decision (..), ReliedOn (..), admissionContract, admissionScope, admit, conditions, evidence)
 import Invar.Use.Contract (Budget (..), Criterion (..), InvarianceRequirement (..), LossRequirement (..), NumericalRequirement (..), Population (..), Premise (..), Reliance (..), Standard (..), Transfer (..), UseContract (..))

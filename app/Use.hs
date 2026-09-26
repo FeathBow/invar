@@ -2,17 +2,17 @@
 
 module Use (run) where
 
-import Data.Aeson (FromJSON, Value, eitherDecodeStrict, encode, object, parseJSON, toJSON, (.=))
-import Data.Aeson.Types (parseEither)
+import Data.Aeson (Value, encode, object, (.=))
 import Data.ByteString qualified as Bytes
 import Data.ByteString.Lazy.Char8 qualified as Lazy
 import Data.Foldable (toList)
 import Invar.Use qualified as U
 import Invar.Use.Statistics qualified as Statistics
-import Numerical qualified
 import Options qualified as O
 import System.Console.GetOpt (OptDescr, usageInfo)
 import System.Exit (die)
+import UsePlan qualified
+import UseRuns qualified
 
 run :: [String] -> IO ()
 run ["--help"] = putStrLn usage
@@ -40,27 +40,14 @@ run ("admit" : supplied) = do
                 ]
             )
         )
+run ("plan" : supplied) = UsePlan.run supplied
 run _ = die usage
 
 readContract :: O.Fields -> IO U.UseContract
 readContract fields = readInput fields "contract" >>= either die pure . U.decodeContract
 
 observe :: O.Fields -> U.UseContract -> IO U.Observed
-observe fields contract = do
-    entries <- readInput fields "runs" >>= either die pure . eitherDecodeStrict
-    cases <- traverse readCase entries
-    either (die . show) pure (U.observe (U.BoundRun (U.declaredDomain contract) (U.declaredMeasurement contract) cases))
-  where
-    readCase :: [Value] -> IO U.Case
-    readCase entry = case entry of
-        [cohort, name, arguments] -> build cohort name arguments (toJSON ([] :: [[String]]))
-        [cohort, name, arguments, repeated] -> build cohort name arguments repeated
-        _ -> die "Each run entry is [cohort index, input key, paired-observation argument array] with an optional array of repeated candidate argument arrays"
-    build cohort name arguments repeated = do
-        key <- U.Key <$> decode cohort <*> decode name
-        U.Case key <$> (decode arguments >>= Numerical.readPair) <*> (decode repeated >>= traverse Numerical.readRun)
-    decode :: (FromJSON value) => Value -> IO value
-    decode = either die pure . parseEither parseJSON
+observe fields contract = either die pure (O.required fields "runs") >>= (`UseRuns.observe` contract) >>= either die pure
 
 readInput :: O.Fields -> String -> IO Bytes.ByteString
 readInput fields name = either die pure (O.required fields name) >>= Bytes.readFile

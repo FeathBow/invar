@@ -1,6 +1,6 @@
 {-# LANGUAGE Safe #-}
 
-module Invar.Use.Confidence (hoeffding, empiricalBernstein, squareRootUpper, sampleVariance) where
+module Invar.Use.Confidence (hoeffding, empiricalBernstein, bernsteinWidth, squareRootUpper, sampleVariance) where
 
 import Data.List (genericLength)
 import Data.Ratio (denominator, numerator, (%))
@@ -15,15 +15,18 @@ hoeffding range alpha count
     Fixed _ upper = logarithm (denominator alpha) (numerator alpha)
 
 empiricalBernstein :: Rational -> Rational -> [Rational] -> Maybe Rational
-empiricalBernstein range alpha samples
-    | range <= 0 || alpha <= 0 || alpha >= 1 = Nothing
-    | otherwise = do
-        variance <- sampleVariance samples
-        if maximum samples - minimum samples > range
-            then Nothing
-            else Just (squareRootUpper (2 * variance * logUpper / count) + correction)
+empiricalBernstein range alpha samples = do
+    variance <- sampleVariance samples
+    if maximum samples - minimum samples > range
+        then Nothing
+        else bernsteinWidth range alpha variance (genericLength samples)
+
+bernsteinWidth :: Rational -> Rational -> Rational -> Natural -> Maybe Rational
+bernsteinWidth range alpha variance units
+    | range <= 0 || alpha <= 0 || alpha >= 1 || variance < 0 || units < 2 = Nothing
+    | otherwise = Just (squareRootUpper (2 * variance * logUpper / count) + correction)
   where
-    count = genericLength samples
+    count = fromIntegral units
     Fixed _ upper = logarithm (2 * denominator alpha) (numerator alpha)
     logUpper = upper % scale
     correction = 7 * range * logUpper / (3 * (count - 1))
