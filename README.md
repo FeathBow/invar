@@ -79,6 +79,9 @@ Python workers do the heavy computation: vLLM generates and Hugging Face trains 
 | `invar evaluate` | evaluate a fixed policy |
 | `invar infer` | make a single inference call |
 | `invar compare numerical`, `invar score` | take the measurements above |
+| `invar use prepare` | build a use contract from the owner's declaration |
+| `invar use plan` | estimate the sample size a contract needs under stated assumptions |
+| `invar use run` | run a contract's finite execution plan on Apple Silicon and keep every record |
 | `invar use admit` | decide admission under a use contract |
 | `invar compare histories` | check that two runs which scheduled their work differently published the same policies |
 
@@ -96,6 +99,8 @@ In the measurements recorded for the code of commit `696514e`, running the loop 
 | [Training loop](docs/design/loop.md) | the loop the core owns, cycle by cycle |
 | [CUDA backend](docs/backends/vllm.md) | the CUDA worker on vLLM and Hugging Face, with NF4 and FP32 LoRA |
 | [Apple Silicon backend](docs/backends/mlx.md) | the Apple Silicon worker on MLX |
+| [Walkthrough](docs/guides/walkthrough.md) | one use decision on Apple Silicon, from declaration to admission |
+| [Operating guide](docs/guides/agents.md) | who decides what, and what each command's output means, for people and agents |
 | [Acceptance](docs/results/acceptance.md) | the first acceptance and how its values were set |
 | [Performance](docs/results/performance.md) | cost against the direct and native baselines |
 | [Patches](patches/README.md) | the pinned vLLM and plugin patches |

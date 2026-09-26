@@ -10,7 +10,7 @@ maintainer: https://github.com/FeathBow/invar/issues
 category: AI
 build-type: Simple
 tested-with: GHC == 9.14.1
-extra-doc-files: README.md, docs/design/*.md, docs/backends/*.md, docs/results/*.md, docs/images/*.svg, patches/README.md
+extra-doc-files: README.md, docs/design/*.md, docs/backends/*.md, docs/results/*.md, docs/guides/*.md, docs/images/*.svg, patches/README.md
 extra-source-files: cabal.project, test/types.sh, test/fail.sh, test/accept/*.hs, test/reject/*.hs, test/confidence/*.hs, test/confidence/*.py, patches/vllm/*.patch, patches/vllm/*.sha256
 
 common defaults
