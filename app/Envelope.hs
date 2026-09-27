@@ -36,10 +36,15 @@ succeed format status means doesNotMean fields =
 
 refuse :: String -> [Problem] -> IO a
 refuse format problems = do
-    Lazy.putStrLn (encode (object ["format" .= format, "status" .= (if exit `elem` [1, 4] then "failed" else "refused" :: String), "means" .= (if exit == 4 then "Execution stopped; the records produced so far are kept and every problem is listed" else "Nothing was produced; every problem is listed" :: String), "does_not_mean" .= ("Anything about the candidate" :: String), "evidence" .= False, "problems" .= map encoded problems]))
+    Lazy.putStrLn (encode (object ["format" .= format, "status" .= (if exit `elem` [1, 4] then "failed" else "refused" :: String), "means" .= meaning, "does_not_mean" .= ("Anything about the candidate" :: String), "evidence" .= False, "problems" .= map encoded problems]))
     exitWith (ExitFailure exit)
   where
     exit = case maximum (map (severity . code) problems) of 5 -> 1; other -> other
+    meaning :: String
+    meaning = case exit of
+        4 -> "Execution stopped; the records produced so far are kept and every problem is listed"
+        1 -> "Not completed; partial artifacts may exist; every problem is listed"
+        _ -> "Nothing was produced; every problem is listed"
     encoded problem = object [Key.fromString "code" .= code problem, "at" .= at problem, "message" .= message problem]
 
 severity :: String -> Int

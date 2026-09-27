@@ -49,7 +49,7 @@ Acceptance data must not influence how the candidate was generated or selected, 
 | `artifact-invalid` | 3 | the file does not parse or does not match its recorded identity; find the right file |
 | `identity-mismatch` | 4 | a worker loaded something other than the contract's policy; report it and keep the records |
 | `execution-failed` | 4 | report the failing group and its log; the records produced so far are kept |
-| `internal-error` | 1 | report a defect in Invar |
+| `internal-error` | 1 | report a defect in Invar; files the command wrote before it stopped may be incomplete, so do not use them |
 
 After an exit 4 the operator reports the failure and does not rerun on its own. A rerun writes a new output directory and is the owner's decision.
 
