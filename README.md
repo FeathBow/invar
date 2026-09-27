@@ -87,9 +87,9 @@ Python workers do the heavy computation: vLLM generates and Hugging Face trains 
 
 ## Performance
 
-<p align="center"><img src="docs/images/performance.svg" alt="Invar takes 0.96 to 1.07 times the wall time of the same workers without it, and 0.78 to 1.07 times that of vLLM or MLX used on their own" width="100%"></p>
+<p align="center"><img src="docs/images/performance.svg" alt="Invar takes 0.96 to 1.07 times the wall time of the same workers driven by a Python runner, and 0.78 to 1.07 times that of vLLM or MLX used on their own" width="100%"></p>
 
-In the measurements recorded for the code of commit `696514e`, running the loop through Invar took at most 7% more wall time than running the same workers without it, for inference and for full training cycles on both platforms. The chart also compares Invar with vLLM and MLX used on their own, with their own batching and numerical settings. The [performance results](docs/results/performance.md) give throughput and memory.
+In the measurements recorded for earlier code (commit `b64985c` on CUDA; `974dbe8` with the training workers of `ac1f339` on Apple Silicon), running the loop through Invar took at most 7% more wall time than driving the same workers from a Python runner that uses the core only for helper steps, for inference and for full training cycles on both platforms. The chart also compares Invar with vLLM and MLX used on their own, with their own batching and numerical settings. The [performance results](docs/results/performance.md) give throughput and memory, and the later changes not yet measured.
 
 ## Documentation
 
