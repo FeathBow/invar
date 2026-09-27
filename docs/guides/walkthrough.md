@@ -35,7 +35,7 @@ The two sides differ only in the runtime configuration's `numerics`: `reference.
 
 ## Policies
 
-Each side gets its own `policy.json`, sealed from an inference that loaded exactly that side's arithmetic. The initializer reports two sets of identities. Its final `initial` record carries the adapter identity as `policy` and the learner's `base` and `assembly`; its `profile` record carries the inference `base` and `assembly` under `inference`. Inference and `policy.json` use the inference ones.
+Each side gets its own `policy.json`, written from an inference that loaded exactly that side's arithmetic. The initializer reports two sets of identities. Its final `initial` record carries the adapter identity as `policy` and the learner's `base` and `assembly`; its `profile` record carries the inference `base` and `assembly` under `inference`. Inference and `policy.json` use the inference ones.
 
 ```sh
 tokenizer=$($PYTHON $REPO/entries/mlxoperation.py --cache $MODELS)

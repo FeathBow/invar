@@ -1,16 +1,16 @@
-# Release acceptance
+# First acceptance
 
-The release acceptance admits a new inference implementation of `Qwen/Qwen3.8-27B` as a replacement for the reference in training loop rollouts and evaluation. The core decided it from one use contract on retained records from one GH200; this page walks through that contract. See also [the contract design](../design/contract.md) and [the loop design](../design/loop.md).
+The first acceptance admits a new inference implementation of `Qwen/Qwen3.8-27B` as a replacement for the reference in training loop rollouts and evaluation. The core decided it from one use contract on retained records from one GH200; this page walks through that contract. See also [the contract design](../design/contract.md) and [the loop design](../design/loop.md).
 
 ## Reference and candidate
 
-The reference and the candidate are two frozen packages built for this acceptance, each with its own snapshot of the worker and its own overlays; the candidate's softmax kernel is not part of this repository. The admission applies to those two packages, not to the worker in the current repository. The reference is vLLM with the FP32 LoRA patches, as used in the CUDA training runs. The candidate adds two changes so that the numbers of each request do not depend on which requests share its batch: NF4 matrix multiplication always takes the same kernel path, and softmax reduces each row on its own in fixed blocks of 1024 columns. Both run the same model revision, tokenizer, frozen base weights and initial adapter. The [vLLM backend page](../backends/vllm.md) describes the CUDA worker.
+The reference and the candidate are two frozen packages built for this acceptance, each with its own copy of the worker and its own patches; the candidate's softmax kernel is not part of this repository. The admission applies to those two packages, not to the worker in the current repository. The reference is vLLM with the FP32 LoRA patches, as used in the CUDA training runs. The candidate adds two changes so that the numbers of each request do not depend on which requests share its batch: NF4 matrix multiplication always takes the same kernel path, and softmax reduces each row on its own in fixed blocks of 1024 columns. Both run the same model revision, tokenizer, frozen base weights and initial adapter. The [vLLM backend page](../backends/vllm.md) describes the CUDA worker.
 
-## Population and sealed draws
+## Population and draws
 
 The declared population is the GSM8K training split after exclusions: 7473 word problems whose prompts ask for a final line `#### <number>`, minus the 16 prompts used during development and every key an earlier draw exposed. A unit is one prompt with seed 17, sampled at temperature 0.8 with at most 256 response tokens in a context of 1024.
 
-Each stage draws its units through a commitment written before any sealed item is read, binding the pool, exclusions, contract and exposure ledger by digest. The draw orders the eligible keys by the SHA-256 digest of the committed seed and the key, takes the first units, and refuses a reused commitment or a changed ledger. Every draw appends its keys to the ledger, and later commitments exclude them. The main draw took 2000 keys with seed 3 from the 7329 still eligible, after excluding the 16 development prompts and the 128 keys of two probe draws.
+Each stage draws its units through a commitment written before any item of the pool is read, binding the pool, exclusions, contract and exposure ledger by digest. The draw orders the eligible keys by the SHA-256 digest of the committed seed and the key, takes the first units, and refuses a reused commitment or a changed ledger. Every draw appends its keys to the ledger, and later commitments exclude them. The main draw took 2000 keys with seed 3 from the 7329 still eligible, after excluding the 16 development prompts and the 128 keys of two probe draws.
 
 ## Two stages
 
@@ -70,7 +70,7 @@ The contract binds the two frozen implementations described above. The main stag
 
 On both sides 497 responses reached the token limit and count as loss one.
 
-The contract raises 14 kinds of external premise, such as isolation of the sealed data from candidate search, amounting to 42,017 concrete conditions over the 2000 units. It declares one reliance entry per kind, each with a named authority and the SHA-256 digest of its basis files, and the decision retains every condition with the entry that covers it.
+The contract raises 14 kinds of external premise, such as isolation of the drawn prompts from candidate search, amounting to 42,017 concrete conditions over the 2000 units. It declares one reliance entry per kind, each with a named authority and the SHA-256 digest of its basis files, and the decision retains every condition with the entry that covers it.
 
 ## Rerunning an admission
 
