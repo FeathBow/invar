@@ -1,0 +1,7 @@
+{
+ "format": "invar-mlx-runtime-v1",
+ "batch_size": 4,
+ "prefill_step": 256,
+ "cache_bytes": 268435456,
+ "numerics": "native"
+}

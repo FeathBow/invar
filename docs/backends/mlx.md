@@ -21,7 +21,7 @@ An optional runtime configuration with format `invar-mlx-runtime-v1` sets `batch
 | `entries/mlxscore.py` | Scores a prescribed path |
 | `entries/mlxcodec.py` | Reads native learner containers for `invar inspect` |
 
-The initializer's final record gives the `policy`, `learner`, `tokenizer`, `base` and `assembly` identities that later commands declare.
+The initializer reports identities for two roles. Its final `initial` record gives the adapter identity as `policy`, the `learner` file identity, the `tokenizer`, and the learning role's `base` and `assembly`, which `invar train` declares for the learner. Its `profile` record gives the inference role's `base` and `assembly` under `inference`; `invar infer`, `invar policy` and `policy.json` use those, and the learning `assembly` is refused there.
 
 ## Why rows must be independent
 

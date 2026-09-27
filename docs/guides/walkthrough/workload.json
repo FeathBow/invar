@@ -1,0 +1,98 @@
+[
+ {
+  "tasks": [
+   {
+    "name": "q0/seed17",
+    "group": "q0",
+    "prompt": "A shelf holds 7 rows of 12 books. How many books are on the shelf?\nReason briefly. End your answer with a final line in the form #### <number>.",
+    "tokens": 160,
+    "temperature": 0.8,
+    "seed": 17,
+    "answer": "#### 84"
+   },
+   {
+    "name": "q0/seed18",
+    "group": "q0",
+    "prompt": "A shelf holds 7 rows of 12 books. How many books are on the shelf?\nReason briefly. End your answer with a final line in the form #### <number>.",
+    "tokens": 160,
+    "temperature": 0.8,
+    "seed": 18,
+    "answer": "#### 84"
+   },
+   {
+    "name": "q1/seed17",
+    "group": "q1",
+    "prompt": "Maya had 45 stickers and gave 18 to her brother. How many stickers does she have left?\nReason briefly. End your answer with a final line in the form #### <number>.",
+    "tokens": 160,
+    "temperature": 0.8,
+    "seed": 17,
+    "answer": "#### 27"
+   },
+   {
+    "name": "q1/seed18",
+    "group": "q1",
+    "prompt": "Maya had 45 stickers and gave 18 to her brother. How many stickers does she have left?\nReason briefly. End your answer with a final line in the form #### <number>.",
+    "tokens": 160,
+    "temperature": 0.8,
+    "seed": 18,
+    "answer": "#### 27"
+   },
+   {
+    "name": "q2/seed17",
+    "group": "q2",
+    "prompt": "A bus carries 36 passengers on each trip. How many passengers does it carry in 5 trips?\nReason briefly. End your answer with a final line in the form #### <number>.",
+    "tokens": 160,
+    "temperature": 0.8,
+    "seed": 17,
+    "answer": "#### 180"
+   },
+   {
+    "name": "q2/seed18",
+    "group": "q2",
+    "prompt": "A bus carries 36 passengers on each trip. How many passengers does it carry in 5 trips?\nReason briefly. End your answer with a final line in the form #### <number>.",
+    "tokens": 160,
+    "temperature": 0.8,
+    "seed": 18,
+    "answer": "#### 180"
+   },
+   {
+    "name": "q3/seed17",
+    "group": "q3",
+    "prompt": "Tom splits 96 marbles equally among 8 friends. How many marbles does each friend get?\nReason briefly. End your answer with a final line in the form #### <number>.",
+    "tokens": 160,
+    "temperature": 0.8,
+    "seed": 17,
+    "answer": "#### 12"
+   },
+   {
+    "name": "q3/seed18",
+    "group": "q3",
+    "prompt": "Tom splits 96 marbles equally among 8 friends. How many marbles does each friend get?\nReason briefly. End your answer with a final line in the form #### <number>.",
+    "tokens": 160,
+    "temperature": 0.8,
+    "seed": 18,
+    "answer": "#### 12"
+   }
+  ],
+  "order": [
+   0,
+   1,
+   2,
+   3,
+   4,
+   5,
+   6,
+   7
+  ],
+  "delivery": [
+   0,
+   1,
+   2,
+   3,
+   4,
+   5,
+   6,
+   7
+  ]
+ }
+]

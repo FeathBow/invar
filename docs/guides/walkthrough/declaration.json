@@ -1,0 +1,124 @@
+{
+ "format": "invar-use-declaration-v1",
+ "artifacts": {
+  "workload": "workload.json",
+  "reference_policy": "reference/policy.json",
+  "candidate_policy": "candidate/policy.json"
+ },
+ "decisions": {
+  "purpose": "Row-invariant MLX numerics replace the stock numerics for evaluation on this finite exact-decimal set",
+  "scoring": {
+   "method": "exact-decimal"
+  },
+  "context_tokens": 512,
+  "quality": {
+   "reference_ceiling": {
+    "limit": "1/2",
+    "rationale": "the stock numerics must already answer at least half of these questions for the comparison to mean anything"
+   },
+   "regression_ceiling": {
+    "limit": "1/8",
+    "rationale": "losing more than one of the eight answers would make evaluation results depend on the numerics"
+   },
+   "standard": {
+    "kind": "finite_domain"
+   }
+  },
+  "requirements": {
+   "invariance": [
+    {
+     "relation": {
+      "kind": "behavior-bits"
+     },
+     "executions": 2,
+     "rationale": "evaluation results must not depend on how requests are batched"
+    }
+   ],
+   "numerical": []
+  },
+  "protocols": {
+   "freeze": "The workload, configurations and this declaration were written before any acceptance run; see basis/record.md",
+   "isolation": "No acceptance result was used to choose, change or rerun the candidate",
+   "selection": "There is one candidate, the primary numerics profile, fixed in advance"
+  },
+  "reliance": [
+   {
+    "premise": "RequirementsJustified",
+    "authority": "walkthrough owner",
+    "basis": [
+     "basis/record.md"
+    ]
+   },
+   {
+    "premise": "ContractFrozen",
+    "authority": "walkthrough owner",
+    "basis": [
+     "basis/record.md"
+    ]
+   },
+   {
+    "premise": "AcceptanceIsolation",
+    "authority": "walkthrough owner",
+    "basis": [
+     "basis/record.md"
+    ]
+   },
+   {
+    "premise": "SelectionControl",
+    "authority": "walkthrough owner",
+    "basis": [
+     "basis/record.md"
+    ]
+   },
+   {
+    "premise": "MeasurementMeaning",
+    "authority": "walkthrough owner",
+    "basis": [
+     "basis/record.md"
+    ]
+   },
+   {
+    "premise": "ExecutionAuthenticity",
+    "authority": "walkthrough owner",
+    "basis": [
+     "basis/record.md"
+    ]
+   },
+   {
+    "premise": "MeasurementInput",
+    "authority": "walkthrough owner",
+    "basis": [
+     "basis/record.md"
+    ]
+   },
+   {
+    "premise": "ParameterMeaning",
+    "authority": "walkthrough owner",
+    "basis": [
+     "basis/record.md"
+    ]
+   },
+   {
+    "premise": "SelectedBehavior",
+    "authority": "walkthrough owner",
+    "basis": [
+     "basis/record.md"
+    ]
+   },
+   {
+    "premise": "OwnCacheExecution",
+    "authority": "walkthrough owner",
+    "basis": [
+     "basis/record.md"
+    ]
+   },
+   {
+    "premise": "ScheduleVariation",
+    "authority": "walkthrough owner",
+    "basis": [
+     "basis/record.md"
+    ]
+   }
+  ]
+ }
+}
