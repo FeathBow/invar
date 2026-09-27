@@ -88,7 +88,7 @@ execution supplied = do
 
 unsupported :: FilePath -> U.UseContract -> [Problem]
 unsupported path contract =
-    [ Problem "unsupported" ("artifact:" ++ path ++ ":criterion.numerical[" ++ show index ++ "]") "v0.1 runs collect no scored paths or full-vocabulary probes, which this requirement needs"
+    [ Problem "unsupported" ("artifact:" ++ path ++ ":criterion.numerical[" ++ show index ++ "]") "This requirement needs scored paths or full-vocabulary probes, which a run does not collect"
     | (index, requirement) <- zip [0 :: Int ..] (U.numericalRequirements (U.criterion contract))
     , scored (U.relation requirement) || not (null (U.probeSteps requirement))
     ]

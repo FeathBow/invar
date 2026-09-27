@@ -218,7 +218,7 @@ declaration document =
         let scoringPath = L.child decisionsPath "scoring"
          in decision decisions "scoring" `andThen` L.object scoringPath `andThen` \found ->
                 L.only scoringPath ["method"] found
-                    *> (L.field "missing-decision" scoringPath found "method" `andThen` L.text "missing-decision" (L.child scoringPath "method") `andThen` \name -> if name == "exact-decimal" then value () else problem "unsupported" (L.render (L.child scoringPath "method")) "exact-decimal is the only v0.1 scoring method")
+                    *> (L.field "missing-decision" scoringPath found "method" `andThen` L.text "missing-decision" (L.child scoringPath "method") `andThen` \name -> if name == "exact-decimal" then value () else problem "unsupported" (L.render (L.child scoringPath "method")) "exact-decimal is the only supported scoring method")
     quality found =
         let qualityPath = L.child decisionsPath "quality"
          in L.object qualityPath found `andThen` \fields ->

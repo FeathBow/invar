@@ -29,7 +29,7 @@ decode document =
     top = L.root "execution"
     text fields name = L.field "invalid-value" top fields name `andThen` L.text "invalid-value" (L.child top name)
     formatted fields = text fields "format" `andThen` \found -> if found == "invar-use-execution-v1" then value () else problem "invalid-value" (L.render (L.child top "format")) "Expected invar-use-execution-v1"
-    supported found = if found == "mlx" then value found else problem "unsupported" (L.render (L.child top "backend")) "v0.1 runs only the mlx backend"
+    supported found = if found == "mlx" then value found else problem "unsupported" (L.render (L.child top "backend")) "Only the mlx backend can run a contract"
     side fields name =
         let sides = L.child top "sides"
             path = L.child sides name
@@ -42,8 +42,8 @@ decode document =
         let path = L.child top "collection"
          in L.object path found `andThen` \fields ->
                 L.only path ["scores", "full_vocabulary_steps"] fields
-                    *> (L.field "invalid-value" path fields "scores" `andThen` L.boolean (L.child path "scores") `andThen` \scores -> if scores then problem "unsupported" (L.render (L.child path "scores")) "v0.1 does not collect scored paths" else value ())
-                    *> (L.field "invalid-value" path fields "full_vocabulary_steps" `andThen` L.list (L.child path "full_vocabulary_steps") `andThen` \steps -> if null steps then value () else problem "unsupported" (L.render (L.child path "full_vocabulary_steps")) "v0.1 does not collect full-vocabulary probes")
+                    *> (L.field "invalid-value" path fields "scores" `andThen` L.boolean (L.child path "scores") `andThen` \scores -> if scores then problem "unsupported" (L.render (L.child path "scores")) "Scored paths are not collected" else value ())
+                    *> (L.field "invalid-value" path fields "full_vocabulary_steps" `andThen` L.list (L.child path "full_vocabulary_steps") `andThen` \steps -> if null steps then value () else problem "unsupported" (L.render (L.child path "full_vocabulary_steps")) "Full-vocabulary probes are not collected")
 
 arrangement :: L.Path -> Value -> Check E.Arrangement
 arrangement path found =
