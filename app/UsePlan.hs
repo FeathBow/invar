@@ -11,7 +11,7 @@ import Data.Aeson.Types (Pair)
 import Data.Char (isDigit)
 import Data.Foldable (toList)
 import Data.Maybe (isJust)
-import Envelope (Problem (..), rational, refuse, succeed)
+import Envelope (Problem (..), command, rational, refuse, succeed)
 import Invar.Artifact qualified as Artifact
 import Invar.Use qualified as U
 import Invar.Use.Confidence qualified as Confidence
@@ -30,7 +30,10 @@ format :: String
 format = "invar-use-plan-v1"
 
 run :: [String] -> IO ()
-run supplied = do
+run = command format "Usage: invar use plan --contract FILE --units N [OPTIONS]\nEstimate the confidence width and sample size a contract needs under stated assumptions. Rationals are exact, such as 1/40, or decimals. Prints one JSON document; it is never evidence." options estimateFor
+
+estimateFor :: [String] -> IO ()
+estimateFor supplied = do
     fields <- either (\problem -> refuse format [Problem "missing-argument" "argv" problem]) pure (O.parse options supplied)
     contractPath <- required fields "contract"
     unitsText <- required fields "units"

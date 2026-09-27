@@ -4,7 +4,7 @@ module UseRun (run) where
 
 import Check qualified
 import Control.Exception (SomeException, displayException, try)
-import Control.Monad (unless, when)
+import Control.Monad (unless)
 import Crypto.Hash.SHA256 qualified as SHA256
 import Data.Aeson (Value, encode, object, toJSON, (.=))
 import Data.Bifunctor (first)
@@ -13,7 +13,8 @@ import Data.ByteString.Lazy qualified as Lazy
 import Data.Foldable (toList)
 import Data.List (genericLength, mapAccumL)
 import Data.Map.Strict qualified as Map
-import Envelope (Problem (..), refuse, succeed)
+import Envelope (Problem (..), command, refuse, succeed)
+import Envelope qualified
 import Invar.Artifact qualified as Artifact
 import Invar.Infer qualified as Infer
 import Invar.Infer.Observation qualified as Inference
@@ -26,7 +27,7 @@ import Invar.Use.Prepare qualified as Prepare
 import Numeric.Natural (Natural)
 import Options qualified as O
 import System.Console.GetOpt (OptDescr)
-import System.Directory (createDirectory, doesDirectoryExist, doesFileExist, doesPathExist, makeAbsolute)
+import System.Directory (createDirectory, doesDirectoryExist, doesFileExist, makeAbsolute)
 import System.Environment (getExecutablePath)
 import System.Exit (ExitCode (..))
 import System.FilePath (takeDirectory, (</>))
@@ -41,13 +42,15 @@ format = "invar-use-run-v1"
 data Group = Group {label :: String, sideName :: String, schedule :: String, arrangement :: E.Arrangement, side :: Execution.Side, policy :: Policy.Description, members :: [(U.Input, Natural)]}
 
 run :: [String] -> IO ()
-run supplied = do
+run = command format "Usage: invar use run --contract FILE --execution FILE --output DIRECTORY\nRun a contract's finite execution plan on this host and keep every record. Prints one JSON document; read status and problems, then run invar use admit inside the output directory." options execution
+
+execution :: [String] -> IO ()
+execution supplied = do
     fields <- either (\found -> refuse format [Problem "missing-argument" "argv" found]) pure (O.parse options supplied)
     contractPath <- required fields "contract"
     executionPath <- required fields "execution"
     output <- required fields "output"
-    exists <- doesPathExist output
-    when exists (refuse format [Problem "invalid-value" "argv:--output" (output ++ " already exists; run never writes into an existing directory")])
+    Envelope.output format "a run directory" output
     (contract, contractBytes) <- readContract format "contract" contractPath
     (executionValue, executionBytes) <- readDeclared format "execution" executionPath
     let report = Prepare.units contract

@@ -17,7 +17,8 @@ import Data.Foldable (toList)
 import Data.List (isSuffixOf)
 import Data.Ratio (denominator, numerator)
 import Data.Text qualified as Text
-import Envelope (Problem (..), refuse, succeed)
+import Envelope (Problem (..), command, refuse, succeed)
+import Envelope qualified
 import Invar.Artifact qualified as Artifact
 import Invar.Policy qualified as Policy
 import Invar.Use qualified as U
@@ -51,13 +52,15 @@ data Declaration = Declaration
     }
 
 run :: [String] -> IO ()
-run supplied = do
+run = command format "Usage: invar use prepare --declaration FILE --execution FILE --output FILE\nBuild a use contract from the owner's declaration and the execution plan. Prints one JSON document; read status and problems." options prepare
+
+prepare :: [String] -> IO ()
+prepare supplied = do
     fields <- either (\found -> refuse format [Problem "missing-argument" "argv" found]) pure (O.parse options supplied)
     declarationPath <- required fields "declaration"
     executionPath <- required fields "execution"
     output <- required fields "output"
-    exists <- doesFileExist output
-    when exists (refuse format [Problem "invalid-value" "argv:--output" (output ++ " already exists; prepare never overwrites a contract")])
+    Envelope.output format "a contract" output
     (declarationValue, declarationBytes) <- readDeclared format "declaration" declarationPath
     (executionValue, executionBytes) <- readDeclared format "execution" executionPath
     method <- either (\found -> refuse format [Problem "internal-error" "artifact:measurement" (show found)]) pure Decimal.method

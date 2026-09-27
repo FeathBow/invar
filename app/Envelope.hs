@@ -1,15 +1,34 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Envelope (Problem (..), succeed, refuse, rational) where
+module Envelope (Problem (..), command, output, succeed, refuse, rational) where
 
+import Control.Exception (SomeException, catch, displayException, fromException, throwIO)
+import Control.Monad (unless, when)
 import Data.Aeson (Value, encode, object, (.=))
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.Types (Pair)
 import Data.ByteString.Lazy.Char8 qualified as Lazy
 import Data.Ratio (denominator, numerator)
+import System.Console.GetOpt (OptDescr, usageInfo)
+import System.Directory (doesDirectoryExist, doesPathExist)
 import System.Exit (ExitCode (..), exitWith)
+import System.FilePath (takeDirectory)
 
 data Problem = Problem {code :: String, at :: String, message :: String}
+
+command :: String -> String -> [OptDescr (String, String)] -> ([String] -> IO ()) -> [String] -> IO ()
+command _ header options _ ["--help"] = putStrLn (usageInfo header options)
+command format _ _ body supplied =
+    body supplied `catch` \failure -> case fromException failure of
+        Just exit -> throwIO (exit :: ExitCode)
+        Nothing -> refuse format [Problem "internal-error" "argv" ("Unexpected failure: " ++ displayException (failure :: SomeException))]
+
+output :: String -> String -> FilePath -> IO ()
+output format written path = do
+    exists <- doesPathExist path
+    when exists (refuse format [Problem "invalid-value" "argv:--output" (path ++ " already exists; " ++ written ++ " is never written over")])
+    parent <- doesDirectoryExist (takeDirectory path)
+    unless parent (refuse format [Problem "invalid-value" "argv:--output" ("The directory that would hold " ++ path ++ " does not exist")])
 
 succeed :: String -> String -> String -> String -> [Pair] -> IO ()
 succeed format status means doesNotMean fields =
