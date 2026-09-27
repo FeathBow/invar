@@ -2,9 +2,12 @@
 
 module Invar.Process.Internal (Launch (..), Exchange (..), Failure (..), Session (..), Pipes, withLaunch, send, line, response, reject, finish, stage) where
 
+import Control.Exception (catch, throwIO)
+import Control.Monad (unless)
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as Bytes
 import Data.Text qualified as Text
+import GHC.IO.Exception (IOErrorType (ResourceVanished), IOException (ioe_type))
 import Invar.Json qualified as Json
 import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..))
@@ -34,7 +37,10 @@ environmentFor added = do
     pure (Just ([entry | entry@(name, _) <- inherited, name `notElem` map fst added] ++ added))
 
 send :: Pipes -> ByteString -> IO ()
-send (writer, _, _) value = Bytes.hPutStrLn writer value >> hFlush writer
+send (writer, _, _) value = vanished (Bytes.hPutStrLn writer value >> hFlush writer)
+
+vanished :: IO () -> IO ()
+vanished action = action `catch` \failure -> unless (ioe_type failure == ResourceVanished) (throwIO failure)
 
 line :: Session problem -> IO (Either (Failure problem) ByteString)
 line session = do
@@ -91,7 +97,7 @@ reject session problem = do
 finish :: Session problem -> IO (Either (Failure problem) ())
 finish session = do
     let (writer, reader, child) = pipes session
-    hClose writer
+    vanished (hClose writer)
     ended <- hIsEOF reader
     if ended
         then do

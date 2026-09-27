@@ -39,6 +39,7 @@ batchedProtocol =
         , ("batch completion requires clean exit and no trailing output", once terminal)
         , ("batched rollout retains device partition and logical delivery", once rollout)
         , ("a declared reference reaches both finite worker protocols", once declared)
+        , ("a worker that exits before reading its input reports its exit status", once unread)
         ]
   where
     once = withTests 1 . property
@@ -222,3 +223,15 @@ declared = do
     _ <- evalIO (Worker.runSession (Worker.Worker "/bin/sh" serial root "adapter path" [] Nothing) (Just selected) (const (pure ())) (map fst requests))
     received <- evalIO (lines <$> readFile arguments)
     drop 2 received === ["--reference=reference adapter", "--reference-digest=" ++ replicate 64 'c']
+
+unread :: PropertyT IO ()
+unread = do
+    requests <- setup [0 .. 511]
+    root <- workspace
+    let exiting = root </> "unread.sh"
+    evalIO (writeFile exiting "exit 23\n")
+    annotateShow (Bytes.length (inputWith "adapter path" Null (map fst requests)))
+    outcome <- evalIO (Worker.runBatchedSession (Worker.Worker "/bin/sh" exiting root "adapter path" [] Nothing) Nothing (const (pure ())) (map fst requests))
+    case outcome of
+        Left problem -> problem === Worker.WorkerExit (ExitFailure 23)
+        Right _ -> failure
