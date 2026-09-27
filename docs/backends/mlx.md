@@ -4,7 +4,7 @@ The MLX backend runs Invar's inference and learning on Apple Silicon. One Python
 
 ## Model and environment
 
-`worker/mlx/model.py` pins `mlx-community/Qwen3.8-27B-4bit` at revision `3e6447f082e89cc7f0bc6e5441afd38dfce760ff` and loads it from the local Hugging Face cache on the Metal device, with all 64 layers. The weights are affine 4 bit with group size 64. `worker/mlx/adapter.py` adds FP32 LoRA with rank 8 and scale 2.0 to `gate_proj`, `up_proj` and `down_proj` of every layer, 192 projections, and freezes everything else. [The lock file](../../worker/locks/mlx.txt) pins CPython 3.14, MLX 0.32.1 and MLX-LM 0.31.3 with hashes.
+[The model loader](../../worker/mlx/model.py) pins `mlx-community/Qwen3.8-27B-4bit` through its `MODEL` and `REVISION` constants and loads it from the local Hugging Face cache on the Metal device, with all 64 layers. The weights are affine 4 bit with group size 64. `worker/mlx/adapter.py` adds FP32 LoRA with rank 8 and scale 2.0 to `gate_proj`, `up_proj` and `down_proj` of every layer, 192 projections, and freezes everything else. [The lock file](../../worker/locks/mlx.txt) pins CPython 3.14, MLX 0.32.1 and MLX-LM 0.31.3 with hashes.
 
 An optional runtime configuration with format `invar-mlx-runtime-v1` sets `batch_size`, the decode batch of MLX-LM's `BatchGenerator`, `prefill_step`, its prefill chunk, `cache_bytes`, the free buffer cache of the allocator, and `numerics`, the profile every entry loads: `primary`, the row independent profile, or `native`, the library projection, LoRA and attention with the project's cache and recurrence corrections. The defaults are 1, 512, 256 MiB and `primary`. Each entry reports the profile it loaded in its `profile` record.
 

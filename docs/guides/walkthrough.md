@@ -1,6 +1,6 @@
 # Walkthrough on Apple Silicon
 
-This walkthrough takes one use decision from declaration to admission on a Mac with the MLX backend. The owner wants to evaluate with the row independent numerics profile in place of the library's stock numerics, and asks two things of it on a small set of arithmetic questions: it must not lose answers, and its results must not change with how requests are batched. Every value below comes from the run recorded on 2026-09-27; the [operating guide](agents.md) explains who decides what.
+This walkthrough takes one use decision from declaration to admission on a Mac with the MLX backend. The owner wants to evaluate with the row independent numerics profile in place of the library's stock numerics, and asks two things of it on a small set of arithmetic questions: it must not lose answers, and its results must not change with how requests are batched. Every value below comes from one recorded run; the [operating guide](agents.md) explains who decides what.
 
 The files the owner wrote are in [walkthrough](walkthrough): the workload, the two runtime configurations, the declaration and the record its reliance points to. They hold that owner's decisions. For your own use, the owner states the purpose, budgets, rationales, protocols and reliance again; an operator does not reuse them.
 
@@ -54,7 +54,7 @@ for side in reference candidate; do
 done
 ```
 
-Both sides share the adapter `65b96ed1…`. Their assemblies differ: `7a69568a…` for the stock numerics and `9f1e1c3d…` for the row independent ones.
+Both sides share the initialized adapter and have different inference assemblies for the stock and row independent numerics. The commands above read those identities from each side's initialization records.
 
 ## Declaration and execution plan
 

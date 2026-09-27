@@ -1,13 +1,13 @@
 # vLLM patches
 
-The CUDA worker runs vLLM 0.28.0 at revision [`2cf0a6915ce544dc493a0990f2ea38d81601128a`](https://github.com/vllm-project/vllm/tree/2cf0a6915ce544dc493a0990f2ea38d81601128a) with the BitsAndBytes plugin at revision [`d4914a9e3c5927b33b7ef941385a4fda2187e2b9`](https://github.com/vllm-project/vllm-bnb-plugin/tree/d4914a9e3c5927b33b7ef941385a4fda2187e2b9). Four patches in [vllm/](vllm) change these sources.
+The CUDA worker runs vLLM 0.28.0 with the BitsAndBytes plugin. [The source pins](vllm/sources.json) record both upstream repositories and the exact revisions these patches target. Four patches in [vllm/](vllm) change these sources.
 
-| Patch | Tree | Files | Patch SHA-256 |
-| --- | --- | --- | --- |
-| [fp32.patch](vllm/fp32.patch) | vLLM | `vllm/config/lora.py`, `vllm/lora/ops/triton_ops/kernel_utils.py`, `lora_shrink_op.py`, `lora_expand_op.py` | `6ed17f29e3631d1f2e5fae9291ba94c9b6a960fe25f4da88831ee3d7fcb86b67` |
-| [fp32padding.patch](vllm/fp32padding.patch) | vLLM | `vllm/lora/ops/triton_ops/lora_shrink_op.py` | `e632ab13aecf8c1ba6d6c17fc8bc9feb633cd05ca5a5162587d971c269397a63` |
-| [bnb.patch](vllm/bnb.patch) | plugin | `vllm_bnb_plugin/bitsandbytes_loader.py` | `a18834b02d9d41433b2387e6e9459918c6b867e10fc8296cbbf616b54ef8ce29` |
-| [bnbinvariant.patch](vllm/bnbinvariant.patch) | plugin | `vllm_bnb_plugin/quantization/linear.py` | `2f1dd2e97830125adc1b1cc760f614edd79e96f513bfe8240e5d6253b5dc1581` |
+| Patch | Tree | Files |
+| --- | --- | --- |
+| [fp32.patch](vllm/fp32.patch) | vLLM | `vllm/config/lora.py`, `vllm/lora/ops/triton_ops/kernel_utils.py`, `lora_shrink_op.py`, `lora_expand_op.py` |
+| [fp32padding.patch](vllm/fp32padding.patch) | vLLM | `vllm/lora/ops/triton_ops/lora_shrink_op.py` |
+| [bnb.patch](vllm/bnb.patch) | plugin | `vllm_bnb_plugin/bitsandbytes_loader.py` |
+| [bnbinvariant.patch](vllm/bnbinvariant.patch) | plugin | `vllm_bnb_plugin/quantization/linear.py` |
 
 ## FP32 LoRA
 

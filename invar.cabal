@@ -11,7 +11,7 @@ category: AI
 build-type: Simple
 tested-with: GHC == 9.14.1
 extra-doc-files: README.md, docs/design/*.md, docs/backends/*.md, docs/results/*.md, docs/guides/*.md, docs/guides/walkthrough/*.json, docs/guides/walkthrough/basis/*.md, docs/images/*.svg, patches/README.md
-extra-source-files: cabal.project, test/types.sh, test/fail.sh, test/accept/*.hs, test/reject/*.hs, test/confidence/*.hs, test/confidence/*.py, patches/vllm/*.patch, patches/vllm/*.sha256
+extra-source-files: cabal.project, test/types.sh, test/fail.sh, test/accept/*.hs, test/reject/*.hs, test/confidence/*.hs, test/confidence/*.py, patches/vllm/*.patch, patches/vllm/*.sha256, patches/vllm/sources.json
 
 common defaults
   default-language: GHC2021

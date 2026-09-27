@@ -4,7 +4,7 @@ The release acceptance admits a new inference implementation of `Qwen/Qwen3.8-27
 
 ## Reference and candidate
 
-The reference and the candidate are two frozen packages built for this acceptance, each with its own snapshot of the worker and its own overlays; the candidate's softmax kernel is not part of this repository. The admission applies to those two packages, not to the worker in the current repository. The reference is vLLM with the FP32 LoRA patches, as used in the CUDA training runs. The candidate adds two changes so that the numbers of each request do not depend on which requests share its batch: NF4 matrix multiplication always takes the same kernel path, and softmax reduces each row on its own in fixed blocks of 1024 columns. Both run the same model revision, tokenizer and frozen base weights at the initial adapter `08a9cd1e…`. The [vLLM backend page](../backends/vllm.md) describes the CUDA worker.
+The reference and the candidate are two frozen packages built for this acceptance, each with its own snapshot of the worker and its own overlays; the candidate's softmax kernel is not part of this repository. The admission applies to those two packages, not to the worker in the current repository. The reference is vLLM with the FP32 LoRA patches, as used in the CUDA training runs. The candidate adds two changes so that the numbers of each request do not depend on which requests share its batch: NF4 matrix multiplication always takes the same kernel path, and softmax reduces each row on its own in fixed blocks of 1024 columns. Both run the same model revision, tokenizer, frozen base weights and initial adapter. The [vLLM backend page](../backends/vllm.md) describes the CUDA worker.
 
 ## Population and sealed draws
 
@@ -51,7 +51,7 @@ The main run's observed paired variance, 0.0205, stayed below the 3/64 the probe
 
 ## Results
 
-The contract bound the reference as assembly `b13d1c95…` and the candidate as assembly `7fa845df…`. The main stage decision is **admitted under declared reliance**.
+The contract binds the two frozen implementations described above. The main stage decision is **admitted under declared reliance**.
 
 | Stage | Units | Result |
 | --- | ---: | --- |
@@ -81,14 +81,7 @@ invar use inspect --contract contract.json --runs runs.json
 invar use admit --contract contract.json --runs runs.json
 ```
 
-The contract is the complete `invar-use-contract` document, including domain and reliance entries. The runs file is a JSON array with one entry per unit, `[cohort index, input key, paired arguments, repeated arguments]`. The paired arguments are the input options of `invar compare numerical` without `--relation` or `--budget`, prefixed once with `--reference-` and once with `--candidate-` (digests, request, binding, log and exit code). Each repeated array uses the same options unprefixed for one further candidate execution:
-
-```json
-[0, "sealed/0/seed/17",
-  ["--reference-assembly-digest", "b13d1c95…", "…", "--reference-log", "reference-0/stdout", "--reference-exit-code", "0",
-   "--candidate-assembly-digest", "7fa845df…", "…", "--candidate-log", "candidate-0/stdout", "--candidate-exit-code", "0"],
-  [["--assembly-digest", "7fa845df…", "…", "--log", "repeat-0/stdout", "--exit-code", "0"], ["…"]]]
-```
+The contract is the complete `invar-use-contract` document, including domain and reliance entries. The runs file is a JSON array with one entry per unit, `[cohort index, input key, paired arguments, repeated arguments]`. The paired arguments are the input options of `invar compare numerical` without `--relation` or `--budget`, prefixed once with `--reference-` and once with `--candidate-` (digests, request, binding, log and exit code). Each repeated array uses the same options unprefixed for one further candidate execution. Identities come from the retained reports and policy descriptions. The [Apple Silicon walkthrough](../guides/walkthrough.md) shows how `invar use run` writes a complete runs file for a supported execution plan.
 
 `inspect` prints the observation; `admit` adds the finding, the decision and the confidence bounds. Exit zero means a judgment was computed, and `decision.status` holds admission under declared reliance, violation or unknown. The decision and bounds above are the output of `invar use admit` on the retained main stage records.
 
