@@ -1,4 +1,4 @@
-module Invar.Learn.Stream (Sample (..), Current (..), Applied (..), Reply (..), Stream, Error (..), begin, proximal, current, applied, complete, digest, observationOf, proximals, currents, losses) where
+module Invar.Learn.Stream (Sample (..), Current (..), Applied (..), Reply (..), Stream, Error (..), begin, proximal, current, applied, complete, digest, observationOf, proximals, currents) where
 
 import Control.Monad (unless, when)
 import Crypto.Hash.SHA256 qualified as SHA256
@@ -51,12 +51,11 @@ data Stream = Stream
     , expected :: String
     , fixed :: Map Text [Word32]
     , observed :: [(Natural, Text, [Word32])]
-    , terms :: Map Natural [Word32]
     }
     deriving (Eq, Show)
 
 begin :: Objective.Profile -> String -> [Sample] -> [[Text]] -> Stream
-begin chosen initial declared steps = Stream chosen (Map.fromList [(name entry, entry) | entry <- declared]) steps 0 [] initial Map.empty [] Map.empty
+begin chosen initial declared steps = Stream chosen (Map.fromList [(name entry, entry) | entry <- declared]) steps 0 [] initial Map.empty []
 
 proximal :: Stream -> Text -> [Word32] -> Either Error Stream
 proximal stream named values = do
@@ -90,7 +89,6 @@ current stream report = do
             { answered = answered stream ++ [digest reply]
             , fixed = recorded
             , observed = observed stream ++ [(position stream, sample report, words32 report)]
-            , terms = Map.insertWith (flip (++)) (position stream) (map Objective.term outputs) (terms stream)
             }
         , reply
         )
@@ -123,9 +121,6 @@ proximals = fixed
 
 currents :: Stream -> [(Natural, Text, [Word32])]
 currents = observed
-
-losses :: Stream -> Either Error [Word32]
-losses stream = traverse (either (Left . Scalar) Right . Objective.mean32) (Map.elems (terms stream))
 
 selected :: Stream -> Maybe [Text]
 selected stream = case drop (fromIntegral (position stream)) (plan stream) of

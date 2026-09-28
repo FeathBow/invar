@@ -187,11 +187,10 @@ validateStats actual value = do
     counts <- traverse (parse (\sample -> length <$> (sample .: "behavior_bits" :: Parser [Natural]))) samples
     tokens <- parse (.: "active_tokens") value
     nonzero <- parse (.: "nonzero_advantages") value
-    loss <- parse (.: "loss") value
     gradient <- parse (.: "gradient_norm") value
     rewardGradient <- parse (.: "reward_gradient_norm") value
     unless (tokens == sum counts && tokens > 0 && nonzero >= (0 :: Int) && nonzero <= length samples) (Left (Mismatch "Update sample or active-token counts disagree"))
-    unless (all finite [loss, gradient, rewardGradient] && gradient >= 0 && rewardGradient >= 0) (Left (Mismatch "Invalid numerical update summary"))
+    unless (all finite [gradient, rewardGradient] && gradient >= 0 && rewardGradient >= 0) (Left (Mismatch "Invalid numerical update summary"))
   where
     finite number = not (isNaN (number :: Double) || isInfinite number)
 

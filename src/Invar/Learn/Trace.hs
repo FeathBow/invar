@@ -61,7 +61,7 @@ completion :: Value -> Object -> Either String ()
 completion request result = do
     stage "result" result
     parseEither (Json.fields ["stage", "binding", "request", "update", "gradients", "probabilities", "adapter", "learner", "storage"]) result
-    parseEither (\fields -> fields .: "update" >>= withObject "update summary" (Json.fields ["loss", "gradient_norm", "reward_gradient_norm", "active_tokens", "before", "after", "nonzero_advantages"])) result
+    parseEither (\fields -> fields .: "update" >>= withObject "update summary" (Json.fields ["gradient_norm", "reward_gradient_norm", "active_tokens", "before", "after", "nonzero_advantages"])) result
     first show (Protocol.validateSummary request result)
 
 stage :: Text.Text -> Object -> Either String ()

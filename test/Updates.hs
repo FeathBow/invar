@@ -64,7 +64,7 @@ setupFor supplied = do
         state = object ["policy" .= field "policy" actual, "learner" .= field "learner" actual, "tokenizer" .= field "tokenizer" actual, "base" .= field "base" actual, "assembly" .= field "assembly" actual, "reference" .= field "reference" actual, "optimizer" .= field "optimizer" actual]
         loaded = object ["stage" .= String "loaded_learner", "binding" .= bound, "state" .= state, "load" .= load, "image" .= imageValue]
         consumed = object ["stage" .= String "consumed", "binding" .= bound, "program" .= decodeUtf8 (A.bytes checked), "request" .= actual, "load" .= load]
-        update = object ["before" .= field "policy" actual, "after" .= digest "d", "active_tokens" .= Number 2, "nonzero_advantages" .= Number 2, "loss" .= Number 0, "gradient_norm" .= Number 1, "reward_gradient_norm" .= Number 1]
+        update = object ["before" .= field "policy" actual, "after" .= digest "d", "active_tokens" .= Number 2, "nonzero_advantages" .= Number 2, "gradient_norm" .= Number 1, "reward_gradient_norm" .= Number 1]
         finished = object ["stage" .= String "result", "binding" .= bound, "request" .= actual, "update" .= update, "adapter" .= digest "d", "learner" .= digest "e", "gradients" .= digest "f", "probabilities" .= digest "a", "storage" .= String "staged; not published"]
     pure ((binding, runtime), [loaded, consumed, finished])
 
@@ -170,7 +170,7 @@ result :: PropertyT IO ()
 result = do
     (context, events) <- setup
     let update = field "update" (last events)
-        changes = [("before", digest "f"), ("after", digest "f"), ("active_tokens", Number 3), ("nonzero_advantages", Number 3), ("nonzero_advantages", Number (-1)), ("gradient_norm", Number (-1)), ("reward_gradient_norm", Number (-1)), ("loss", Number (10 ^ overflowExponent))]
+        changes = [("before", digest "f"), ("after", digest "f"), ("active_tokens", Number 3), ("nonzero_advantages", Number 3), ("nonzero_advantages", Number (-1)), ("gradient_norm", Number (-1)), ("reward_gradient_norm", Number (-1)), ("gradient_norm", Number (10 ^ overflowExponent))]
     forM_ changes $ \(name, value) ->
         mismatch (observe context (wire (alter 2 (change "update" (change name value update)) events)))
     forM_ [("adapter", digest "f"), ("learner", String "unknown"), ("storage", String "published")] $ \(name, value) ->

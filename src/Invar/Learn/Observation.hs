@@ -32,7 +32,7 @@ probability expected path = do
     encoded <- Bytes.readFile path
     digest <- either invalid pure (Report.artifact "probabilities" expected)
     unless (Artifact.hex (SHA256.hash encoded) == digest) (invalid "Probability file differs from its reported digest")
-    either invalid pure (Probability.observe (Report.invocation expected, Report.checkedRequest expected, Report.output expected) encoded)
+    either invalid pure (Probability.observe (Report.invocation expected, Report.checkedRequest expected) encoded)
 
 probabilityObjects :: Report.Report -> FilePath -> IO [Object]
 probabilityObjects expected path = map Probability.sampleObject <$> probability expected path
@@ -47,10 +47,10 @@ probabilities left right = do
     differences <- traverse difference [(old, new) | (old, new) <- zip initial changed, not (null (fields old new))]
     leftBinding <- binding first
     rightBinding <- binding second
-    pure (object ["comparison" .= ("pre-AdamW objective input and scalar words" :: Text), "equal" .= null differences, "left_binding" .= leftBinding, "right_binding" .= rightBinding, "samples" .= length initial, "differences" .= differences])
+    pure (object ["comparison" .= ("learner log probabilities before and during the update" :: Text), "equal" .= null differences, "left_binding" .= leftBinding, "right_binding" .= rightBinding, "samples" .= length initial, "differences" .= differences])
   where
     binding = either invalid pure . Report.bindingValue :: Report.Report -> IO Value
-    fields old new = [Key.toText role | role <- ["behavior", "reference", "advantage", "proximal", "steps"], Fields.lookup role old /= Fields.lookup role new]
+    fields old new = [Key.toText role | role <- ["proximal", "steps"], Fields.lookup role old /= Fields.lookup role new]
     difference (old, new) = do
         name <- either invalid pure (parseEither (.: "sample") old) :: IO Text
         pure (object ["sample" .= name, "fields" .= fields old new])

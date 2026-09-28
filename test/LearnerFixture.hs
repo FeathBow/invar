@@ -88,7 +88,7 @@ artifacts directory request (loaded, consumed) = do
     learner <- Artifact.identity "Learner fixture" (directory </> "learner.pt")
     gradients <- Artifact.identity "Gradient fixture" (directory </> "gradients.safetensors")
     let count = sum (map (length . array . field "behavior_bits") (array (field "samples" request)))
-        update = object ["before" .= field "policy" request, "after" .= policy, "active_tokens" .= count, "nonzero_advantages" .= (0 :: Int), "loss" .= (0 :: Double), "gradient_norm" .= (0 :: Double), "reward_gradient_norm" .= (0 :: Double)]
+        update = object ["before" .= field "policy" request, "after" .= policy, "active_tokens" .= count, "nonzero_advantages" .= (0 :: Int), "gradient_norm" .= (0 :: Double), "reward_gradient_norm" .= (0 :: Double)]
         result = object ["stage" .= String "result", "binding" .= field "binding" consumed, "request" .= request, "update" .= update, "adapter" .= policy, "learner" .= learner, "gradients" .= gradients, "storage" .= String "staged; not published"]
         probability = directory </> "probabilities.json"
     Bytes.writeFile probability (Bytes.init (wire [Probabilities.fixture [loaded, consumed, result]]))
