@@ -22,6 +22,8 @@ events =
         , ("update plans reject empty, repeated, foreign and unused requests", withTests 1 (property plans))
         , ("interleavings, duplicates, lost workers, abandoned attempts and restarts reach the same decisions", withTests 400 (property interleavings))
         , ("reports from a superseded worker epoch change nothing", withTests 1 (property superseded))
+        , ("an epoch at or below one a worker has used is refused after loss and recovery", withTests 1 (property regression))
+        , ("only the worker epoch that started a request may complete it", withTests 1 (property ownership))
         , ("cotangents are bound to their update, step, observation and state", withTests 1 (property binding))
         , ("recovery decides publication from the commit point alone", withTests 1 (property recovery))
         , ("a different result for a completed request is a conflict", withTests 1 (property conflict))
@@ -64,11 +66,11 @@ generatedPlan = do
     chunks _ [] = []
     chunks width values = let (taken, rest) = splitAt (fromIntegral width) values in taken : chunks width rest
 
-data Action = Deliver Int | Duplicate Int | Lose Natural | Abandon | Restart
+data Action = Deliver Int Int | Duplicate Int | Reconnect Natural Natural | Impostor Int | Revenant Int | Abandon | Restart
     deriving (Show)
 
 action :: Gen Action
-action = Gen.frequency [(12, Deliver <$> Gen.int (Range.linear 0 20)), (2, Duplicate <$> Gen.int (Range.linear 0 50)), (1, Lose <$> Gen.integral (Range.linear 0 1)), (1, pure Abandon), (1, pure Restart)]
+action = Gen.frequency [(12, Deliver <$> Gen.int (Range.linear 0 20) <*> Gen.int (Range.linear 0 1)), (2, Duplicate <$> Gen.int (Range.linear 0 50)), (1, Reconnect <$> Gen.integral (Range.linear 0 1) <*> Gen.integral (Range.linear 0 2)), (1, Impostor <$> Gen.int (Range.linear 0 20)), (1, Revenant <$> Gen.int (Range.linear 0 20)), (1, pure Abandon), (1, pure Restart)]
 
 data Item = Item {era :: Natural, work :: Work}
     deriving (Show)
@@ -81,6 +83,8 @@ data World = World
     , core :: C.State
     , pending :: [Item]
     , epochs :: Map Worker Epoch
+    , issued :: Map Worker Epoch
+    , bindings :: Map Request (Worker, Epoch)
     , restarts :: Natural
     , accepted :: [Event]
     , traces :: Map (Update, Attempt) [(Natural, String, String)]
@@ -109,7 +113,7 @@ interleavings = do
     chosen <- forAll generatedPlan
     actions <- forAll (Gen.list (Range.linear 0 80) action)
     let (initial, commands) = C.start chosen
-        world = World chosen initial [] (Map.fromList [(worker, Epoch 0) | worker <- workers]) 0 [] Map.empty Map.empty [] 20000
+        world = World chosen initial [] (Map.fromList [(worker, Epoch 0) | worker <- workers]) (Map.fromList [(worker, Epoch 0) | worker <- workers]) Map.empty 0 [] Map.empty Map.empty [] 20000
     connected <- foldM' world [Connected worker (Epoch 0) | worker <- workers]
     finished <- drain =<< perform (enqueue connected commands) actions
     C.committed (core finished) === P.updates chosen
@@ -132,8 +136,8 @@ perform world [] = pure world
 perform world (next : rest) = do
     when (fuel world <= 0) (annotate "out of fuel" >> failure)
     updated <- case next of
-        Deliver index | not (null (pending world)) -> deliver world (index `mod` length (pending world))
-        Deliver _ -> pure world
+        Deliver index choice | not (null (pending world)) -> deliver world (index `mod` length (pending world)) choice
+        Deliver _ _ -> pure world
         Duplicate index | not (null repeatable) -> do
             let event = repeatable !! (index `mod` length repeatable)
             case C.step (core world) event of
@@ -143,18 +147,36 @@ perform world (next : rest) = do
           where
             repeatable = [event | event <- accepted world, duplicable event]
         Duplicate _ -> pure world
-        Lose index -> do
+        Reconnect index back -> do
             let worker = workers !! fromIntegral (index `mod` 2)
-                Epoch epoch = epochs world Map.! worker
-            lost <- feed world (restarts world) (Lost worker (Epoch epoch))
-            feed lost {epochs = Map.insert worker (Epoch (epoch + 1)) (epochs lost)} (restarts lost) (Connected worker (Epoch (epoch + 1)))
+                Epoch highest = issued world Map.! worker
+                reused = Epoch (if highest >= back then highest - back else 0)
+            lost <- feed world (restarts world) (Lost worker (epochs world Map.! worker))
+            C.step (core lost) (Connected worker reused) === Left (StaleEpoch worker reused)
+            let fresh = Epoch (highest + 1)
+            feed lost {epochs = Map.insert worker fresh (epochs lost), issued = Map.insert worker fresh (issued lost)} (restarts lost) (Connected worker fresh)
+        Impostor index -> case [(other, request, selected) | Item _ (Run worker _ request selected) <- pending world, let other = if worker == Worker 0 then Worker 1 else Worker 0, Map.lookup request (bindings world) /= Just (other, epochs world Map.! other)] of
+            [] -> pure world
+            candidates -> do
+                let (other, request, selected) = candidates !! (index `mod` length candidates)
+                    event = Completed other (epochs world Map.! other) request (digest request selected)
+                case C.step (core world) event of
+                    Left problem | rejection problem -> pure world
+                    outcome -> annotateShow (event, outcome) >> annotate "a completion from a worker that did not start the request was accepted" >> failure
+        Revenant index -> case [(worker, epoch, request, selected) | Item _ (Run worker epoch request selected) <- pending world, Map.lookup worker (epochs world) /= Just epoch] of
+            [] -> pure world
+            candidates -> do
+                let (worker, epoch, request, selected) = candidates !! (index `mod` length candidates)
+                started <- feed world (restarts world) (Started worker epoch request)
+                feed started (restarts started) (Completed worker epoch request (digest request selected))
         Abandon -> case C.learning (core world) of
             Just (update, phase) | not (committing phase) -> feed world (restarts world) (Abandoned update (attemptOf phase))
             _ -> pure world
         Restart -> do
             let base = 1000 * (restarts world + 1)
-            (recovered, commands) <- evalEither (C.recover (plan world) (published world) (C.results (core world)) base)
-            let restarted = enqueue world {core = recovered, restarts = restarts world + 1, epochs = Map.map (\(Epoch epoch) -> Epoch (epoch + 1)) (epochs world)} commands
+            (recovered, commands) <- evalEither (C.recover (plan world) (published world) (C.results (core world)) (issued world) base)
+            let raised = Map.map (\(Epoch epoch) -> Epoch (epoch + 1)) (issued world)
+                restarted = enqueue world {core = recovered, restarts = restarts world + 1, epochs = raised, issued = raised, bindings = Map.empty} commands
             foldl (\acted (worker, epoch) -> acted >>= \current -> feed current (restarts current) (Connected worker epoch)) (pure restarted) (Map.toList (epochs restarted))
     perform updated {fuel = fuel updated - 1} rest
 
@@ -163,10 +185,10 @@ drain world
     | C.committed (core world) == P.updates (plan world) = pure world
     | null (pending world) = annotateShow (C.learning (core world)) >> annotate "stuck with nothing pending" >> failure
     | fuel world <= 0 = annotate "out of fuel" >> failure
-    | otherwise = deliver world 0 >>= \next -> drain next {fuel = fuel next - 1}
+    | otherwise = deliver world 0 0 >>= \next -> drain next {fuel = fuel next - 1}
 
-deliver :: World -> Int -> PropertyT IO World
-deliver world index = do
+deliver :: World -> Int -> Int -> PropertyT IO World
+deliver world index choice = do
     (item, remaining) <- case splitAt index (pending world) of
         (earlier, chosen : later) -> pure (chosen, earlier ++ later)
         _ -> failure
@@ -174,7 +196,7 @@ deliver world index = do
     case work item of
         _ | era item /= restarts world && not (running (work item)) -> pure rest
         Pick request selected -> do
-            let worker = workers !! (fromIntegral (let Request n = request in n) `mod` 2)
+            let worker = workers !! (choice `mod` 2)
                 epoch = epochs world Map.! worker
             started <- feed rest (era item) (Started worker epoch request)
             pure started {pending = pending started ++ [Item (era item) (Run worker epoch request selected)]}
@@ -204,7 +226,7 @@ feed world issued event = case C.step (core world) event of
     Right (next, commands) -> do
         when (stale world issued event) (annotateShow event >> annotate "a stale event was accepted" >> failure)
         forM_ commands (checked world)
-        pure (enqueue world {core = next, accepted = event : accepted world} commands)
+        pure (enqueue world {core = next, accepted = event : accepted world, bindings = bound world event} commands)
     Left problem -> do
         unless (stale world issued event && rejection problem) (annotateShow (event, problem) >> failure)
         pure world
@@ -220,18 +242,30 @@ checked world command = case command of
 stale :: World -> Natural -> Event -> Bool
 stale world issued event =
     issued /= restarts world || case event of
-        Started worker epoch _ -> Map.lookup worker (epochs world) /= Just epoch
-        Completed worker epoch _ _ -> Map.lookup worker (epochs world) /= Just epoch
+        Started worker epoch request -> Map.lookup worker (epochs world) /= Just epoch || maybe False (/= (worker, epoch)) (Map.lookup request (bindings world)) && Map.notMember request (C.results (core world))
+        Completed worker epoch request _ -> Map.lookup worker (epochs world) /= Just epoch || Map.lookup request (bindings world) /= Just (worker, epoch)
         _ -> case (addressed event, C.learning (core world)) of
             (Just (update, attempt), Just (active, phase)) -> update /= active || attempt /= attemptOf phase
             (Just _, Nothing) -> True
             _ -> False
+
+bound :: World -> Event -> Map Request (Worker, Epoch)
+bound world event = case event of
+    Started worker epoch request
+        | Map.notMember request (C.results (core world)) -> Map.insertWith (\_ existing -> existing) request (worker, epoch) (bindings world)
+    Lost worker _ -> released worker
+    Connected worker _ -> released worker
+    _ -> bindings world
+  where
+    released worker = Map.filterWithKey (\request (holder, _) -> holder /= worker || Map.member request (C.results (core world))) (bindings world)
 
 rejection :: Failure -> Bool
 rejection problem = case problem of
     StaleEpoch _ _ -> True
     NotConnected _ _ -> True
     StaleAttempt _ _ -> True
+    Occupied _ -> True
+    NotRunning {} -> True
     Unexpected _ -> True
     _ -> False
 
@@ -311,12 +345,12 @@ recovery :: PropertyT IO ()
 recovery = do
     chosen <- evalEither (P.prepare 0 [Declared [Request 0] [[Request 0]], Declared [Request 1] [[Request 1]]])
     let stored = Map.fromList [(Request 0, "r0")]
-    (unpublished, commands) <- evalEither (C.recover chosen [] stored 5)
+    (unpublished, commands) <- evalEither (C.recover chosen [] stored Map.empty 5)
     commands === [Send (Update 0) (Attempt 5)]
-    (published, resumed) <- evalEither (C.recover chosen [Update 0] stored 5)
+    (published, resumed) <- evalEither (C.recover chosen [Update 0] stored Map.empty 5)
     resumed === [Dispatch (Request 1) (Version 1)]
     C.committed published === [Update 0]
-    C.recover chosen [Update 1] stored 5 === Left InvalidRecovery
+    C.recover chosen [Update 1] stored Map.empty 5 === Left InvalidRecovery
     recording <- evalEither (run unpublished [Proximal (Update 0) (Attempt 5) "p" "s0", Current (Update 0) (Attempt 5) 0 "o" "s0", Applied (Update 0) (Attempt 5) 0 "o" "s1", Staged (Update 0) (Attempt 5) "d", Recorded (Update 0) (Attempt 5)])
     C.learning recording === Just (Update 0, Committing (Attempt 5))
     C.step recording (Abandoned (Update 0) (Attempt 5)) === Left (UncertainCommit (Update 0) (Attempt 5))
@@ -329,3 +363,26 @@ conflict = do
     same === completed
     commands === []
     C.step completed (Completed (Worker 0) (Epoch 0) (Request 0) "second") === Left (Conflict (Request 0))
+
+regression :: PropertyT IO ()
+regression = do
+    (chosen, connected) <- evalIO single
+    raised <- evalEither (run connected [Lost (Worker 0) (Epoch 0), Connected (Worker 0) (Epoch 5), Lost (Worker 0) (Epoch 5)])
+    C.step raised (Connected (Worker 0) (Epoch 1)) === Left (StaleEpoch (Worker 0) (Epoch 1))
+    C.step raised (Connected (Worker 0) (Epoch 5)) === Left (StaleEpoch (Worker 0) (Epoch 5))
+    (recovered, _) <- evalEither (C.recover chosen [] Map.empty (C.highest raised) 9)
+    C.step recovered (Connected (Worker 0) (Epoch 1)) === Left (StaleEpoch (Worker 0) (Epoch 1))
+    _ <- evalEither (C.step recovered (Connected (Worker 0) (Epoch 6)))
+    success
+
+ownership :: PropertyT IO ()
+ownership = do
+    (_, connected) <- evalIO single
+    started <- evalEither (run connected [Connected (Worker 1) (Epoch 0), Started (Worker 0) (Epoch 0) (Request 0)])
+    C.step started (Completed (Worker 1) (Epoch 0) (Request 0) "impostor") === Left (NotRunning (Request 0) (Worker 1) (Epoch 0))
+    C.step started (Started (Worker 1) (Epoch 0) (Request 0)) === Left (Occupied (Request 0))
+    (same, none) <- evalEither (C.step started (Started (Worker 0) (Epoch 0) (Request 0)))
+    same === started
+    none === []
+    completed <- evalEither (run started [Completed (Worker 0) (Epoch 0) (Request 0) "r"])
+    C.step completed (Completed (Worker 1) (Epoch 0) (Request 0) "r") === Left (NotRunning (Request 0) (Worker 1) (Epoch 0))

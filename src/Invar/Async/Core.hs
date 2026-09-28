@@ -1,6 +1,6 @@
 {-# LANGUAGE Safe #-}
 
-module Invar.Async.Core (Worker (..), Epoch (..), Attempt (..), Digest, Event (..), Command (..), Failure (..), Phase (..), State, start, step, recover, committed, results, learning) where
+module Invar.Async.Core (Worker (..), Epoch (..), Attempt (..), Digest, Event (..), Command (..), Failure (..), Phase (..), State, start, step, recover, committed, results, learning, highest) where
 
 import Control.Monad (unless)
 import Data.Map.Strict (Map)
@@ -50,6 +50,8 @@ data Failure
     | NotConnected Worker Epoch
     | StaleEpoch Worker Epoch
     | Conflict Request
+    | Occupied Request
+    | NotRunning Request Worker Epoch
     | StaleAttempt Update Attempt
     | Unexpected Event
     | BindingMismatch Update Attempt Natural
@@ -69,9 +71,11 @@ data Phase
 data State = State
     { plan :: Plan
     , epochs :: Map Worker Epoch
+    , used :: Map Worker Epoch
     , dispatched :: Set Request
     , running :: Map Request (Worker, Epoch)
     , completedResults :: Map Request Digest
+    , completers :: Map Request (Worker, Epoch)
     , done :: [Update]
     , active :: Maybe (Update, Phase)
     , attempts :: Natural
@@ -88,23 +92,26 @@ results = completedResults
 learning :: State -> Maybe (Update, Phase)
 learning = active
 
-start :: Plan -> (State, [Command])
-start chosen = advance (State chosen Map.empty Set.empty Map.empty Map.empty [] Nothing 0 Set.empty)
+highest :: State -> Map Worker Epoch
+highest = used
 
-recover :: Plan -> [Update] -> Map Request Digest -> Natural -> Either Failure (State, [Command])
-recover chosen published stored fresh = do
+start :: Plan -> (State, [Command])
+start chosen = advance (State chosen Map.empty Map.empty Set.empty Map.empty Map.empty Map.empty [] Nothing 0 Set.empty)
+
+recover :: Plan -> [Update] -> Map Request Digest -> Map Worker Epoch -> Natural -> Either Failure (State, [Command])
+recover chosen published stored lowest fresh = do
     unless (published == take (length published) (updates chosen)) (Left InvalidRecovery)
     unless (all (isJust . owner chosen) (Map.keys stored)) (Left InvalidRecovery)
-    pure (advance (State chosen Map.empty (Map.keysSet stored) Map.empty stored published Nothing fresh Set.empty))
+    pure (advance (State chosen Map.empty lowest (Map.keysSet stored) Map.empty stored Map.empty published Nothing fresh Set.empty))
 
 step :: State -> Event -> Either Failure (State, [Command])
 step state event = case event of
     Connected worker epoch -> do
-        case Map.lookup worker (epochs state) of
-            Just connected | epoch <= connected -> Left (StaleEpoch worker epoch)
+        case Map.lookup worker (used state) of
+            Just previous | epoch <= previous -> Left (StaleEpoch worker epoch)
             _ -> pure ()
         let (released, kept) = Map.partition ((== worker) . fst) (running state)
-        pure (redispatch (Map.keys released) state {epochs = Map.insert worker epoch (epochs state), running = kept})
+        pure (redispatch (Map.keys released) state {epochs = Map.insert worker epoch (epochs state), used = Map.insert worker epoch (used state), running = kept})
     Lost worker epoch -> do
         current state worker epoch
         let (released, kept) = Map.partition (== (worker, epoch)) (running state)
@@ -112,17 +119,25 @@ step state event = case event of
     Started worker epoch request -> do
         current state worker epoch
         known state request
-        if Map.member request (completedResults state)
-            then pure (state, [])
-            else pure (state {running = Map.insert request (worker, epoch) (running state)}, [])
+        case Map.lookup request (running state) of
+            _ | Map.member request (completedResults state) -> pure (state, [])
+            Just owner'
+                | owner' == (worker, epoch) -> pure (state, [])
+                | otherwise -> Left (Occupied request)
+            Nothing -> pure (state {running = Map.insert request (worker, epoch) (running state)}, [])
     Completed worker epoch request digest -> do
         current state worker epoch
         known state request
-        case Map.lookup request (completedResults state) of
-            Just previous
+        let reporter = (worker, epoch)
+        case (Map.lookup request (completedResults state), Map.lookup request (completers state)) of
+            (Just previous, Just completer)
+                | completer /= reporter -> Left (NotRunning request worker epoch)
                 | previous == digest -> pure (state, [])
                 | otherwise -> Left (Conflict request)
-            Nothing -> pure (advance state {completedResults = Map.insert request digest (completedResults state), running = Map.delete request (running state)})
+            (Just _, Nothing) -> Left (NotRunning request worker epoch)
+            (Nothing, _)
+                | Map.lookup request (running state) /= Just reporter -> Left (NotRunning request worker epoch)
+                | otherwise -> pure (advance state {completedResults = Map.insert request digest (completedResults state), completers = Map.insert request reporter (completers state), running = Map.delete request (running state)})
     _ | Set.member event (seen state) -> pure (state, [])
     _ -> learner state event
 
