@@ -1,11 +1,10 @@
+import hashlib
+import json
 import struct
 
 import torch
 
-from worker.advantage import word
-from worker import record as probability_record
-from worker.record import FORMAT, ROLES, Observation, Evaluated, loss, document, save
-
+FORMAT = "invar-probabilities-v4"
 ENCODINGS = {torch.float32: ("F32", torch.int32, (1 << 32) - 1),
              torch.float64: ("F64", torch.int64, (1 << 64) - 1)}
 
@@ -15,42 +14,19 @@ def words(tensor):
     return tuple(value & mask for value in tensor.detach().contiguous().view(integer).cpu().tolist())
 
 
-def capture(sample, tokens):
-    dtype, _, _ = ENCODINGS[tokens.current.dtype]
-    return Observation(sample=sample, dtype=dtype,
-                       words=tuple(words(getattr(tokens, role)) for role in ROLES),
-                       active=tuple(tokens.active.detach().cpu().tolist()))
+def document(order, update, *, invocation, request):
+    samples = [{"sample": name, "dtype": "F32", "proximal": list(update.proximal[name]),
+                "steps": [{"step": step, "current": list(current)} for step, sample, current in update.currents if sample == name]}
+               for name in order]
+    return {"format": FORMAT, "invocation": invocation, "request": request, "samples": samples}
 
 
-def checked(sample, tokens, *, advantage, count):
-    if count <= 0 or tokens.active.dtype != torch.bool or tokens.active.shape != (count,):
-        raise ValueError("Objective mask must describe every admitted response token")
-    for role in ROLES:
-        tensor = getattr(tokens, role)
-        if tensor.dtype != torch.float32 or tensor.shape != (count,) or tensor.device != tokens.active.device:
-            raise ValueError("Admitted objective inputs must be matching FP32 response vectors")
-    observed = capture(sample, tokens)
-    if not all(observed.active):
-        raise ValueError("Every admitted response token must be active")
-    if observed.words[ROLES.index("advantage")] != (word(advantage),) * count:
-        raise ValueError("Actual objective advantage differs from the checked sample advantage")
-    return observed
-
-
-def cotangents(observed, profile, *, total, device, linearized):
-    return probability_record.cotangents(observed, profile, total=total, linearized=words(linearized),
-                                         materialize=lambda values: tensor(values, device=device),
-                                         check=lambda expected, actual: checked_cotangents(expected, actual, device=device))
-
-
-def checked_cotangents(expected, tensors, *, device):
-    for value, intended in zip(tensors, expected, strict=True):
-        if value.dtype != torch.float32 or value.shape != (len(intended),) or value.device != device:
-            raise ValueError("Actual scalar cotangents must be FP32 vectors on the model device")
-    actual = tuple(words(value) for value in tensors)
-    if actual != expected:
-        raise ValueError("Actual scalar cotangents differ from the calculated FP32 words")
-    return actual
+def save(path, order, update, *, invocation, request):
+    encoded = json.dumps(document(order, update, invocation=invocation, request=request), sort_keys=True,
+                         separators=(",", ":"), allow_nan=False).encode("utf-8")
+    with path.open("xb") as output:
+        output.write(encoded)
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def tensor(encoded, *, device):

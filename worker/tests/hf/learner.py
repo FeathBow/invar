@@ -32,6 +32,7 @@ from worker.trajectory import Request
 from worker.hf.step import file_digest, optimizer_options, run
 from worker.tests.hf.tokenization import make_tokenizer
 from worker.update import decode
+from worker.tests.hf.responder import receiver, request_core
 
 REWARDING_SEED = 1326
 OTHER_SEED = 41
@@ -62,7 +63,7 @@ def fixture(*, directory=None):
     actual = {**request(), "policy": digest(state), "learner": file_digest(initial / "learner.pt"),
               "tokenizer": saved["tokenizer"], "base": saved["base"], "assembly": saved["assembly"],
               "behavior_model": {name: saved[name] for name in ("base", "assembly")},
-              "reference": digest(state), "samples": samples, "order": ["s0", "s1"]}
+              "reference": digest(state), "samples": samples, "order": ["s0", "s1"], "steps": [["s0", "s1"]]}
     bound = {"call": 7, "attempt": 11, "instance": 13}
     call = decode({"request": actual, "invocation": {"binding": bound, "program": "update test"},
                    "load": {"binding": bound, "program": "load test"}})
@@ -87,7 +88,7 @@ class LearnerLoadTests(unittest.TestCase):
         with redirect_stdout(output):
             run(call, options, loader=lambda options, request: (loaded, make_tokenizer(), IDENTITY),
                 measure=measured, permission=partial(approve, source=permission),
-                evaluate=partial(logprobs, device="cpu"))
+                evaluate=partial(logprobs, device="cpu"), receive=receiver(output, request_core(call.request)))
         load, = records(output, "loaded_learner")
         consumed, = records(output, "consumed")
         result, = records(output, "result")
@@ -116,7 +117,7 @@ class LearnerLoadTests(unittest.TestCase):
         with redirect_stdout(output), self.assertRaisesRegex(ValueError, "permission differs"):
             run(call, options, loader=lambda options, request: (loaded, make_tokenizer(), IDENTITY),
                 measure=measured, permission=partial(approve, source=permission),
-                evaluate=partial(logprobs, device="cpu"))
+                evaluate=partial(logprobs, device="cpu"), receive=receiver(output, request_core(call.request)))
         self.assertEqual(len(records(output, "consumed")), 1)
         self.assertFalse(records(output, "reward_update"))
         self.assertFalse(records(output, "result"))

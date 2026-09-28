@@ -16,6 +16,7 @@ import tempfile
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 import torch
 from safetensors.torch import load_file, save_file
@@ -24,8 +25,7 @@ from worker.tests.hf.cohort import request
 from worker.hf import codec
 from worker import core
 from worker.hf.learning import update
-from worker.tests.hf.learning import batch, make_learner
-from worker.hf.objective import Reward
+from worker.tests.hf.learning import ADVANTAGES, LOGICAL_ORDER, batch, make_learner
 from worker.tests.hf.tokenization import make_tokenizer
 from worker.hf.operation import digest as tokenizer_digest
 from worker.hf.model import adapter_state
@@ -75,10 +75,12 @@ def fixture(directory, name, *, call):
                  "learner": sha(initial / "learner.pt"), "reference": digest(adapter_state(learner.model)),
                  "tokenizer": tokenizer_digest(make_tokenizer()),
                  "base": materialization["base"], "assembly": materialization["assembly"],
-                 "samples": [observation(item.trajectory, Reward(sample=item.trajectory.request.sample,
-                             group=item.trajectory.request.group, value=item.advantage),
-                             advantage=item.advantage, reference=()) for item in logical.samples],
-                 "order": list(logical.order), "penalty": logical.profile.penalty}
+                 "samples": [observation(item, SimpleNamespace(sample=name, group=item.request.group, reward=reward,
+                                                               reference_bits=(), advantage_bits=advantage))
+                             for (name, item), (_, _, advantage), reward in zip(logical.trajectories.items(),
+                                                                                logical.exchange.samples.values(), ADVANTAGES, strict=True)],
+                 "order": list(LOGICAL_ORDER), "steps": [list(batch) for batch in logical.steps],
+                 "penalty": logical.exchange.profile.penalty}
     result = update(learner, logical)
     output = directory / name
     output.mkdir()

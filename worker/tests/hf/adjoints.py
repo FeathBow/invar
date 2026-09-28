@@ -5,7 +5,7 @@ try:
 except ImportError as missing:
     raise unittest.SkipTest(f"{missing.name} is not installed") from missing
 
-from dataclasses import replace
+import math
 
 import torch
 
@@ -23,9 +23,7 @@ class BatchedRoleTests(unittest.TestCase):
         first = torch.tensor(1.25, requires_grad=True)
         second = torch.tensor(-0.75, requires_grad=True)
         current = torch.stack((first.square() + second, first * second + second.square()))
-        objective, reward = parameter_vjps(current, (first, second),
-                                          objective=torch.tensor((0.25, -0.5)),
-                                          reward=torch.tensor((0.75, 0.125)))
+        objective, reward = parameter_vjps(current, (first, second), torch.tensor(((0.25, -0.5), (0.75, 0.125))))
         assert_equal(torch.stack(objective), torch.tensor((1.0, 0.375)))
         assert_equal(torch.stack(reward), torch.tensor((1.78125, 0.71875)))
         self.assertIsNone(first.grad)
@@ -35,10 +33,7 @@ class BatchedRoleTests(unittest.TestCase):
 
     def test_nonzero_penalty_records_both_roles_and_adam_consumes_objective(self):
         learner, expected = make_learner(), make_learner()
-        logical = batch()
-        samples = tuple(replace(item, reference=item.reference - REFERENCE_LOG_SHIFT) for item in logical.samples)
-        delivered = replace(logical, samples=samples, profile=replace(logical.profile, penalty=PENALTY))
-        result = update(learner, delivered)
+        result = update(learner, batch(reference=math.log(0.5) - REFERENCE_LOG_SHIFT, penalty=PENALTY))
         named = {name: parameter for name, parameter in expected.model.named_parameters() if parameter.requires_grad}
         self.assertTrue(any(not torch.equal(result.gradients[f"objective/{name}"], result.gradients[f"reward/{name}"])
                             for name in named))

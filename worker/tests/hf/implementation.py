@@ -93,7 +93,7 @@ def exercise_boundaries():
     inference = assembly.digest(learner.model, INFERENCE)
     activate(learner.model, state, base=base, assembly=binding, role=LEARNING)
     summary = update(learner, batch()).summary
-    path = Path(__file__).resolve().parents[2] / "hf" / "objective.py"
+    path = Path(__file__).resolve().parents[2] / "hf" / "learning.py"
     path.write_bytes(path.read_bytes() + b"\n# Changed implementation artifact.\n")
     check.assertNotEqual(binding, assembly.digest(learner.model, LEARNING))
     check.assertEqual(inference, assembly.digest(learner.model, INFERENCE))

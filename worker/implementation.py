@@ -21,13 +21,11 @@ ROLES = {
     LEARNING: {
         **SHARED,
         "hf/checkpoint.py": "optimizer, parameter and random state saved and restored between updates",
-        "hf/learning.py": "learner graph, vector-Jacobian products and the AdamW step",
-        "hf/objective.py": "token surrogate differentiated by the learner",
-        "hf/probability.py": "learner log probabilities at the rollout temperature and cotangent application",
-        "hf/step.py": "restored inputs and trajectory tensors given to the learner",
+        "hf/learning.py": "learner graph, per-step vector-Jacobian products and AdamW steps in the declared order",
+        "hf/probability.py": "learner log probabilities at the rollout temperature and cotangent tensors",
+        "hf/step.py": "restored inputs, trajectory tensors and declared optimizer steps given to the learner",
         "hf/runtime.py": "resident learner state carried across updates",
         "binding.py": "optimizer parameter groups",
-        "logical.py": "logical sample order of gradient accumulation",
     },
 }
 NEUTRAL = {
@@ -46,13 +44,12 @@ NEUTRAL = {
     "report.py": "result records checked by the core",
     "resident.py": "owner protocol checked by the core",
     "learner.py": "learner protocol checked by the core",
+    "exchange.py": "learner step records and cotangent replies bound and checked by the core",
     "inputs.py": "input paths",
     "update.py": "update request decoding checked by the core",
     "cohort.py": "request field decoding checked by the core",
     "trajectory.py": "record types",
-    "advantage.py": "advantage words recomputed bit for bit by the core",
     "scalar.py": "objective scalars and cotangents recomputed bit for bit by the core",
-    "record.py": "probability records recomputed bit for bit by the core",
 }
 IRRELEVANT = {
     INFERENCE: {},

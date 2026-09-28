@@ -17,7 +17,6 @@ import unittest
 import torch
 from safetensors.torch import load_file
 
-from worker.advantage import check
 from worker import binding
 from worker.invocation import approve
 from worker.hf import runtime as learner_runtime
@@ -28,6 +27,7 @@ from worker.hf import step
 from worker.tests.hf.inference import IDENTITY, measured, model
 from worker.tests.hf.learner import fixture
 from worker.tests.hf.handshake import cpu_measure
+from worker.tests.hf.responder import receiver, request_core
 from worker.tests.hf.tokenization import make_tokenizer
 
 
@@ -51,10 +51,10 @@ def prepare():
 
 
 def execute(runtime, call, paths, observations, *, permit=permission):
-    _, emit, measure, loaded = observations
+    output, emit, measure, loaded = observations
     paths.output.mkdir()
-    updated = learner_runtime.execute(runtime, call, paths.output, loaded=loaded,
-                                        checked=check(call.request), measure=measure, permission=permit, emit=emit)
+    updated = learner_runtime.execute(runtime, call, paths.output, loaded=loaded, measure=measure, permission=permit,
+                                      emit=emit, receive=receiver(output, request_core(call.request)))
     measure("released", partial(learner_runtime.release, updated))
     return updated
 
@@ -91,9 +91,11 @@ class LearnerResidentTests(unittest.TestCase):
         self.assertTrue(all(slot["step"].item() == 2 for slot in runtime.learner.optimizer.state.values()))
         baseline_paths = SimpleNamespace(**{**vars(next_paths), "checkpoint": baseline_checkpoint,
                                             "reference": baseline_reference, "output": paths.output.parent / "fresh-second"})
-        with redirect_stdout(io.StringIO()):
+        fresh = io.StringIO()
+        with redirect_stdout(fresh):
             step.run(following, baseline_paths, loader=lambda options, request: (model(), make_tokenizer(), IDENTITY),
-                     measure=measured, permission=permission, evaluate=partial(logprobs, device="cpu"))
+                     measure=measured, permission=permission, evaluate=partial(logprobs, device="cpu"),
+                     receive=receiver(fresh, request_core(following.request)))
         assert_equal(adapter_state(runtime.learner.model), load_file(baseline_paths.output / "adapter.safetensors"))
         assert_equal(load_file(next_paths.output / "gradients.safetensors"), load_file(baseline_paths.output / "gradients.safetensors"))
         self.assertEqual((next_paths.output / "probabilities.json").read_bytes(), (baseline_paths.output / "probabilities.json").read_bytes())

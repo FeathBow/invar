@@ -1,19 +1,36 @@
+from collections.abc import Callable
+from dataclasses import dataclass
 
 import torch
 
-from worker.hf.objective import Tokens
+from worker.exchange import Exchange, observation
 from worker.hf.model import adapter_state
 from worker.hf.tensors import digest
-from worker.hf.probability import checked, cotangents, loss, tensor
-from worker.logical import Batch, Learner, Result, Sample, ordered
-from worker.scalar import number
+from worker.hf.probability import tensor, words
+from worker.trajectory import Trajectory
 
 
-def probabilities(trajectories, scores):
-    proximal = tuple(item.behavior for item in trajectories)
-    if not any(scores):
-        return proximal, proximal
-    return proximal, tuple(tensor(words, device="cpu") for words in scores)
+@dataclass(frozen=True, kw_only=True)
+class Learner:
+    model: torch.nn.Module
+    optimizer: torch.optim.Optimizer
+    evaluate: Callable[[torch.nn.Module, Trajectory], torch.Tensor]
+
+
+@dataclass(frozen=True, kw_only=True)
+class Plan:
+    trajectories: dict[str, Trajectory]
+    steps: tuple[tuple[str, ...], ...]
+    nonzero: int
+    exchange: Exchange
+
+
+@dataclass(frozen=True, kw_only=True)
+class Update:
+    summary: dict
+    gradients: dict[str, torch.Tensor]
+    proximal: dict[str, tuple[int, ...]]
+    currents: tuple[tuple[int, str, tuple[int, ...]], ...]
 
 
 def parameters(model):
@@ -40,11 +57,10 @@ def capture_gradients(model, reward_gradients):
     return recorded
 
 
-def parameter_vjps(current, trainable, *, objective, reward):
-    # A fixed two-role batch reuses the same forward graph for both adjoints.
-    gradients = torch.autograd.grad(current, trainable,
-                                    grad_outputs=torch.stack((reward, objective)), is_grads_batched=True)
-    reward_values, objective_values = zip(*(value.unbind() for value in gradients), strict=True)
+def parameter_vjps(current, trainable, cotangents):
+    # One batched VJP applies both cotangent rows to the same forward graph.
+    gradients = torch.autograd.grad(current, trainable, grad_outputs=cotangents, is_grads_batched=True)
+    objective_values, reward_values = zip(*(value.unbind() for value in gradients), strict=True)
     return objective_values, reward_values
 
 
@@ -53,45 +69,55 @@ def accumulate_objective(trainable, contribution):
         parameter.grad = gradient.clone() if parameter.grad is None else parameter.grad + gradient
 
 
-def update(learner, batch):
-    samples = ordered(batch)
-    model, optimizer = learner.model, learner.optimizer
+def response(learner, trajectory):
+    value = learner.evaluate(learner.model, trajectory)
+    if value.dtype != torch.float32 or value.shape != trajectory.behavior.shape:
+        raise ValueError("Learner graph values must be FP32 response vectors")
+    return value
+
+
+def update(learner, plan):
+    model, optimizer, exchange = learner.model, learner.optimizer, plan.exchange
     check_optimizer(optimizer)
-    count = sum(item.trajectory.behavior.numel() for item in samples)
-    before = digest(adapter_state(model))
+    before = state = digest(adapter_state(model))
+    first = set(plan.steps[0])
+    later = dict.fromkeys(name for batch in plan.steps[1:] for name in batch if name not in first)
     model.train()
-    optimizer.zero_grad(set_to_none=True)
-    observations = []
+    proximal = {}
+    with torch.no_grad():
+        for name in later:
+            proximal[name] = words(response(learner, plan.trajectories[name]))
+            exchange.proximal(sample=name, words=proximal[name])
     trainable = parameters(model)
-    reward_gradients = tuple(torch.zeros_like(value) for value in trainable)
-    for item in samples:
-        linearized = learner.evaluate(model, item.trajectory)
-        if linearized.dtype != torch.float32 or linearized.shape != item.trajectory.behavior.shape:
-            raise ValueError("Learner graph values must be FP32 response vectors")
-        current = item.proximal.to(linearized.device)
-        tokens = Tokens(current=current, proximal=current,
-                        behavior=item.trajectory.behavior.to(current.device),
-                        reference=item.reference.to(current.device),
-                        advantage=torch.full_like(current, item.advantage),
-                        active=torch.ones_like(current, dtype=torch.bool))
-        observed = checked(item.trajectory.request.sample, tokens, advantage=item.advantage,
-                           count=item.trajectory.tokens.shape[-1] - item.trajectory.prompt_length)
-        evaluated, objective, reward = cotangents(observed, batch.profile, total=count, device=current.device,
-                                                  linearized=linearized)
-        observations.append(evaluated)
-        objective_values, reward_values = parameter_vjps(linearized, trainable, objective=objective, reward=reward)
-        reward_gradients = tuple(total + addition for total, addition in zip(reward_gradients, reward_values, strict=True))
-        accumulate_objective(trainable, objective_values)
-    mean = number(loss(observations))
-    norm = gradient_norm(tuple(value.grad for value in trainable))
-    reward_norm = gradient_norm(reward_gradients)
-    recorded = capture_gradients(model, reward_gradients)
-    optimizer.step()
-    check_optimizer(optimizer)
-    if any(not value.isfinite().all() for value in parameters(model)):
-        raise RuntimeError("Non-finite learner parameter after update")
+    currents, norms, recorded = [], None, None
+    for step, batch in enumerate(plan.steps):
+        optimizer.zero_grad(set_to_none=True)
+        reward_gradients = tuple(torch.zeros_like(value) for value in trainable)
+        consumed = []
+        for name in batch:
+            linearized = response(learner, plan.trajectories[name])
+            observed = words(linearized)
+            if step == 0:
+                proximal[name] = observed
+            currents.append((step, name, observed))
+            objective, reward = exchange.current(step=step, sample=name, words=observed, state=state)
+            cotangents = tensor(objective + reward, device=linearized.device).reshape(2, -1)
+            consumed.append(observation(words(cotangents.reshape(-1))))
+            objective_values, reward_values = parameter_vjps(linearized, trainable, cotangents)
+            reward_gradients = tuple(total + addition for total, addition in zip(reward_gradients, reward_values, strict=True))
+            accumulate_objective(trainable, objective_values)
+        measured = gradient_norm(tuple(value.grad for value in trainable)), gradient_norm(reward_gradients)
+        if step == 0:
+            norms, recorded = measured, capture_gradients(model, reward_gradients)
+        optimizer.step()
+        check_optimizer(optimizer)
+        if any(not value.isfinite().all() for value in parameters(model)):
+            raise RuntimeError("Non-finite learner parameter after update")
+        after = digest(adapter_state(model))
+        exchange.applied(step=step, before=state, after=after, consumed=consumed)
+        state = after
     model.eval()
-    summary = {"loss": mean, "gradient_norm": norm, "reward_gradient_norm": reward_norm, "active_tokens": count,
-               "before": before, "after": digest(adapter_state(model)),
-               "nonzero_advantages": sum(item.advantage != 0 for item in samples)}
-    return Result(summary=summary, gradients=recorded, probabilities=tuple(observations))
+    summary = {"gradient_norm": norms[0], "reward_gradient_norm": norms[1],
+               "active_tokens": sum(value.behavior.numel() for value in plan.trajectories.values()),
+               "before": before, "after": state, "nonzero_advantages": plan.nonzero}
+    return Update(summary=summary, gradients=recorded, proximal=proximal, currents=tuple(currents))

@@ -79,23 +79,11 @@ def trajectory(item):
                       truncated=item.truncated)
 
 
-def batch(request, *, checked, measure, emit):
-    from worker.hf.learning import Batch, Sample, probabilities
-    from worker.hf.objective import Profile
+def plan(request, trajectories, exchange):
+    from worker.hf.learning import Plan
 
-    trajectories = tuple(trajectory(item) for item in request.samples)
-    scores = tuple(item.reference_bits for item in request.samples)
-    proximal, fixed = measure("probability_roles", lambda: probabilities(trajectories, scores))
-    normalized = dict(checked.values)
-    samples = tuple(Sample(trajectory=item, proximal=old, reference=ref, advantage=normalized[item.request.sample])
-                    for item, old, ref in zip(trajectories, proximal, fixed, strict=True))
-    for item in samples:
-        emit("roles", {"sample": item.trajectory.request.sample,
-                         "proximal_policy": request.policy, "reference_policy": request.reference,
-                         "proximal": item.proximal.tolist(), "reference": item.reference.tolist(),
-                         "advantage": item.advantage})
-    return Batch(samples=samples, order=request.order,
-                 profile=Profile(epsilon=request.epsilon, penalty=request.penalty))
+    return Plan(trajectories={item.request.sample: item for item in trajectories}, steps=request.steps,
+                nonzero=sum(item.advantage_bits & 0x7FFFFFFF != 0 for item in request.samples), exchange=exchange)
 
 
 def checkpoint_update(learner, request, output, *, tokenizer, summary):
@@ -133,36 +121,36 @@ def load_with(options, request, *, measure, emit):
     return model, tokenizer, (MODEL, REVISION)
 
 
-def run(call, options, *, loader, measure, permission, evaluate):
-    from worker.advantage import check
+def run(call, options, *, loader, measure, permission, evaluate, receive):
+    from worker.exchange import Exchange
     from worker.hf.learning import Learner
     from worker.hf.metrics import report
 
-    checked = check(call.request)
     options.output.mkdir(exist_ok=False)
     model, tokenizer, identity = loader(options, call.request)
     optimizer, _, loaded = restore_inputs(model, call.request, options, tokenizer=tokenizer)
-    admitted, actual = consume(call, loaded=loaded, identity=identity, checked=checked, measure=measure, emit=report)
+    trajectories, actual = consume(call, loaded=loaded, identity=identity, emit=report)
     permission(call.invocation)
     learner = Learner(model=model, optimizer=optimizer, evaluate=evaluate)
-    report("result", execute(learner, call, options.output, batch=admitted, actual=actual,
-                             tokenizer=tokenizer, measure=measure))
+    exchange = Exchange(binding=call.invocation.binding(), emit=report, receive=receive)
+    report("result", execute(learner, call, options.output, plan=plan(call.request, trajectories, exchange),
+                             actual=actual, tokenizer=tokenizer, measure=measure))
 
 
-def consume(call, *, loaded, identity, checked, measure, emit):
+def consume(call, *, loaded, identity, emit):
     from worker.registry import invocation, learning
     request = call.request
     bound = call.invocation.binding()
     emit("loaded_learner", {"binding": bound, "state": loaded, "load": invocation(call.load),
                             "image": learning(loaded), "model": identity[0], "revision": identity[1]})
-    admitted = batch(request, checked=checked, measure=measure, emit=emit)
-    actual = consumed(request, batch=admitted, rewards=checked.rewards, loaded=loaded)
+    trajectories = tuple(trajectory(item) for item in request.samples)
+    actual = consumed(request, trajectories=trajectories, loaded=loaded)
     emit("consumed", {"binding": bound, "program": call.invocation.program, "request": actual,
                        "load": invocation(call.load)})
-    return admitted, actual
+    return trajectories, actual
 
 
-def execute(learner, call, output, *, batch, actual, tokenizer, measure):
+def execute(learner, call, output, *, plan, actual, tokenizer, measure):
     from worker.hf.learning import update
     from safetensors.torch import save_file
     from worker.hf.probability import save as save_probabilities
@@ -170,8 +158,8 @@ def execute(learner, call, output, *, batch, actual, tokenizer, measure):
 
     request = call.request
     bound = call.invocation.binding()
-    result = measure("reward_update", lambda: update(learner, batch))
-    probability_digest = save_probabilities(output / "probabilities.json", result.probabilities,
+    result = measure("reward_update", lambda: update(learner, plan))
+    probability_digest = save_probabilities(output / "probabilities.json", request.order, result,
                                             invocation={"binding": bound, "program": call.invocation.program},
                                             request=actual)
     gradients = output / "gradients.safetensors"
@@ -202,7 +190,8 @@ def main():
 
     options = arguments()
     call = decode(json.loads(sys.stdin.readline(), object_pairs_hook=unique))
-    run(call, options, loader=load, measure=measure, permission=approve, evaluate=logprobs)
+    run(call, options, loader=load, measure=measure, permission=approve, evaluate=logprobs,
+        receive=sys.stdin.readline)
 
 
 if __name__ == "__main__":

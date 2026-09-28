@@ -5,16 +5,11 @@ try:
 except ImportError as missing:
     raise unittest.SkipTest(f"{missing.name} is not installed") from missing
 
-import tempfile
 import unittest
 from dataclasses import replace
-from pathlib import Path
-from types import SimpleNamespace
 
-from worker.advantage import check, word
+from worker.advantage import Reward, advantages, check, word
 from worker.cohort import decode
-from worker.hf.objective import Reward, advantages
-from worker.hf.step import run
 from worker.tests.hf.cohort import request
 
 NEGATIVE_ZERO = 0x80000000
@@ -67,22 +62,6 @@ class AdvantageTests(unittest.TestCase):
         for value in (float("nan"), float("inf"), 1e100):
             with self.subTest(value=value), self.assertRaises((ValueError, OverflowError)):
                 word(value)
-
-    def test_mismatch_fails_before_loading_forward_or_output_creation(self):
-        numerical = request()
-        numerical["samples"][0]["advantage_bits"] = 0
-        call = SimpleNamespace(request=decode(numerical))
-        options = SimpleNamespace(output=Path(tempfile.mkdtemp(prefix="invar-advantage-")) / "staged")
-        called = []
-
-        def unexpected(*args, **kwargs):
-            called.append((args, kwargs))
-            raise AssertionError("Numerical work must not start after a failed precheck")
-
-        with self.assertRaisesRegex(ValueError, "core expectation"):
-            run(call, options, loader=unexpected, measure=unexpected, permission=unexpected, evaluate=unexpected)
-        self.assertEqual(called, [])
-        self.assertFalse(options.output.exists())
 
 
 if __name__ == "__main__":

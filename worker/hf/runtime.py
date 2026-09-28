@@ -4,9 +4,10 @@ import gc
 
 import torch
 
+from worker.exchange import Exchange
 from worker.hf import state as learner_state
 from worker.hf.learning import Learner, check_optimizer
-from worker.hf.step import consume, execute as update, loaded_inputs, optimizer_options, restore_inputs
+from worker.hf.step import consume, execute as update, loaded_inputs, optimizer_options, plan, restore_inputs
 from worker.hf.tensors import digest
 from worker.cohort import validate
 from worker.tokenization import prompt
@@ -71,13 +72,13 @@ def activate(runtime, request):
     return observed
 
 
-def execute(runtime, call, output, *, loaded, checked, measure, permission, emit):
+def execute(runtime, call, output, *, loaded, measure, permission, emit, receive):
     learner = runtime.learner
-    admitted, actual = consume(call, loaded=loaded, identity=runtime.identity, checked=checked,
-                               measure=measure, emit=emit)
+    trajectories, actual = consume(call, loaded=loaded, identity=runtime.identity, emit=emit)
     permission(call.invocation)
     verify(runtime, call.request)
-    result = update(learner, call, output, batch=admitted, actual=actual,
+    exchange = Exchange(binding=call.invocation.binding(), emit=emit, receive=receive)
+    result = update(learner, call, output, plan=plan(call.request, trajectories, exchange), actual=actual,
                     tokenizer=runtime.tokenizer, measure=measure)
     saved = learner_state.attest(learner, runtime.tokenizer, checkpoint=output,
                                  policy=result["adapter"], expected=result["learner"])
