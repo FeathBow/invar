@@ -20,13 +20,12 @@ readiness initial request encoded = do
     mapM_ noPhase prefix
     mapM_ timing (filter (\record -> stageName record `elem` map (Just . String) ["load", "activation"]) prefix)
     void (Trace.readiness request (map Frame.fields pending))
-    mapM_ timing (filter ((== Just (String "probability_roles")) . stageName) pending)
 
 completion :: Value -> ByteString -> Either String ()
 completion request encoded = do
     records <- Frame.decode encoded
-    case dropWhile ((/= Just (String "consumed")) . stageName) records of
-        _consumed : updated : remaining@(_ : _) -> do
+    case dropWhile ((/= Just (String "reward_update")) . stageName) (dropWhile ((/= Just (String "consumed")) . stageName) records) of
+        updated : remaining@(_ : _) -> do
             unless (stageName updated == Just (String "reward_update")) (Left "Expected one actual reward update measurement")
             let (staging, ending) = span (\record -> stageName record `elem` map (Just . String) ["artifacts", "checkpoint"]) remaining
             mapM_ timing (updated : staging)

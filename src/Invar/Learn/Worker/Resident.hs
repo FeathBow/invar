@@ -62,7 +62,7 @@ run :: Resident owner -> Paths -> W.Call scope -> IO (Either W.Failure (Receipt 
 run (Resident process state identity) paths call = do
     progress <- newIORef Awaiting
     let message = Lazy.toStrict (encode (object ["format" .= ("invar-learning-resident-v1" :: String), "checkpoint" .= checkpoint paths, "output" .= output paths, "call" .= W.input call]))
-        exchange = Process.Exchange message (authorize process (state, progress) call) (complete (identity, output paths) progress)
+        exchange = Process.Exchange message (authorize process (state, progress) call) (complete (identity, output paths) progress) (Just (answer progress))
         transaction = Transport.Transaction exchange (release (state, progress) (paths, call))
     returned <- Transport.exchange process transaction
     case first failure returned of
@@ -91,6 +91,15 @@ authorize process (state, progress) call@(W.Call planned binding runtime _) enco
         request <- first W.Lowering (Wire.lower (L.emission planned))
         first W.ProtocolFailure (Framing.readiness (groups == 0) request encoded)
         first W.InvalidOutput (P.authorizeResident registry (binding, runtime) encoded)
+
+answer :: IORef (Progress scope) -> ByteString -> IO (Either W.Failure ByteString)
+answer progress encoded = mask_ $ do
+    current <- readIORef progress
+    case current of
+        Consumed permit -> case P.respond permit encoded of
+            Left problem -> pure (Left (W.InvalidOutput problem))
+            Right (advanced, reply) -> writeIORef progress (Consumed advanced) >> pure (Right reply)
+        _ -> pure (Left (W.ProtocolFailure "A learner step was reported outside an authorized resident update"))
 
 complete :: (Boundary.Owner, FilePath) -> IORef (Progress scope) -> ByteString -> IO (Either W.Failure ())
 complete (identity, directory) progress encoded = do

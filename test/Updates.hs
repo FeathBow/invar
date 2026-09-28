@@ -1,21 +1,26 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Updates (updates, checkpointResult, setup, setupFor, field, change, alter, wire, observe) where
+module Updates (updates, checkpointResult, setup, setupFor, field, change, alter, wire, observe, stepRecords, bound) where
 
-import Control.Monad (forM_, void)
-import Data.Aeson (Value (..), encode, object, toJSON, (.=))
+import Control.Monad (forM_, void, (<=<))
+import Data.Aeson (Value (..), decodeStrict, encode, object, toJSON, withObject, (.:), (.=))
 import Data.Aeson.Key (Key)
 import Data.Aeson.KeyMap qualified as Fields
+import Data.Aeson.Types (Parser, parseEither)
+import Data.Bifunctor qualified as Bifunctor
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as Bytes
 import Data.ByteString.Lazy qualified as Lazy
 import Data.Foldable (toList)
+import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text qualified as Text
 import Data.Text.Encoding (decodeUtf8)
 import Hedgehog
+import Invar.Learn.Objective qualified as Objective
 import Invar.Learn.Program qualified as Program
 import Invar.Learn.Protocol qualified as P
+import Invar.Learn.Stream qualified as S
 import Invar.Learn.Wire qualified as Wire
 import Invar.Learn.Worker qualified as Worker
 import Invar.Spec.Artifact qualified as A
@@ -93,7 +98,7 @@ observe :: Context -> ByteString -> Either P.Error P.Result
 observe context output = do
     let prefix = Bytes.unlines (takeThroughConsumed (Bytes.lines output))
     (_, permit) <- P.authorize Load.empty context prefix
-    P.observe permit output
+    P.observe permit (stepped output)
   where
     takeThroughConsumed [] = []
     takeThroughConsumed (line : remaining)
@@ -269,10 +274,63 @@ ownership = do
     Load.active closed === []
     Load.historical closed name === Right fact
     V.completedBinding (Load.report fact) === binding
-    observed <- evalEither (P.observe permit (wire events))
+    observed <- evalEither (P.observe permit (stepped (wire events)))
     assert (V.completedProgram (Load.report fact) /= V.completedProgram (P.completion observed))
     forM_ [registry, closed] $ \previous ->
         case P.authorize previous context (wire (take 2 events)) of
             Left _ -> success
             Right _ -> failure
     mismatch (P.observe permit (wire (alter 0 (change "image" Null) events)))
+
+stepped :: ByteString -> ByteString
+stepped output
+    | any ("\"stage\":\"current\"" `Bytes.isInfixOf`) lines' = output
+    | otherwise = case (listToMaybe [value | (_, Just value) <- decoded, stage value == Just "consumed"], break ((== Just "result") . (stage <=< snd)) decoded) of
+        (Just consumed, (before, (raw, Just finished) : after)) | Right records <- stepRecords (field "binding" consumed) (field "request" consumed) (field "adapter" finished) -> Bytes.unlines (map fst before ++ Bytes.lines (wire records) ++ raw : map fst after)
+        _ -> output
+  where
+    lines' = Bytes.lines output
+    decoded = [(line, decodeStrict line) | line <- lines']
+    stage value = case value of
+        Object fields | Just (String name) <- Fields.lookup "stage" fields -> Just name
+        _ -> Nothing
+
+stepRecords :: Value -> Value -> Value -> Either String [Value]
+stepRecords identity actual adapter = do
+    (profile, policy, samples, plan, final) <- parseEither parser (object ["request" .= actual, "adapter" .= adapter])
+    let begun = S.begin profile policy samples plan
+        outside = [sample | sample <- samples, S.name sample `notElem` concat (take 1 plan)]
+        proximals = [object ["stage" .= String "proximal", "binding" .= identity, "sample" .= S.name sample, "words" .= S.behaviorWords sample] | sample <- outside]
+        states = policy : [show index | index <- [1 .. length plan - 1]] ++ [final]
+        named = Map.fromList [(S.name sample, sample) | sample <- samples]
+    withProximal <- foldl (\acc sample -> acc >>= \current -> Bifunctor.first show (S.proximal current (S.name sample) (S.behaviorWords sample))) (Right begun) outside
+    (_, records) <- foldl (step named) (Right (withProximal, [])) (zip3 [0 :: Int ..] plan (zip states (drop 1 states)))
+    pure (proximals ++ records)
+  where
+    parser = withObject "stepped update" $ \fields -> do
+        request <- fields .: "request"
+        final <- fields .: "adapter"
+        withObject
+            "update request"
+            ( \input -> do
+                entries <- input .: "samples"
+                samples <- traverse (withObject "update sample" (\sample -> S.Sample <$> sample .: "sample" <*> sample .: "behavior_bits" <*> sample .: "reference_bits" <*> sample .: "advantage_bits")) entries
+                plan <- input .: "steps"
+                policy <- input .: "policy"
+                profile <- Objective.Profile <$> input .: "epsilon" <*> input .: "penalty"
+                pure (profile, policy, samples, plan, final)
+            )
+            request ::
+            Parser (Objective.Profile, String, [S.Sample], [[Text.Text]], String)
+    step named accumulated (index, batch, (before, after)) = do
+        (current, records) <- accumulated
+        (answered, currents, digests) <- foldl (sampleStep named (index, before)) (Right (current, [], [])) batch
+        applied <- Bifunctor.first show (S.applied answered (S.Applied (fromIntegral index) before after digests))
+        pure (applied, records ++ currents ++ [object ["stage" .= String "applied", "binding" .= identity, "step" .= index, "before" .= before, "after" .= after, "consumed" .= digests]])
+    sampleStep named (index, before) accumulated name = do
+        (current, records, digests) <- accumulated
+        sample <- maybe (Left "Unknown fixture sample") Right (Map.lookup name named)
+        let values = S.behaviorWords sample
+            report = S.Current (fromIntegral index) name values (S.observationOf values) before
+        (answered, reply) <- Bifunctor.first show (S.current current report)
+        pure (answered, records ++ [object ["stage" .= String "current", "binding" .= identity, "step" .= index, "sample" .= name, "words" .= values, "observation" .= S.observationOf values, "state" .= before]], digests ++ [S.digest reply])

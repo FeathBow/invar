@@ -86,7 +86,7 @@ finiteLearning current observed frames = do
         Frame _ loaded : _ -> do
             profileCorrespondence prefix loaded
             Learner.validate current (Cohort.update observed) [fields | Frame _ fields <- learning]
-            mapM_ (\(Frame raw fields) -> timing raw fields) [record | record@(Frame _ fields) <- learning, Fields.lookup "stage" fields `elem` map (Just . String) ["probability_roles", "reward_update", "artifacts", "checkpoint"]]
+            mapM_ (\(Frame raw fields) -> timing raw fields) [record | record@(Frame _ fields) <- learning, Fields.lookup "stage" fields `elem` map (Just . String) ["reward_update", "artifacts", "checkpoint"]]
             pure prefix
         [] -> Left "Missing learner execution after the inference sessions"
 

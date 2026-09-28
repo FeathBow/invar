@@ -27,7 +27,7 @@ execute worker call@(Call planned binding runtime _) registry = do
     let arguments = [script worker, "--cache=" ++ cache worker, "--checkpoint=" ++ checkpoint worker, "--reference=" ++ reference worker, "--output=" ++ output worker]
         command = Process.Command (executable worker) arguments [] (encodeUtf8 (Text.pack (input call)))
         approve observed = fmap (permission call <$) (authorize (registry, slot) (binding, runtime) observed)
-    returned <- Process.run command approve
+    returned <- Process.conversation command approve (Just (answer slot))
     case returned of
         Right observed -> complete (planned, output worker) slot observed
         Left (Process.Exit status) -> pure (Left (WorkerExit status))
@@ -46,6 +46,15 @@ authorize (owner, slot) context observed = mask_ $ do
                 writeIORef owner updated
                 writeIORef slot (Just permit)
                 pure (Right ())
+
+answer :: IORef (Maybe P.Permit) -> Bytes.ByteString -> IO (Either P.Error Bytes.ByteString)
+answer slot observed = mask_ $ do
+    held <- readIORef slot
+    case held of
+        Nothing -> pure (Left (P.Unexpected "A learner step was reported before consumption was permitted"))
+        Just permit -> case P.respond permit observed of
+            Left problem -> pure (Left problem)
+            Right (advanced, reply) -> writeIORef slot (Just advanced) >> pure (Right reply)
 
 complete :: (L.Plan scope, FilePath) -> IORef (Maybe P.Permit) -> Bytes.ByteString -> IO (Either Failure (Execution scope))
 complete (planned, directory) slot observed = do

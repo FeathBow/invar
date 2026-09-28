@@ -1,4 +1,4 @@
-module Invar.Learn.Stream (Sample (..), Current (..), Applied (..), Reply (..), Stream, Error (..), begin, proximal, current, applied, complete, digest, proximals, currents, losses) where
+module Invar.Learn.Stream (Sample (..), Current (..), Applied (..), Reply (..), Stream, Error (..), begin, proximal, current, applied, complete, digest, observationOf, proximals, currents, losses) where
 
 import Control.Monad (unless, when)
 import Crypto.Hash.SHA256 qualified as SHA256
@@ -36,6 +36,7 @@ data Error
     | MissingProximal Text
     | Incomplete Natural
     | ConsumedMismatch Natural
+    | ObservationMismatch Text
     | Finished
     | Unfinished
     | Scalar Objective.Error
@@ -77,6 +78,7 @@ current stream report = do
     unless (state report == expected stream) (Left (StateMismatch (position stream) (expected stream) (state report)))
     entry <- lookupSample stream (sample report)
     unless (length (words32 report) == length (behaviorWords entry)) (Left (LengthMismatch (sample report)))
+    unless (observation report == observationOf (words32 report)) (Left (ObservationMismatch (sample report)))
     let recorded = if position stream == 0 then Map.insert (sample report) (words32 report) (fixed stream) else fixed stream
     frozen <- maybe (Left (MissingProximal (sample report))) Right (Map.lookup (sample report) recorded)
     let references = if null (referenceWords entry) then behaviorWords entry else referenceWords entry
@@ -111,7 +113,10 @@ complete stream
     | otherwise = Left Unfinished
 
 digest :: Reply -> String
-digest reply = Artifact.hex (SHA256.hash (Lazy.toStrict (Builder.toLazyByteString (foldMap Builder.word32LE (objective reply ++ reward reply)))))
+digest reply = observationOf (objective reply ++ reward reply)
+
+observationOf :: [Word32] -> String
+observationOf values = Artifact.hex (SHA256.hash (Lazy.toStrict (Builder.toLazyByteString (foldMap Builder.word32LE values))))
 
 proximals :: Stream -> Map Text [Word32]
 proximals = fixed

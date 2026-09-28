@@ -60,7 +60,7 @@ runSession worker reference echo calls = withRegistry worker $ \registry -> do
     pending <- traverse (\call -> Pending call <$> newIORef Nothing) calls
     let inputs = arguments worker ++ foldMap (\declared -> ["--reference=" ++ Batch.location declared, "--reference-digest=" ++ Batch.identity declared]) reference
         launch = Process.Launch (executable worker) inputs (environment worker) echo
-        exchange value@(Pending call _) = Process.Exchange (I.batchInput call) (authorize registry value) (fmap void . observe value)
+        exchange value@(Pending call _) = Process.Exchange (I.batchInput call) (authorize registry value) (fmap void . observe value) Nothing
     returned <- Process.batch launch (map exchange pending)
     case first failure returned of
         Right outputs -> fmap (first InvalidOutput . sequence) (traverse (uncurry observe) (zip pending outputs))
@@ -79,7 +79,7 @@ runBatchedSession worker reference echo calls = withRegistry worker $ \registry 
             pure $ case permit of
                 Nothing -> Left (I.Protocol "Batch result has no accepted consumption permits")
                 Just accepted -> map (\(completed, result, fact) -> Execution completed result fact) <$> Batch.observe accepted output
-        exchange = Process.Exchange (Batch.input (adapter worker) reference calls) review (fmap void . finish)
+        exchange = Process.Exchange (Batch.input (adapter worker) reference calls) review (fmap void . finish) Nothing
     returned <- Process.batch launch [exchange]
     case first failure returned of
         Right [output] -> first InvalidOutput <$> finish output

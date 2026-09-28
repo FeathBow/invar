@@ -132,7 +132,7 @@ complete current (leading, execution, remaining) (loaded, consumed) = do
     retired <- Boundary.observeRelease (owner current, loads, Frame.encode (leading ++ execution)) (Frame.raw ack)
     initialLoad <- measurement "load" leading
     selected <- measurement "activation" leading
-    measured <- traverse timing (filter (\record -> stageName record `elem` map (Just . String) ["load", "activation", "inference", "probability_roles", "reward_update", "artifacts", "checkpoint"]) (leading ++ execution))
+    measured <- traverse timing (filter (\record -> stageName record `elem` map (Just . String) ["load", "activation", "inference", "reward_update", "artifacts", "checkpoint"]) (leading ++ execution))
     let durations = measured ++ [retired]
     selectedClock <- clocks (clock current) durations
     let next = observedModel {count = count current + 1, originalPrefix = retained, identities = admitted, clock = selectedClock}

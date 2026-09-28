@@ -45,28 +45,28 @@ full = do
     let begun = S.begin profile "p0" [first', second'] [["a", "b"]]
         nowA = [word (-0.9), word (-0.6)]
         nowB = [word (-1.8)]
-    (afterA, replyA) <- evalEither (S.current begun (Current 0 "a" nowA "oa" "p0"))
+    (afterA, replyA) <- evalEither (S.current begun (Current 0 "a" nowA (S.observationOf nowA) "p0"))
     outputsA <- expected nowA nowA first' 3
     objective replyA === map O.gradient outputsA
     reward replyA === map O.rewardGradient outputsA
-    (afterB, replyB) <- evalEither (S.current afterA (Current 0 "b" nowB "ob" "p0"))
+    (afterB, replyB) <- evalEither (S.current afterA (Current 0 "b" nowB (S.observationOf nowB) "p0"))
     outputsB <- expected nowB nowB second' 3
     objective replyB === map O.gradient outputsB
     S.proximals afterB === Map.fromList [("a", nowA), ("b", nowB)]
     done <- evalEither (S.applied afterB (Applied 0 "p0" "p1" [S.digest replyA, S.digest replyB]))
     S.complete done === Right "p1"
-    S.current done (Current 1 "a" nowA "late" "p1") === Left S.Finished
+    S.current done (Current 1 "a" nowA (S.observationOf nowA) "p1") === Left S.Finished
 
 staged :: PropertyT IO ()
 staged = do
     let begun = S.begin profile "p0" [first', second'] [["a", "b"], ["a"]]
         firstA = [word (-0.9), word (-0.6)]
         laterA = [word (-0.7), word (-0.8)]
-    (one, replyA) <- evalEither (S.current begun (Current 0 "a" firstA "oa" "p0"))
-    (two, replyB) <- evalEither (S.current one (Current 0 "b" [word (-1.8)] "ob" "p0"))
+    (one, replyA) <- evalEither (S.current begun (Current 0 "a" firstA (S.observationOf firstA) "p0"))
+    (two, replyB) <- evalEither (S.current one (Current 0 "b" [word (-1.8)] (S.observationOf [word (-1.8)]) "p0"))
     applied <- evalEither (S.applied two (Applied 0 "p0" "p1" [S.digest replyA, S.digest replyB]))
-    S.current applied (Current 1 "a" laterA "oa2" "p0") === Left (S.StateMismatch 1 "p1" "p0")
-    (three, reply) <- evalEither (S.current applied (Current 1 "a" laterA "oa2" "p1"))
+    S.current applied (Current 1 "a" laterA (S.observationOf laterA) "p0") === Left (S.StateMismatch 1 "p1" "p0")
+    (three, reply) <- evalEither (S.current applied (Current 1 "a" laterA (S.observationOf laterA) "p1"))
     outputs <- expected laterA firstA first' 2
     objective reply === map O.gradient outputs
     S.proximals three Map.! "a" === firstA
@@ -80,14 +80,14 @@ outside = do
         nowA = [word (-0.9), word (-0.6)]
     S.proximal begun "a" nowA === Left (S.DuplicateProximal "a")
     S.proximal begun "b" [word (-1), word (-1)] === Left (S.LengthMismatch "b")
-    (answered, reply) <- evalEither (S.current begun (Current 0 "a" nowA "oa" "p0"))
+    (answered, reply) <- evalEither (S.current begun (Current 0 "a" nowA (S.observationOf nowA) "p0"))
     S.proximal answered "b" [word (-1.7)] === Left (S.LateProximal "b")
     S.applied answered (Applied 0 "p0" "p1" [S.digest reply]) === Left (S.MissingProximal "b")
     withProximal <- evalEither (S.proximal begun "b" [word (-1.7)])
     S.proximal withProximal "b" [word (-1.7)] === Left (S.DuplicateProximal "b")
-    (answered', reply') <- evalEither (S.current withProximal (Current 0 "a" nowA "oa" "p0"))
+    (answered', reply') <- evalEither (S.current withProximal (Current 0 "a" nowA (S.observationOf nowA) "p0"))
     stepped <- evalEither (S.applied answered' (Applied 0 "p0" "p1" [S.digest reply']))
-    (_, later) <- evalEither (S.current stepped (Current 1 "b" [word (-1.6)] "ob" "p1"))
+    (_, later) <- evalEither (S.current stepped (Current 1 "b" [word (-1.6)] (S.observationOf [word (-1.6)]) "p1"))
     outputs <- expected [word (-1.6)] [word (-1.7)] second' 1
     objective later === map O.gradient outputs
 
@@ -95,14 +95,15 @@ refusals :: PropertyT IO ()
 refusals = do
     let begun = S.begin profile "p0" [first', second'] [["a", "b"]]
         nowA = [word (-0.9), word (-0.6)]
-    S.current begun (Current 0 "b" [word (-1)] "ob" "p0") === Left (S.OutOfOrder 0 "b")
-    S.current begun (Current 1 "a" nowA "oa" "p0") === Left (S.OutOfOrder 1 "a")
-    S.current begun (Current 0 "a" nowA "oa" "other") === Left (S.StateMismatch 0 "p0" "other")
-    S.current begun (Current 0 "a" [word (-1)] "oa" "p0") === Left (S.LengthMismatch "a")
-    S.current begun (Current 0 "a" [word 1, word (-1)] "oa" "p0") === Left (S.Scalar (O.InvalidInput "Log probabilities must be nonpositive"))
-    (one, replyA) <- evalEither (S.current begun (Current 0 "a" nowA "oa" "p0"))
+    S.current begun (Current 0 "b" [word (-1)] (S.observationOf [word (-1)]) "p0") === Left (S.OutOfOrder 0 "b")
+    S.current begun (Current 1 "a" nowA (S.observationOf nowA) "p0") === Left (S.OutOfOrder 1 "a")
+    S.current begun (Current 0 "a" nowA (S.observationOf nowA) "other") === Left (S.StateMismatch 0 "p0" "other")
+    S.current begun (Current 0 "a" [word (-1)] (S.observationOf [word (-1)]) "p0") === Left (S.LengthMismatch "a")
+    S.current begun (Current 0 "a" nowA "another observation" "p0") === Left (S.ObservationMismatch "a")
+    S.current begun (Current 0 "a" [word 1, word (-1)] (S.observationOf [word 1, word (-1)]) "p0") === Left (S.Scalar (O.InvalidInput "Log probabilities must be nonpositive"))
+    (one, replyA) <- evalEither (S.current begun (Current 0 "a" nowA (S.observationOf nowA) "p0"))
     S.applied one (Applied 0 "p0" "p1" [S.digest replyA]) === Left (S.Incomplete 0)
-    (two, replyB) <- evalEither (S.current one (Current 0 "b" [word (-1.8)] "ob" "p0"))
+    (two, replyB) <- evalEither (S.current one (Current 0 "b" [word (-1.8)] (S.observationOf [word (-1.8)]) "p0"))
     S.applied two (Applied 0 "p0" "p1" [S.digest replyB, S.digest replyA]) === Left (S.ConsumedMismatch 0)
     S.applied two (Applied 0 "other" "p1" [S.digest replyA, S.digest replyB]) === Left (S.StateMismatch 0 "p0" "other")
     S.applied two (Applied 1 "p0" "p1" [S.digest replyA, S.digest replyB]) === Left (S.StepMismatch 0 1)

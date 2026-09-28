@@ -55,7 +55,7 @@ run :: Resident scope -> FilePath -> Maybe Batch.Reference -> [Call.Call] -> IO 
 run _ _ _ [] = pure (Right [])
 run (Resident process state identity index) adapter reference calls = do
     progress <- newIORef Awaiting
-    let exchange = Process.Exchange (Batch.input adapter reference calls) (authorize process (state, progress) calls) (complete identity progress)
+    let exchange = Process.Exchange (Batch.input adapter reference calls) (authorize process (state, progress) calls) (complete identity progress) Nothing
         transaction = ProcessResident.Transaction exchange (release (state, progress) index)
     returned <- ProcessResident.exchange process transaction
     case first failure returned of

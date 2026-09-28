@@ -3,13 +3,11 @@
 module Invar.History.Artifacts (initial, successor) where
 
 import Control.Monad (unless)
-import Data.Aeson (Value, object, withObject, (.:), (.=))
+import Data.Aeson (Value, object, withObject, (.:), (.:?), (.=))
 import Data.Aeson.Types (parseEither)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
-import GHC.Float (castDoubleToWord64)
-import Invar.Float32 qualified as Float32
 import Invar.History.Cohort qualified as Cohort
 import Invar.History.Publication qualified as Publication
 import Invar.History.Trace qualified as Trace
@@ -46,25 +44,24 @@ successor (decoder, schema) (index, generation) published = do
     observed <- stateSummary (State.checked state') counted
     (gradients, gradient) <- Gradient.observe parameters (report, path </> "gradients.safetensors")
     probabilities <- Observation.probability report (path </> "probabilities.json")
-    either invalid pure (roles generation probabilities)
-    mismatch <- either invalid pure (Mismatch.summarize [(Probability.behavior sample, Probability.linearized sample) | sample <- probabilities])
+    either invalid pure (reported generation probabilities)
+    mismatch <- either invalid pure (Mismatch.summarize [(Probability.behavior sample, Probability.proximal sample) | sample <- probabilities])
     pure (object ["publication" .= Publication.describe published, "state" .= observed, "gradients" .= gradients, "probabilities" .= map Probability.sampleObject probabilities, "learner_engine" .= Mismatch.describe mismatch], state', gradient)
 
 stateSummary :: Checkpoint.Checked -> [Integer] -> IO Value
 stateSummary checked steps = pure (object ("steps" .= steps : Checkpoint.rngSummary checked))
 
-roles :: Trace.Generation -> [Probability.Sample] -> Either String ()
-roles generation probabilities = mapM_ check (Trace.roleOutputs generation)
+reported :: Trace.Generation -> [Probability.Sample] -> Either String ()
+reported generation probabilities = mapM_ check (Trace.stepOutputs generation)
   where
     expected = Map.fromList [(Probability.sampleName sample, sample) | sample <- probabilities]
     check encoded = do
-        (decoded, arrays) <- Json.decodeWithArrays [["proximal"], ["reference"]] encoded
-        (proximal, fixed) <- case arrays of
-            [first, second] -> Right (first, second)
-            _ -> Left "Expected the proximal and reference arrays"
-        name <- parseEither (withObject "probability role output" (.: "sample")) decoded
-        observed <- maybe (Left "Unmatched probability role observation") Right (Map.lookup (name :: Text) expected)
-        unless (map castDoubleToWord64 proximal == map Float32.widened (Probability.proximal observed) && map castDoubleToWord64 fixed == map Float32.widened (Probability.fixed observed)) (Left "Logged probability roles differ from actual artifact words")
+        (stage, name, words32, index) <- Json.decode encoded >>= parseEither (withObject "learner step record" (\fields -> (,,,) <$> fields .: "stage" <*> fields .: "sample" <*> fields .: "words" <*> fields .:? "step"))
+        observed <- maybe (Left "Unmatched learner step record") Right (Map.lookup (name :: Text) expected)
+        let recorded = case (stage :: Text, index) of
+                ("current", Just position) -> lookup position (Probability.currents observed)
+                _ -> Just (Probability.proximal observed)
+        unless (recorded == Just words32) (Left "Logged learner step words differ from the probability artifact")
 
 invalid :: String -> IO value
 invalid = ioError . userError
