@@ -42,6 +42,7 @@ data Settings = Settings
     , clip :: Double
     , penalty :: Double
     , delta :: Double
+    , steps :: Natural
     , optimizer :: Optimizer
     }
     deriving (Eq, Show)
@@ -91,6 +92,7 @@ validate settings = do
     unless (all identity [policy settings, learner settings, reference settings, base settings, assembly settings, behaviorBase settings, behaviorAssembly settings]) (Left (InvalidSettings "Expected lowercase SHA-256 artifact identities"))
     unless (identity (tokenizer settings)) (Left (InvalidSettings "Expected a lowercase SHA-256 tokenizer identity"))
     unless algorithm (Left (InvalidSettings "Invalid GRPO coefficients"))
+    unless (steps settings > 0) (Left (InvalidSettings "An update needs at least one optimizer step"))
     unless adamw (Left (InvalidSettings "Invalid AdamW coefficients"))
   where
     algorithm = finite (clip settings) && clip settings > 0 && clip settings < 1 && nonnegative (penalty settings) && positive (delta settings)
@@ -114,7 +116,7 @@ world settings samples = Map.fromList [(Semantic "policy", Load.imageValue image
     behaviorModel = record [("base", text (behaviorBase settings)), ("assembly", text (behaviorAssembly settings))]
     indexed = zip [0 ..] samples
     keyed project = Mapping (Map.fromList [(index, project sample) | (index, sample) <- indexed])
-    algorithm = record [("epsilon", number (clip settings)), ("penalty", number (penalty settings)), ("delta", number (delta settings))]
+    algorithm = record [("epsilon", number (clip settings)), ("penalty", number (penalty settings)), ("delta", number (delta settings)), ("steps", Atom (Number (fromIntegral (steps settings))))]
 
 learnerValue :: Settings -> Value Natural
 learnerValue settings = record [("policy", text (policy settings)), ("learner", text (learner settings)), ("tokenizer", text (tokenizer settings)), ("base", text (base settings)), ("assembly", text (assembly settings)), ("optimizer", parameters)]
