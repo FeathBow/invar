@@ -3,7 +3,6 @@
 module Invar.Async.Plan (Request (..), Update (..), Version (..), Declared (..), Plan, Error (..), prepare, staleness, updates, declared, owner, version, available) where
 
 import Control.Monad (forM_, unless, when)
-import Data.List (nub)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Numeric.Natural (Natural)
@@ -48,7 +47,7 @@ prepare lag planned = do
     case [request | (request, count) <- Map.toList (Map.fromListWith (+) [(request, 1 :: Natural) | request <- everyone]), count > 1] of
         request : _ -> Left (RepeatedRequest request)
         [] -> pure ()
-    pure (Plan lag planned (Map.fromList [(request, update) | (update, Declared requests _) <- indexed, request <- nub requests]))
+    pure (Plan lag planned (Map.fromList [(request, update) | (update, Declared requests _) <- indexed, request <- requests]))
 
 updates :: Plan -> [Update]
 updates plan = zipWith const (map Update [0 ..]) (declaredUpdates plan)

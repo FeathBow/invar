@@ -53,14 +53,14 @@ plans = do
     _ <- evalEither (P.prepare 1 [Declared [Request 0, Request 1] [[Request 1], [Request 0, Request 1], [Request 0]]])
     success
 
-generatedPlan :: Gen P.Plan
-generatedPlan = do
+declarations :: Gen (Natural, [Declared])
+declarations = do
     lag <- Gen.integral (Range.linear 0 2)
     sizes <- Gen.list (Range.linear 1 4) (Gen.integral (Range.linear 1 4))
     shapes <- traverse (\size -> (,) size <$> ((,) <$> Gen.integral (Range.linear 1 size) <*> Gen.integral (Range.linear 1 2))) sizes
     let starts = scanl (+) 0 sizes
         declared = [Declared members (concat (replicate passes (chunks width members))) | (start, (size, (width, passes))) <- zip starts shapes, let members = [Request n | n <- [start .. start + size - 1]]]
-    either (const Gen.discard) pure (P.prepare lag declared)
+    pure (lag, declared)
   where
     chunks :: Natural -> [a] -> [[a]]
     chunks _ [] = []
@@ -75,7 +75,7 @@ action = Gen.frequency [(12, Deliver <$> Gen.int (Range.linear 0 20) <*> Gen.int
 data Item = Item {era :: Natural, work :: Work}
     deriving (Show)
 
-data Work = Pick Request Version | Run Worker Epoch Request Version | Learn Command
+data Work = Pick Request Version | Run Worker Epoch Request Version | Learn Command | Receipt Update Attempt
     deriving (Show)
 
 data World = World
@@ -90,6 +90,8 @@ data World = World
     , traces :: Map (Update, Attempt) [(Natural, String, String)]
     , winners :: Map Update Attempt
     , published :: [Update]
+    , windows :: Natural
+    , crash :: Bool
     , fuel :: Int
     }
 
@@ -110,12 +112,16 @@ count chosen update = maybe 0 (fromIntegral . length . steps) (P.declared chosen
 
 interleavings :: PropertyT IO ()
 interleavings = do
-    chosen <- forAll generatedPlan
+    (lag, declared) <- forAll declarations
+    chosen <- evalEither (P.prepare lag declared)
     actions <- forAll (Gen.list (Range.linear 0 80) action)
+    crash <- forAll Gen.bool
     let (initial, commands) = C.start chosen
-        world = World chosen initial [] (Map.fromList [(worker, Epoch 0) | worker <- workers]) (Map.fromList [(worker, Epoch 0) | worker <- workers]) Map.empty 0 [] Map.empty Map.empty [] 20000
+        world = World chosen initial [] (Map.fromList [(worker, Epoch 0) | worker <- workers]) (Map.fromList [(worker, Epoch 0) | worker <- workers]) Map.empty 0 [] Map.empty Map.empty [] 0 False 20000
     connected <- foldM' world [Connected worker (Epoch 0) | worker <- workers]
-    finished <- drain =<< perform (enqueue connected commands) actions
+    performed <- perform (enqueue connected commands) actions
+    finished <- drain performed {crash = crash}
+    cover 20 "a restart fell between a commit and its receipt" (windows finished > 0)
     C.committed (core finished) === P.updates chosen
     C.results (core finished) === Map.fromList [(request, digest request (P.version chosen update)) | update <- P.updates chosen, Just (Declared members _) <- [P.declared chosen update], request <- members]
     forM_ (P.updates chosen) $ \update -> do
@@ -173,10 +179,11 @@ perform world (next : rest) = do
             Just (update, phase) | not (committing phase) -> feed world (restarts world) (Abandoned update (attemptOf phase))
             _ -> pure world
         Restart -> do
+            let window = [() | Item issued (Receipt _ _) <- pending world, issued == restarts world]
             let base = 1000 * (restarts world + 1)
             (recovered, commands) <- evalEither (C.recover (plan world) (published world) (C.results (core world)) (issued world) base)
             let raised = Map.map (\(Epoch epoch) -> Epoch (epoch + 1)) (issued world)
-                restarted = enqueue world {core = recovered, restarts = restarts world + 1, epochs = raised, issued = raised, bindings = Map.empty} commands
+                restarted = enqueue world {core = recovered, restarts = restarts world + 1, windows = windows world + (if null window then 0 else 1), epochs = raised, issued = raised, bindings = Map.empty} commands
             foldl (\acted (worker, epoch) -> acted >>= \current -> feed current (restarts current) (Connected worker epoch)) (pure restarted) (Map.toList (epochs restarted))
     perform updated {fuel = fuel updated - 1} rest
 
@@ -185,6 +192,7 @@ drain world
     | C.committed (core world) == P.updates (plan world) = pure world
     | null (pending world) = annotateShow (C.learning (core world)) >> annotate "stuck with nothing pending" >> failure
     | fuel world <= 0 = annotate "out of fuel" >> failure
+    | crash world, Item issued (Receipt _ _) : _ <- pending world, issued == restarts world = perform world {crash = False} [Restart] >>= drain
     | otherwise = deliver world 0 0 >>= \next -> drain next {fuel = fuel next - 1}
 
 deliver :: World -> Int -> Int -> PropertyT IO World
@@ -202,6 +210,7 @@ deliver world index choice = do
             pure started {pending = pending started ++ [Item (era item) (Run worker epoch request selected)]}
         Run worker epoch request selected -> feed rest (era item) (Completed worker epoch request (digest request selected))
         Learn command -> learn rest (era item) command
+        Receipt update attempt -> feed rest (era item) (Committed update attempt)
 
 learn :: World -> Natural -> Command -> PropertyT IO World
 learn world issued command = case command of
@@ -217,8 +226,7 @@ learn world issued command = case command of
     Record update attempt _ -> feed world issued (Recorded update attempt)
     Commit update attempt -> do
         when (update `elem` published world) (annotateShow update >> annotate "a published update was committed again" >> failure)
-        committed <- feed world {published = published world ++ [update]} issued (Committed update attempt)
-        pure committed {winners = if update `elem` C.committed (core committed) && update `notElem` C.committed (core world) then Map.insert update attempt (winners committed) else winners committed}
+        pure world {published = published world ++ [update], winners = Map.insert update attempt (winners world), pending = pending world ++ [Item issued (Receipt update attempt)]}
     Dispatch _ _ -> failure
 
 feed :: World -> Natural -> Event -> PropertyT IO World
