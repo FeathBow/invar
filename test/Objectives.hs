@@ -10,7 +10,7 @@ import Hedgehog
 import Invar.Learn.Objective qualified as O
 
 objectives :: Group
-objectives = Group "Core scalar objective" [("equal probability roles have the analytic loss and slope", once equalRoles), ("clipping and minimum ties retain the specified derivative", once boundaries), ("reference penalty has an independent analytic slope", once regularization), ("token mean follows logical order with one final division", once aggregation), ("signed zero and rounding are retained", once zeros), ("invalid inputs and intermediate overflow are rejected", once invalid)]
+objectives = Group "Core scalar objective" [("equal probability roles have the analytic loss and slope", once equalRoles), ("clipping and minimum ties retain the specified derivative", once boundaries), ("a stale behavior scales both surrogate branches by the importance weight", once stale), ("reference penalty has an independent analytic slope", once regularization), ("token mean follows logical order with one final division", once aggregation), ("signed zero and rounding are retained", once zeros), ("invalid inputs and intermediate overflow are rejected", once invalid)]
   where
     once = withTests 1 . property
 
@@ -34,6 +34,18 @@ boundaries = do
         [actual] <- evalEither (O.calculate profile 1 [inputs p old a])
         O.term actual === word value
         O.gradient actual === word slope
+
+stale :: PropertyT IO ()
+stale = do
+    let profile = O.Profile 0.5 0
+        weight = exp (log 2) :: Float
+        staleBehavior p old = (inputs p old 1) {O.behavior = word (old - log 2)}
+    [clipped] <- evalEither (O.calculate profile 1 [staleBehavior 0 (negate (log 2))])
+    O.term clipped === word (negate weight * 1.5)
+    O.gradient clipped === word 0
+    [open] <- evalEither (O.calculate profile 1 [staleBehavior 0 0])
+    O.term open === word (negate weight)
+    O.gradient open === word (negate weight)
 
 regularization :: PropertyT IO ()
 regularization = do
