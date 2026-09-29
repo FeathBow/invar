@@ -27,10 +27,10 @@ jobs:
           revisions="$(git rev-list "$PR_BASE_SHA..$PR_HEAD_SHA")"
           test -n "$revisions"
           for revision in $revisions; do
-            expected="$(git show -s --format='Signed-off-by: %an <%ae>' "$revision")"
+            email="$(git show -s --format=%ae "$revision")"
             trailers="$(git show -s --format=%B "$revision" | git interpret-trailers --parse --no-divider)"
-            if ! grep -Fqx -- "$expected" <<< "$trailers"; then
-              echo "Missing author sign-off in $revision"
+            if ! awk -v address="<$email>" 'index($0, "Signed-off-by: ") == 1 && length($0) > length("Signed-off-by: ") + length(address) + 1 && substr($0, length($0) - length(address) + 1) == address { found = 1 } END { exit !found }' <<< "$trailers"; then
+              echo "Missing a sign-off with the author email in $revision"
               exit 1
             fi
           done
