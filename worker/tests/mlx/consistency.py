@@ -12,7 +12,7 @@ import tempfile
 import mlx.core as mx
 import mlx.optimizers as optim
 
-from worker.logical import Batch, Learner, Sample
+from worker.logical import Learner, Plan
 from worker.mlx import adapter as mlx_adapter
 from worker.mlx import backward as mlx_backward
 from worker.mlx import learning as mlx_learning
@@ -23,8 +23,8 @@ from worker.mlx import tensors as mlx_tensors
 from worker.mlx.probability import words
 from worker.mlx.rollout import generate
 from worker.mlx.training import logprobs
-from worker.record import ROLES
-from worker.scalar import Profile
+from worker import scalar
+from worker.tests.responder import Core
 from worker.tests.mlx.crossscore import SAMPLING, loaded
 from worker.batch import Reference
 from worker.scoring import TokenPath
@@ -52,24 +52,24 @@ class ConsistencyTests(unittest.TestCase):
                          for index, thermal in enumerate((0.8, 1.3, 0.6)))
         cls.trajectories = generate(cls.runtime.model, cls.runtime.tokenizer, requests, sampling=SAMPLING)
 
-    def test_update_objective_consumes_the_sampled_words(self):
-        proximal, fixed = mlx_learning.probabilities(self.trajectories, ((),) * len(self.trajectories))
-        behavior = [words(item.behavior) for item in self.trajectories]
-        self.assertEqual([words(value) for value in proximal], behavior)
-        self.assertIs(fixed, proximal)
-        samples = tuple(Sample(trajectory=item, proximal=old, reference=ref, advantage=advantage)
-                        for item, old, ref, advantage in zip(self.trajectories, proximal, fixed, (1.0, -0.5, 0.25), strict=True))
-        batch = Batch(samples=samples, order=tuple(item.request.sample for item in self.trajectories),
-                      profile=Profile(epsilon=0.2, penalty=0.04))
+    def test_update_reports_learner_words_and_applies_the_core_cotangents(self):
+        order = tuple(item.request.sample for item in self.trajectories)
+        samples = {item.request.sample: (words(item.behavior), (), scalar.word(advantage))
+                   for item, advantage in zip(self.trajectories, (1.0, -0.5, 0.25), strict=True)}
+        core = Core(samples, (order,), scalar.Profile(epsilon=0.2, penalty=0.04))
+        plan = Plan(trajectories={item.request.sample: item for item in self.trajectories}, steps=(order,), nonzero=3, exchange=core)
         learner = Learner(model=self.runtime.model, optimizer=optim.AdamW(learning_rate=0.0001), evaluate=logprobs)
         try:
             with mlx_training.learning(mlx_numerics.PRIMARY, self.runtime.model):
-                result = mlx_learning.update(learner, batch, linearize=mlx_backward.linearize)
+                self.runtime.model.train()
+                linearized = {name: words(mlx_backward.linearize(self.runtime.model, item, evaluate=logprobs)[0])
+                              for name, item in plan.trajectories.items()}
+                result = mlx_learning.update(learner, plan, linearize=mlx_backward.linearize)
         finally:
             mlx_adapter.install(self.runtime.model, self.policy)
-        for observed, expected in zip(result.probabilities, behavior, strict=True):
-            for role in ("behavior", "proximal", "reference", "current"):
-                self.assertEqual(observed.words[ROLES.index(role)], expected)
+        self.assertEqual(result.proximal, linearized)
+        self.assertEqual(result.currents, tuple((0, name, linearized[name]) for name in order))
+        self.assertEqual(core.records[-1][4], tuple(core.answered))
         self.assertGreater(result.summary["gradient_norm"], 0)
 
     def test_rollout_scores_the_sampled_paths_under_the_reference(self):

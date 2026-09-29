@@ -6,13 +6,13 @@ module LearnerFixture (Exchange (..), Scenario (..), withPlan, prepare, scenario
 import BatchCalls (quote)
 import Calls qualified
 import Data.Aeson (Value (..), eitherDecodeStrict, object, toJSON, (.=))
+import Data.Aeson.KeyMap qualified as Fields
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as Bytes
 import Data.Foldable (toList)
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.Text qualified as Text
 import Data.Text.Encoding (decodeUtf8, encodeUtf8)
-import GHC.Float (castWord32ToFloat)
 import Hedgehog
 import Invar.Artifact qualified as Artifact
 import Invar.Infer qualified as Infer
@@ -30,9 +30,9 @@ import ResidentFixture (timer)
 import ResidentWorkloads qualified as Rollout
 import System.Directory (createDirectory)
 import System.FilePath ((</>))
-import Updates (change, field, wire)
+import Updates (change, field, stepRecords, wire)
 
-data Exchange scope = Exchange {call :: W.Call scope, paths :: Resident.Paths, before :: [Value], after :: [Value], permission :: ByteString, release :: Value, released :: Value}
+data Exchange scope = Exchange {call :: W.Call scope, paths :: Resident.Paths, before :: [Value], steps :: [Value], after :: [Value], permission :: ByteString, release :: Value, released :: Value}
 data Scenario scope = Scenario {groups :: [Exchange scope], closed :: Value, ending :: String}
 
 require :: (Show problem) => Either problem value -> IO value
@@ -42,7 +42,7 @@ withPlan :: FilePath -> (forall scope. L.Plan scope -> IO value) -> PropertyT IO
 withPlan root action = do
     fixture <- Rollout.setup root 1 [Infer.artifact Calls.request]
     let selected = Rollout.initial fixture
-        configured = L.Settings (Infer.artifact Calls.request) (replicate 64 'b') (Infer.artifact Calls.request) (Infer.tokenizer Calls.request) (replicate 64 '0') (replicate 64 '1') (Infer.base Calls.request) (Infer.assembly Calls.request) 0.2 0.04 0.0001 (L.Optimizer 0.002 0.8 0.95 0.0000001 0.01)
+        configured = L.Settings (Infer.artifact Calls.request) (replicate 64 'b') (Infer.artifact Calls.request) (Infer.tokenizer Calls.request) (replicate 64 '0') (replicate 64 '1') (Infer.base Calls.request) (Infer.assembly Calls.request) 0.2 0.04 0.0001 1 (L.Optimizer 0.002 0.8 0.95 0.0000001 0.01)
     observed <- evalIO $ R.withConfiguredDriver R.Resident (R.worker selected, R.sessions selected) $ \driver -> do
         batch <- R.run driver selected >>= require
         require (L.prepare configured batch) >>= action
@@ -69,13 +69,14 @@ prepare root (index, binding) planned = do
         directory = root </> ("update" ++ show index)
     createDirectory directory
     result <- artifacts directory request (loaded, consumed)
-    let prefix = [timer "load" | index == 0] ++ [timer "activation", loaded, timer "probability_roles"] ++ map (role request) (array (field "samples" request)) ++ [consumed]
+    records <- require (stepRecords bound request (field "adapter" result))
+    let prefix = [timer "load" | index == 0] ++ [timer "activation", loaded, consumed]
         suffix = [timer "reward_update", result]
         transcript = directory </> "transcript.jsonl"
-    Bytes.writeFile transcript (wire (prefix ++ suffix))
+    Bytes.writeFile transcript (wire (prefix ++ records ++ suffix))
     digest <- Artifact.identity "Learner protocol fixture transcript" transcript
     let common = ["format" .= String "invar-resident-v1", "owner" .= owner, "loads" .= [load], "result_sha256" .= digest]
-    pure (Exchange call (Resident.Paths (root </> "input checkpoint") directory) prefix suffix (Bytes.init (wire [invocation])) (object ("action" .= String "release" : common)) (object (["stage" .= String "released", "measurement" .= measurement "released"] ++ common)))
+    pure (Exchange call (Resident.Paths (root </> "input checkpoint") directory) prefix records suffix (Bytes.init (wire [invocation])) (object ("action" .= String "release" : common)) (object (["stage" .= String "released", "measurement" .= measurement "released"] ++ common)))
 
 artifacts :: FilePath -> Value -> (Value, Value) -> IO Value
 artifacts directory request (loaded, consumed) = do
@@ -87,7 +88,7 @@ artifacts directory request (loaded, consumed) = do
     learner <- Artifact.identity "Learner fixture" (directory </> "learner.pt")
     gradients <- Artifact.identity "Gradient fixture" (directory </> "gradients.safetensors")
     let count = sum (map (length . array . field "behavior_bits") (array (field "samples" request)))
-        update = object ["before" .= field "policy" request, "after" .= policy, "active_tokens" .= count, "nonzero_advantages" .= (0 :: Int), "loss" .= (0 :: Double), "gradient_norm" .= (0 :: Double), "reward_gradient_norm" .= (0 :: Double)]
+        update = object ["before" .= field "policy" request, "after" .= policy, "active_tokens" .= count, "nonzero_advantages" .= (0 :: Int), "gradient_norm" .= (0 :: Double), "reward_gradient_norm" .= (0 :: Double)]
         result = object ["stage" .= String "result", "binding" .= field "binding" consumed, "request" .= request, "update" .= update, "adapter" .= policy, "learner" .= learner, "gradients" .= gradients, "storage" .= String "staged; not published"]
         probability = directory </> "probabilities.json"
     Bytes.writeFile probability (Bytes.init (wire [Probabilities.fixture [loaded, consumed, result]]))
@@ -97,11 +98,6 @@ artifacts directory request (loaded, consumed) = do
 array :: Value -> [Value]
 array (Array values) = toList values
 array _ = error "Expected learner fixture array"
-
-role :: Value -> Value -> Value
-role request sample = object ["stage" .= String "roles", "sample" .= field "sample" sample, "proximal_policy" .= field "policy" request, "reference_policy" .= field "reference" request, "proximal" .= values, "reference" .= values, "advantage" .= castWord32ToFloat (Probabilities.decoded (field "advantage_bits" sample))]
-  where
-    values = map castWord32ToFloat (Probabilities.decoded (field "behavior_bits" sample))
 
 scenario :: [Exchange scope] -> Scenario scope
 scenario exchanges = Scenario exchanges (object ["stage" .= String "closed", "format" .= String "invar-resident-v1", "owner" .= owner, "groups" .= length exchanges, "measurement" .= measurement "closed"]) "IFS= read -r extra && exit 29\nexit 0"
@@ -119,11 +115,16 @@ script root selected = unlines (header ++ concat (zipWith groupScript [0 :: Int 
         , emit (before exchange)
         , receive "permission" (permission exchange)
         , "printf '%s\\n' approved > " ++ quote (root </> ("learner-approved" ++ show index))
-        , emit (after exchange)
-        , receive "release" (Bytes.init (wire [release exchange]))
-        , "printf '%s\\n' released > " ++ quote (root </> ("learner-released" ++ show index))
-        , emit [released exchange]
         ]
+            ++ concatMap stepScript (steps exchange)
+            ++ [ emit (after exchange)
+               , receive "release" (Bytes.init (wire [release exchange]))
+               , "printf '%s\\n' released > " ++ quote (root </> ("learner-released" ++ show index))
+               , emit [released exchange]
+               ]
+    stepScript record = emit [record] : ["IFS= read -r reply || exit 23" | Just (String "current") <- [stage record]]
+    stage (Object fields) = Fields.lookup "stage" fields
+    stage _ = Nothing
     receive variable expected = "IFS= read -r " ++ variable ++ " || exit 21\ntest \"$" ++ variable ++ "\" = " ++ quote (Bytes.unpack expected) ++ " || exit 22"
     emit values = "printf '%s\\n' " ++ unwords (map (quote . Bytes.unpack) (Bytes.lines (wire values)))
 

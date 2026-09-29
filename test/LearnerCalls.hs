@@ -2,14 +2,18 @@
 
 module LearnerCalls (learnerCalls) where
 
+import BatchCalls (quote)
 import Control.Monad (forM_, void)
-import Data.Aeson (Value (..), object, (.=))
+import Data.Aeson (Value (..), decodeStrict, object, toJSON, withObject, (.:), (.=))
+import Data.Aeson.KeyMap qualified as Fields
+import Data.Aeson.Types (parseMaybe)
 import Data.ByteString.Char8 qualified as Bytes
 import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.Text qualified as Text
 import Hedgehog
 import Invar.Learn qualified as L
 import Invar.Learn.Protocol qualified as P
+import Invar.Learn.Stream qualified as S
 import Invar.Learn.Worker qualified as W
 import Invar.Learn.Worker.Resident qualified as Resident
 import Invar.Spec.Invocation qualified as V
@@ -20,10 +24,10 @@ import Store (workspace)
 import System.Directory (doesFileExist)
 import System.Exit (ExitCode (ExitFailure))
 import System.FilePath ((</>))
-import Updates (alter, change, field)
+import Updates (alter, change, field, wire)
 
 learnerCalls :: Group
-learnerCalls = Group "Resident learner admission" [("two acknowledged updates share a child and retain exact historical facts", once completed), ("all staged artifacts are checked before release", once artifacts), ("initial activation and probability roles are mandatory before permission", once readiness), ("a later update cannot replay a physical model load", once activation), ("a checked result requires one actual update measurement", once completion), ("mismatched release poisons the owner before another update", once acknowledgement), ("retired learner load instances cannot be reused", once replay), ("final closing failure propagates after acknowledged updates", once closing), ("escaped learner owners cannot start another process", once escaped)]
+learnerCalls = Group "Resident learner admission" [("two acknowledged updates share a child and retain exact historical facts", once completed), ("all staged artifacts are checked before release", once artifacts), ("initial load and activation are mandatory before permission", once readiness), ("a step from another state, step or cotangent stops the update before release", once steps), ("a later update cannot replay a physical model load", once activation), ("a checked result requires one actual update measurement", once completion), ("mismatched release poisons the owner before another update", once acknowledgement), ("retired learner load instances cannot be reused", once replay), ("final closing failure propagates after acknowledged updates", once closing), ("escaped learner owners cannot start another process", once escaped), ("a process learner receives the core cotangents for every reported step", once processed)]
   where
     once = withTests 1 . property
 
@@ -37,7 +41,7 @@ completed = do
         exchanges <- sequence [F.prepare root (0, binding 7) planned, F.prepare root (1, binding 8) planned]
         let selected = F.scenario exchanges
         (outcome, raw) <- F.run root selected (`F.execute` exchanges)
-        pure (fmap (map (\receipt -> (P.completion (Resident.report receipt), Resident.loaded receipt, L.program (Resident.plan receipt), Resident.staged receipt, Resident.acknowledgement receipt))) outcome, raw, F.wire (concatMap (\exchange -> F.before exchange ++ F.after exchange ++ [F.released exchange]) exchanges ++ [F.closed selected]))
+        pure (fmap (map (\receipt -> (P.completion (Resident.report receipt), Resident.loaded receipt, L.program (Resident.plan receipt), Resident.staged receipt, Resident.acknowledgement receipt))) outcome, raw, F.wire (concatMap (\exchange -> F.before exchange ++ F.steps exchange ++ F.after exchange ++ [F.released exchange]) exchanges ++ [F.closed selected]))
     receipts <- evalEither returned
     length receipts === 2
     forM_ (zip [0 :: Int ..] receipts) $ \(index, (result, fact, program, path, acknowledged)) -> do
@@ -71,6 +75,20 @@ artifacts = forM_ ["gradients.safetensors", "probabilities.json", "adapter.safet
     evalIO (doesFileExist (root </> "learner-approved0")) >>= assert
     evalIO (doesFileExist (root </> "learner-released0")) >>= (=== False)
 
+steps :: PropertyT IO ()
+steps = forM_ changes $ \modify -> do
+    root <- workspace
+    returned <- F.withPlan root $ \planned -> do
+        original <- F.prepare root (0, binding 7) planned
+        let exchange = original {F.steps = modify (F.steps original)}
+        fmap (void . fst) (F.run root (F.scenario [exchange]) (\owner -> F.execute owner [exchange]))
+    case returned of
+        Left (W.InvalidOutput _) -> success
+        unexpected -> annotateShow unexpected >> failure
+    evalIO (doesFileExist (root </> "learner-released0")) >>= (=== False)
+  where
+    changes = [alter 0 (change "binding" (object ["call" .= (9 :: Int), "attempt" .= (9 :: Int), "instance" .= (9 :: Int)])), alter 0 (change "state" (String (Text.replicate 64 "f"))), alter 0 (change "step" (Number 1)), \events -> take (length events - 1) events ++ [change "consumed" (toJSON ([] :: [Value])) (last events)], \events -> take (length events - 1) events ++ [change "after" (String (Text.replicate 64 "f")) (last events)], reverse]
+
 readiness :: PropertyT IO ()
 readiness = forM_ changes $ \modify -> do
     root <- workspace
@@ -81,7 +99,7 @@ readiness = forM_ changes $ \modify -> do
     rejected returned
     evalIO (doesFileExist (root </> "learner-approved0")) >>= (=== False)
   where
-    changes = [drop 1, \events -> take 1 events ++ drop 2 events, (F.timer "load" :), alter 1 (change "cpu_seconds" (Number (-1))), alter 2 (change "model" Null), alter 3 (change "cpu_seconds" (Bool True)), \events -> take 4 events ++ drop 5 events, alter 4 (change "advantage" (Number 1)), alter 4 (change "proximal_policy" (String (Text.replicate 64 "f")))]
+    changes = [drop 1, \events -> take 1 events ++ drop 2 events, (F.timer "load" :), alter 1 (change "cpu_seconds" (Number (-1))), alter 2 (change "model" Null), \events -> take 2 events ++ drop 3 events, alter 3 (change "program" (String "another program"))]
 
 activation :: PropertyT IO ()
 activation = do
@@ -185,3 +203,30 @@ escaped = do
 rejected :: (Show value) => Either W.Failure value -> PropertyT IO ()
 rejected (Left _) = success
 rejected unexpected = annotateShow unexpected >> failure
+
+processed :: PropertyT IO ()
+processed = do
+    root <- workspace
+    (returned, replies, digests) <- F.withPlan root $ \planned -> do
+        exchange <- F.prepare root (0, binding 7) planned
+        let directory = Resident.output (F.paths exchange)
+            worker = W.Worker "/bin/sh" (root </> "process.sh") root "process checkpoint" "process reference" directory
+            kept = [event | event <- F.before exchange, stage event `elem` [Just "loaded_learner", Just "consumed"]]
+            emit values = "printf '%s\\n' " ++ unwords (map (quote . Bytes.unpack) (Bytes.lines (wire values)))
+            stepLines record = emit [record] : ["IFS= read -r reply || exit 23\nprintf '%s\\n' \"$reply\" >> " ++ quote (root </> "replies") | stage record == Just "current"]
+            script = unlines (["IFS= read -r input || exit 21", emit kept, "IFS= read -r permission || exit 22"] ++ concatMap stepLines (F.steps exchange) ++ [emit (F.after exchange)])
+            applied = [value | value <- F.steps exchange, stage value == Just "applied"]
+        writeFile (W.script worker) script
+        outcome <- W.run worker (F.call exchange)
+        received <- Bytes.readFile (root </> "replies")
+        pure (void outcome, received, concat [digests | value <- applied, Just digests <- [parseMaybe (withObject "applied" (.: "consumed")) value]])
+    returned === Right ()
+    let decoded = [reply | line <- Bytes.lines replies, Just reply <- [decodeStrict line]]
+        reported = [S.digest (S.Reply 0 "" "" "" objective reward) | value <- decoded, Just (objective, reward) <- [parseMaybe (withObject "cotangents" (\fields -> (,) <$> fields .: "objective" <*> fields .: "reward")) value]]
+    assert (not (null digests))
+    reported === digests
+  where
+    stage (Object fields) = case Fields.lookup "stage" fields of
+        Just (String name) -> Just name
+        _ -> Nothing
+    stage _ = Nothing

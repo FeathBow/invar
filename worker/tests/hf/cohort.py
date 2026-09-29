@@ -23,7 +23,7 @@ def request():
     return {"specification": SPECIFICATION, "policy": "a" * 64, "learner": "b" * 64,
             "reference": "c" * 64, "tokenizer": "d" * 64, "base": "e" * 64, "assembly": "f" * 64,
             "behavior_model": {"base": "0" * 64, "assembly": "1" * 64},
-            "samples": samples, "order": ["a", "b"],
+            "samples": samples, "order": ["a", "b"], "steps": [["a", "b"]],
             "epsilon": 0.2, "penalty": 0.04, "delta": 1e-4,
             "optimizer": {"learning_rate": 1e-4, "betas": [0.9, 0.999],
                           "epsilon": 1e-8, "weight_decay": 0.0}}
@@ -90,7 +90,10 @@ class CohortTests(unittest.TestCase):
             variants.append(missing)
         variants += [{**request(), "extra": 1}, {**request(), "specification": "other"},
                      {**request(), "order": ["a", "a"]}, {**request(), "order": ["a"]},
-                     {**request(), "order": ["b", "unknown"]}, {**request(), "samples": []}]
+                     {**request(), "order": ["b", "unknown"]}, {**request(), "samples": []},
+                     {**request(), "steps": []}, {**request(), "steps": [["a"]]}, {**request(), "steps": [["a"], []]},
+                     {**request(), "steps": [["a", "b", "unknown"]]}, {**request(), "steps": ["ab"]},
+                     {**request(), "steps": [["a", 1]]}]
         duplicate = request()
         duplicate["samples"][1]["sample"] = "b"
         variants.append(duplicate)

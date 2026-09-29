@@ -8,123 +8,84 @@ import Data.Aeson.Key (Key)
 import Data.Aeson.KeyMap qualified as Fields
 import Data.Aeson.Types (Parser, parseEither)
 import Data.ByteString (ByteString)
-import Data.List (zip5)
+import Data.List (sortOn)
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Word (Word32)
-import GHC.Float (castDoubleToWord64)
 import Invar.Float32 qualified as Float32
 import Invar.Infer.Wire qualified as Binding
 import Invar.Json qualified as Json
-import Invar.Learn.Advantage qualified as Advantage
-import Invar.Learn.Objective qualified as Objective
 import Invar.Learn.Protocol qualified as P
 import Invar.Learn.Request qualified as Request
+import Invar.Learn.Stream qualified as S
 import Invar.Spec.Invocation qualified as V
+import Numeric.Natural (Natural)
 
 validate :: P.Result -> ByteString -> Either String ()
 validate expected encoded = do
     let completed = P.completion expected
         intended = Binding.invocationValue (V.completedBinding completed) (V.completedProgram completed)
-    _ <- observe (intended, P.checkedRequest expected, V.completedOutput completed) encoded
-    pure ()
+        streamed = P.stream expected
+    observed <- observe (intended, P.checkedRequest expected) encoded
+    unless (Map.fromList [(sampleName entry, proximal entry) | entry <- observed] == S.proximals streamed) (Left "Probability artifact proximal words differ from the reported steps")
+    unless (sortOn (\(position, name, _) -> (position, name)) [(position, sampleName entry, words32) | entry <- observed, (position, words32) <- currents entry] == sortOn (\(position, name, _) -> (position, name)) (S.currents streamed)) (Left "Probability artifact current words differ from the reported steps")
 
-data Sample = Sample {sampleObject :: Object, sampleName :: Text, behavior :: [Word32], proximal :: [Word32], fixed :: [Word32], current :: [Word32], linearized :: [Word32]}
+data Sample = Sample {sampleObject :: Object, sampleName :: Text, behavior :: [Word32], proximal :: [Word32], currents :: [(Natural, [Word32])]}
 
-observe :: (Value, Request.Request, ByteString) -> ByteString -> Either String [Sample]
-observe (intended, consumed, completed) encoded = do
-    output <- Json.decode completed
-    reported <- Json.floatingAt ["update", "loss"] completed
-    Json.decode encoded >>= parseEither (withObject "probability observation" (document (intended, consumed, output) reported))
+observe :: (Value, Request.Request) -> ByteString -> Either String [Sample]
+observe (intended, consumed) encoded = Json.decode encoded >>= parseEither (withObject "probability observation" (document (intended, consumed)))
 
-document :: (Value, Request.Request, Value) -> Double -> Object -> Parser [Sample]
-document (intended, consumed, output) reported fields = do
-    exact ["format", "invocation", "request", "samples", "scalar_reference", "loss"] fields
+document :: (Value, Request.Request) -> Object -> Parser [Sample]
+document (intended, consumed) fields = do
+    exact ["format", "invocation", "request", "samples"] fields
     format <- fields .: "format"
-    unless (format == ("invar-probabilities-v3" :: Text)) (fail "Unknown probability observation format")
-    reference <- fields .: "scalar_reference"
-    unless (reference == Objective.reference) (fail "Unknown scalar objective reference")
+    unless (format == ("invar-probabilities-v4" :: Text)) (fail "Unknown probability observation format")
     invocation <- fields .: "invocation"
     unless (invocation == intended) (fail "Probability observation invocation mismatch")
     request <- fields .: "request"
     unless (request == Request.value consumed) (fail "Probability observation request mismatch")
     observations <- fields .: "samples"
-    (expectedLoss, checked) <- withObject "probability request" (samples observations) (Request.value consumed)
-    observedLoss <- fields .: "loss"
-    unless (observedLoss == expectedLoss) (fail "Reported loss differs from the core token mean")
-    summary <- withObject "update result" (.: "update") output
-    unless (castDoubleToWord64 reported == Float32.widened expectedLoss) (fail "Update summary differs from the core scalar loss")
-    tokens <- summary .: "active_tokens" :: Parser Integer
-    unless (tokens == fromIntegral (sum (map (length . behavior) checked))) (fail "Update summary differs from the scalar observation token count")
-    pure checked
+    withObject "probability request" (samples observations) (Request.value consumed)
 
-samples :: [Object] -> Object -> Parser (Word32, [Sample])
+samples :: [Object] -> Object -> Parser [Sample]
 samples observed request = do
-    order <- request .: "order" :: Parser [String]
+    order <- request .: "order" :: Parser [Text]
+    plan <- request .: "steps" :: Parser [[Text]]
     delivered <- request .: "samples" :: Parser [Object]
-    named <- traverse (\item -> (,) <$> item .: "sample" <*> pure item) delivered
-    delta <- request .: "delta"
-    rewards <- traverse reward delivered
-    advantages <- either (fail . show) pure (Advantage.calculate delta rewards)
+    originals <- Map.fromList <$> traverse (\item -> (,) <$> item .: "sample" <*> item .: "behavior_bits") delivered
     names <- traverse (.: "sample") observed
     unless (names == order) (fail "Probability samples differ from logical order")
-    let expected = Map.fromList named
-    profile <- Objective.Profile <$> request .: "epsilon" <*> request .: "penalty"
-    counts <- traverse (\item -> length <$> (item .: "behavior_bits" :: Parser [Word32])) delivered
-    checked <- traverse (check (profile, sum counts) (Map.intersectionWith (,) expected advantages)) (zip names observed)
-    loss <- either (fail . show) pure (Objective.mean32 (concatMap fst checked))
-    pure (loss, map snd checked)
-  where
-    reward item = Advantage.Reward <$> item .: "sample" <*> item .: "group" <*> item .: "reward"
-    check settings expected (name, item) = case Map.lookup name expected of
-        Just (original, advantage) -> sample settings advantage (original, item)
-        _ -> fail "Unknown probability sample"
+    let participation name = [position | (position, batch) <- zip [0 ..] plan, name `elem` batch]
+        first = case plan of
+            batch : _ -> batch
+            [] -> []
+    traverse (\(name, item) -> maybe (fail "Unknown probability sample") (\consumedWords -> sample (participation name, name `elem` first) consumedWords item) (Map.lookup name originals)) (zip names observed)
 
-sample :: (Objective.Profile, Int) -> Word32 -> (Object, Object) -> Parser ([Word32], Sample)
-sample settings advantage (original, fields) = do
-    exact (["sample", "dtype", "active", "objective"] ++ roles ++ ["linearized"]) fields
+sample :: ([Natural], Bool) -> [Word32] -> Object -> Parser Sample
+sample (participation, inFirst) behaviorWords fields = do
+    exact ["sample", "dtype", "proximal", "steps"] fields
     name <- fields .: "sample"
     dtype <- fields .: "dtype"
     unless (dtype == ("F32" :: Text)) (fail "Update probability observations must use FP32")
-    consumed <- original .: "behavior_bits" :: Parser [Word32]
-    [behaviorWords, proximalWords, fixedWords, currentWords, advantageWords] <- traverse (vector (length consumed) fields) roles
-    unless (behaviorWords == consumed) (fail "Behavior probability words differ from consumed input")
-    linearizedWords <- vector (length consumed) fields "linearized"
-    unless (proximalWords == behaviorWords && currentWords == behaviorWords) (fail "Proximal and current probability words differ from the engine's behavior words")
-    scored <- original .: "reference_bits"
-    unless (fixedWords == (if null scored then behaviorWords else scored)) (fail "Reference probability words differ from the engine's reference scores")
-    claimed <- original .: "advantage_bits"
-    unless (claimed == advantage) (fail "Consumed advantage expectation differs from the core reference")
-    unless (advantageWords == replicate (length consumed) advantage) (fail "Actual advantage words differ from the core reference")
-    active <- fields .: "active" :: Parser [Bool]
-    unless (active == replicate (length consumed) True) (fail "Update probability active mask mismatch")
-    let inputs = [Objective.Inputs {Objective.behavior = b, Objective.proximal = p, Objective.fixed = q, Objective.current = c, Objective.advantage = a} | (b, p, q, c, a) <- zip5 behaviorWords proximalWords fixedWords currentWords advantageWords]
-    terms <- objective settings fields inputs
-    pure (terms, Sample fields name behaviorWords proximalWords fixedWords currentWords linearizedWords)
-
-objective :: (Objective.Profile, Int) -> Object -> [Objective.Inputs] -> Parser [Word32]
-objective (profile, count) fields inputs = do
-    expected <- either (fail . show) pure (Objective.calculate profile count inputs)
-    actual <- fields .: "objective"
-    let outputs = [("terms", map Objective.term expected), ("current_gradient", map Objective.gradient expected), ("reward_gradient", map Objective.rewardGradient expected)]
-    exact (map fst outputs) actual
-    mapM_ (check actual) outputs
-    pure (map Objective.term expected)
+    proximalWords <- vector (length behaviorWords) fields "proximal"
+    entries <- fields .: "steps" :: Parser [Object]
+    observed <- traverse entry entries
+    unless (map fst observed == participation) (fail "Probability steps differ from the declared mini-batches of this sample")
+    case observed of
+        (0, currentWords) : _ | inFirst -> unless (currentWords == proximalWords) (fail "Proximal words differ from the first step's observation")
+        _ -> pure ()
+    pure (Sample fields name behaviorWords proximalWords observed)
   where
-    check observed (name, expected) = do
-        actual <- observed .: name
-        unless (actual == expected) (fail ("Actual scalar " ++ show name ++ " differs from the core reference"))
-
-roles :: [Key]
-roles = ["behavior", "proximal", "reference", "current", "advantage"]
+    entry item = do
+        exact ["step", "current"] item
+        (,) <$> item .: "step" <*> vector (length behaviorWords) item "current"
 
 vector :: Int -> Object -> Key -> Parser [Word32]
 vector count fields role = do
     encoded <- fields .: role :: Parser [Word32]
     unless (length encoded == count && count > 0) (fail "Probability vector token count mismatch")
-    let valid = if role == "advantage" then Float32.finite else Float32.logProbability
-    unless (all valid encoded) (fail "Invalid probability or advantage floating-point words")
+    unless (all Float32.logProbability encoded) (fail "Invalid probability floating-point words")
     pure encoded
 
 exact :: [Key] -> Object -> Parser ()

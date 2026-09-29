@@ -15,7 +15,7 @@ import Numeric.Natural (Natural)
 
 type Optimizer = C.Record '[ '("learning_rate", Rational), '("betas", [Rational]), '("epsilon", Rational), '("weight_decay", Rational)]
 type Learner = C.Record '[ '("policy", [Natural]), '("learner", [Natural]), '("tokenizer", [Natural]), '("base", [Natural]), '("assembly", [Natural]), '("optimizer", Optimizer)]
-type Algorithm = C.Record '[ '("epsilon", Rational), '("penalty", Rational), '("delta", Rational)]
+type Algorithm = C.Record '[ '("epsilon", Rational), '("penalty", Rational), '("delta", Rational), '("steps", Rational)]
 type Trajectory = C.Record '[ '("prompt", [Natural]), '("seed", Rational), '("limit", Natural), '("temperature", Rational), '("tokens", [Natural]), '("prompt_length", Natural), '("text", [Natural]), '("truncated", Bool)]
 type Policy = C.Record '[ '("artifact", [Natural]), '("profile", [Natural])]
 type BehaviorModel = C.Record '[ '("base", [Natural]), '("assembly", [Natural])]
@@ -52,5 +52,5 @@ fields = Map.fromList [("policy", record [("artifact", text), ("profile", text)]
     record = P.RecordType . Map.fromList
     optimizer = record [("learning_rate", P.NumberType), ("betas", P.SequenceType P.NumberType), ("epsilon", P.NumberType), ("weight_decay", P.NumberType)]
     learner = record [("policy", text), ("learner", text), ("tokenizer", text), ("base", text), ("assembly", text), ("optimizer", optimizer)]
-    algorithm = record [("epsilon", P.NumberType), ("penalty", P.NumberType), ("delta", P.NumberType)]
+    algorithm = record [("epsilon", P.NumberType), ("penalty", P.NumberType), ("delta", P.NumberType), ("steps", P.NumberType)]
     trajectory = record [("prompt", text), ("seed", P.NumberType), ("limit", P.TokenType), ("temperature", P.NumberType), ("tokens", P.SequenceType P.TokenType), ("prompt_length", P.TokenType), ("text", text), ("truncated", P.BooleanType)]

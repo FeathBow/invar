@@ -7,6 +7,7 @@ except ImportError as missing:
 
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from worker.tests.hf.cohort import request
@@ -14,27 +15,29 @@ from worker.update import consumed, decode, snapshot
 
 
 class UpdateTests(unittest.TestCase):
-    def test_consumed_advantage_comes_from_actual_batch(self):
-        from worker.advantage import check
+    def test_consumed_echo_reads_behavior_from_the_actual_trajectories(self):
         from worker.cohort import decode as cohort
-        from worker.hf.learning import Batch, Sample
-        from worker.hf.objective import Profile
         from worker.hf.step import trajectory
 
         numerical = cohort(request())
-        prepared = check(numerical)
         trajectories = tuple(trajectory(item) for item in numerical.samples)
-        logical = Batch(samples=tuple(Sample(trajectory=item, proximal=item.behavior,
-                                             reference=item.behavior, advantage=1.0) for item in trajectories),
-                        order=numerical.order, profile=Profile(epsilon=numerical.epsilon, penalty=numerical.penalty))
         loaded = {"base": numerical.base, "assembly": numerical.assembly}
-        actual = consumed(numerical, batch=logical, rewards=prepared.rewards, loaded=loaded)
-        self.assertEqual([item["advantage_bits"] for item in actual["samples"]], [0x3F800000] * 2)
-        self.assertNotEqual(actual["samples"][0]["advantage_bits"], numerical.samples[0].advantage_bits)
+        actual = consumed(numerical, trajectories=trajectories, loaded=loaded)
+        self.assertEqual([item["advantage_bits"] for item in actual["samples"]],
+                         [item.advantage_bits for item in numerical.samples])
+        self.assertEqual(actual["steps"], request()["steps"])
         self.assertEqual(actual["behavior_model"], request()["behavior_model"])
         self.assertNotEqual(actual["behavior_model"], loaded)
         self.assertEqual([item["behavior_bits"] for item in actual["samples"]],
                          [list(item.behavior_bits) for item in numerical.samples])
+        changed = trajectories[0].behavior.clone()
+        changed[0] = -3
+        shifted = consumed(numerical, trajectories=(replace(trajectories[0], behavior=changed), *trajectories[1:]),
+                           loaded=loaded)
+        self.assertEqual(shifted["samples"][0]["behavior_bits"], [0xC0400000])
+        for invalid in (trajectories[:1], trajectories[::-1][:1] * 2):
+            with self.subTest(trajectories=invalid), self.assertRaises(ValueError):
+                consumed(numerical, trajectories=invalid, loaded=loaded)
 
     def test_snapshot_binds_the_bytes_not_a_later_path_read(self):
         path = Path(tempfile.mkdtemp(prefix="invar-update-")) / "bytes"

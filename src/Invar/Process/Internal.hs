@@ -20,7 +20,7 @@ data Launch = Launch {program :: FilePath, launchArguments :: [String], overlay 
 data Failure problem = Exit ExitCode | Rejected problem | Protocol String
     deriving (Eq, Show)
 data Session problem = Session {pipes :: Pipes, review :: ByteString -> IO (Either problem ByteString), emit :: ByteString -> IO ()}
-data Exchange problem = Exchange {message :: ByteString, permission :: ByteString -> IO (Either problem ByteString), completion :: ByteString -> IO (Either problem ())}
+data Exchange problem = Exchange {message :: ByteString, permission :: ByteString -> IO (Either problem ByteString), completion :: ByteString -> IO (Either problem ()), answer :: Maybe (ByteString -> IO (Either problem ByteString))}
 
 withLaunch :: Launch -> (Pipes -> IO value) -> IO value
 withLaunch launch action = do
@@ -72,6 +72,14 @@ responseLine session (exchange, (collected, granted)) received = do
         Left problem -> reject session (Protocol problem)
         Right "consumed" | granted -> reject session (Protocol "Duplicate consumption request")
         Right "consumed" -> permitResponse session (exchange, observed) output
+        Right "current" | not granted -> reject session (Protocol "A learner step arrived without approved consumption")
+        Right "current" -> case answer exchange of
+            Nothing -> reject session (Protocol "This exchange does not answer learner steps")
+            Just replying -> do
+                replied <- replying output
+                case replied of
+                    Left problem -> reject session (Rejected problem)
+                    Right encoded -> send (pipes session) encoded >> response session exchange (observed, granted)
         Right "result" | not granted -> reject session (Protocol "Batch result arrived without approved consumption")
         Right "result" -> do
             completed <- completion exchange output

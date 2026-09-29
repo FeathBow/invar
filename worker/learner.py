@@ -1,6 +1,5 @@
 from functools import partial
 
-from worker.advantage import check
 from worker.invocation import approve
 from worker.hf import runtime as learner_runtime
 from worker import resident
@@ -25,7 +24,6 @@ def serve(owner, options, *, source, transcript, loader, measure, evaluate, clos
             return
         call, paths = decode(value, options)
         next_history = history.advance((call,))
-        checked = check(call.request)
         paths.output.mkdir(exist_ok=False)
         transcript.begin()
         if runtime is None:
@@ -33,8 +31,9 @@ def serve(owner, options, *, source, transcript, loader, measure, evaluate, clos
                                                          measure=observed, evaluate=evaluate)
         else:
             loaded = observed("activation", partial(learner_runtime.activate, runtime, call.request))
-        runtime = learner_runtime.execute(runtime, call, paths.output, loaded=loaded, checked=checked,
-                                           measure=observed, permission=partial(approve, source=source), emit=transcript.emit)
+        runtime = learner_runtime.execute(runtime, call, paths.output, loaded=loaded, measure=observed,
+                                           permission=partial(approve, source=source), emit=transcript.emit,
+                                           receive=source.readline)
         resident.release(owner, (call.load,), source=source, transcript=transcript,
                          operation=partial(learner_runtime.release, runtime), measure=measure)
         history = next_history

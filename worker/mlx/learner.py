@@ -3,7 +3,6 @@ import gc
 
 import mlx.core as mx
 
-from worker.advantage import check
 from worker.mlx import adapter as mlx_adapter
 from worker.mlx import checkpoint as mlx_checkpoint
 from worker.mlx import model as mlx_model
@@ -83,13 +82,12 @@ def activate(runtime, request, paths):
     return runtime
 
 
-def execute(runtime, call, output, *, measure, approve, emit):
-    checked = check(call.request)
-    admitted, actual = mlx_step.consume(call, checked=checked, measure=measure, emit=emit, runtime=runtime.loaded)
+def execute(runtime, call, output, *, measure, approve, emit, receive):
+    trajectories, actual = mlx_step.consume(call, emit=emit, runtime=runtime.loaded)
     approve(call.invocation)
     verify(runtime)
-    result = mlx_step.execute(runtime.loaded, runtime.learner, call, output, admitted=admitted,
-                              actual=actual, measure=measure)
+    result = mlx_step.execute(runtime.loaded, runtime.learner, call, output, trajectories=trajectories,
+                              actual=actual, measure=measure, emit=emit, receive=receive)
     saved = attest(runtime.loaded, runtime.learner, output, policy=result["adapter"], expected=result["learner"])
     emit("result", result)
     return replace(runtime, saved=saved)

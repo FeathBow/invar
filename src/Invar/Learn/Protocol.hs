@@ -1,16 +1,19 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Learn.Protocol (Result, Permit, Error (..), observe, authorize, authorizeResident, validateSummary, loadProgram, loadedFact, completion, request, checkedRequest, adapter, learner, gradients, probabilities) where
+module Invar.Learn.Protocol (Result, Permit, Error (..), observe, authorize, authorizeResident, respond, replay, validateSummary, loadProgram, loadedFact, completion, request, checkedRequest, stream, adapter, learner, gradients, probabilities) where
 
 import Control.Monad (foldM, unless, void)
-import Data.Aeson (Object, Value (..), eitherDecodeStrict, object, withObject, (.:), (.=))
+import Data.Aeson (Object, Value (..), eitherDecodeStrict, encode, object, withObject, (.:), (.=))
 import Data.Aeson.Types (Parser, parseEither)
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as Bytes
+import Data.ByteString.Lazy qualified as Lazy
 import Data.Text.Encoding (encodeUtf8)
 import Invar.Digest qualified as Digest
 import Invar.Infer.Wire qualified as Binding
+import Invar.Learn.Objective qualified as Objective
 import Invar.Learn.Request qualified as Request
+import Invar.Learn.Stream qualified as S
 import Invar.Learn.Wire qualified as Wire
 import Invar.Load qualified as Load
 import Invar.Spec.Invocation qualified as V
@@ -20,14 +23,14 @@ import Numeric.Natural (Natural)
 data Artifacts = Artifacts String String (String, String)
     deriving (Eq, Show)
 
-data Result = Result V.Completion Request.Request Artifacts
+data Result = Result V.Completion Request.Request Artifacts S.Stream
     deriving (Eq, Show)
 
-data Error = Malformed String | Unexpected String | Mismatch String | Lowering Wire.Error | Lifecycle V.Error | Loading Load.Error | Registry L.Error
+data Error = Malformed String | Unexpected String | Mismatch String | Lowering Wire.Error | Lifecycle V.Error | Loading Load.Error | Registry L.Error | Step S.Error
     deriving (Eq, Show)
 
 data Context = Context {bound :: V.Binding, numerical :: Value, loading :: Load.Plan, resident :: Bool}
-data Progress = Awaiting V.Runtime L.Registry | Loaded V.Runtime L.Registry L.Fact | Consumed V.Runtime L.Registry L.Fact Request.Request | Finished Result
+data Progress = Awaiting V.Runtime L.Registry | Loaded V.Runtime L.Registry L.Fact | Consumed V.Runtime L.Registry L.Fact Request.Request S.Stream (Maybe S.Reply) | Finished Result
 
 data Permit = Permit Context ByteString Progress L.Fact
 
@@ -49,8 +52,29 @@ authorizeWith :: Bool -> L.Registry -> (V.Binding, V.Runtime) -> ByteString -> E
 authorizeWith residency registry selection output = do
     (context, current) <- scan residency registry selection output
     case current of
-        Consumed _ updated fact _ -> Right (updated, Permit context output current fact)
+        Consumed _ updated fact _ _ _ -> Right (updated, Permit context output current fact)
         _ -> Left (Unexpected "Update input has not been consumed")
+
+respond :: Permit -> ByteString -> Either Error (Permit, ByteString)
+respond (Permit context prefix accepted fact) output = do
+    unless (prefix `Bytes.isPrefixOf` output) (Left (Mismatch "Reported step differs from the authorized prefix"))
+    advanced <- foldM (advance context) accepted (Bytes.lines (Bytes.drop (Bytes.length prefix) output))
+    case advanced of
+        Consumed _ _ _ _ _ (Just reply) -> Right (Permit context output advanced fact, Lazy.toStrict (encode (cotangents (bound context) reply)))
+        _ -> Left (Unexpected "A reply was requested for a record that does not report a learner step")
+
+replay :: V.Binding -> Request.Request -> [Object] -> Either Error String
+replay expected actual records = do
+    begun <- declaredSteps actual
+    finished' <- foldM follow begun records
+    step' (S.complete finished')
+  where
+    follow current value = do
+        name <- parse (.: "stage") value
+        fst <$> record expected name current value
+
+cotangents :: V.Binding -> S.Reply -> Value
+cotangents binding reply = object ["stage" .= ("cotangents" :: String), "binding" .= Binding.bindingValue binding, "step" .= S.replyStep reply, "sample" .= S.replySample reply, "observation" .= S.replyObservation reply, "state" .= S.replyState reply, "objective" .= S.objective reply, "reward" .= S.reward reply]
 
 loadedFact :: Permit -> L.Fact
 loadedFact (Permit _ _ _ fact) = fact
@@ -82,6 +106,7 @@ advance context progress encoded = do
         "loaded_learner" -> loaded context progress value
         "consumed" -> consumed context progress value
         "result" -> finished context (progress, value) encoded
+        _ | stage `elem` ["proximal", "current", "applied"] -> stepping context progress stage value
         "activation" | resident context, Awaiting {} <- progress -> Right progress
         _ -> diagnostic stage progress
 
@@ -117,18 +142,21 @@ consumed context (Loaded runtime registry fact) value = do
     actual <- matchingRequest (numerical context) value
     command <- lifecycle (V.intent runtime (V.boundCall binding))
     accepted <- lifecycle (V.consume (V.Consumption binding program command) runtime)
-    pure (Consumed accepted registry fact actual)
+    begun <- declaredSteps actual
+    pure (Consumed accepted registry fact actual begun Nothing)
 consumed _ _ _ = Left (Unexpected "Duplicate consumption or consumption before learner load")
 
 finished :: Context -> (Progress, Object) -> ByteString -> Either Error Progress
-finished context (Consumed runtime _ _ actual, value) encoded = do
+finished context (Consumed runtime _ _ actual steps _, value) encoded = do
     binding <- matching (bound context) value
     _ <- matchingRequest (Request.value actual) value
-    artifacts <- summary (Request.value actual) value
+    artifacts@(Artifacts policy _ _) <- summary (Request.value actual) value
+    ended <- step' (S.complete steps)
+    unless (ended == policy) (Left (Mismatch "The last applied step does not end at the staged adapter"))
     final <- lifecycle (V.finish binding encoded runtime)
     reported <- lifecycle (V.completion final (V.boundAttempt binding))
     case reported of
-        Just completed -> Right (Finished (Result completed actual artifacts))
+        Just completed -> Right (Finished (Result completed actual artifacts steps))
         Nothing -> Left (Unexpected "Bound update did not produce a completion")
 finished _ _ _ = Left (Unexpected "Update result arrived without consumption")
 
@@ -159,11 +187,10 @@ validateStats actual value = do
     counts <- traverse (parse (\sample -> length <$> (sample .: "behavior_bits" :: Parser [Natural]))) samples
     tokens <- parse (.: "active_tokens") value
     nonzero <- parse (.: "nonzero_advantages") value
-    loss <- parse (.: "loss") value
     gradient <- parse (.: "gradient_norm") value
     rewardGradient <- parse (.: "reward_gradient_norm") value
     unless (tokens == sum counts && tokens > 0 && nonzero >= (0 :: Int) && nonzero <= length samples) (Left (Mismatch "Update sample or active-token counts disagree"))
-    unless (all finite [loss, gradient, rewardGradient] && gradient >= 0 && rewardGradient >= 0) (Left (Mismatch "Invalid numerical update summary"))
+    unless (all finite [gradient, rewardGradient] && gradient >= 0 && rewardGradient >= 0) (Left (Mismatch "Invalid numerical update summary"))
   where
     finite number = not (isNaN (number :: Double) || isInfinite number)
 
@@ -172,8 +199,7 @@ identity = Digest.sha256
 
 diagnostic :: String -> Progress -> Either Error Progress
 diagnostic stage progress@(Awaiting _ _) | stage `elem` ["loading", "profile", "load"] = Right progress
-diagnostic stage progress@Loaded {} | stage `elem` ["probability_roles", "roles"] = Right progress
-diagnostic stage progress@Consumed {} | stage `elem` ["reward_update", "artifacts", "checkpoint"] = Right progress
+diagnostic stage (Consumed runtime registry fact actual steps _) | stage `elem` ["reward_update", "artifacts", "checkpoint"] = Right (Consumed runtime registry fact actual steps Nothing)
 diagnostic stage _ = Left (Unexpected ("Unknown or misplaced worker stage: " ++ stage))
 
 matching :: V.Binding -> Object -> Either Error V.Binding
@@ -198,22 +224,59 @@ registryError :: Either L.Error value -> Either Error value
 registryError = either (Left . Registry) Right
 
 completion :: Result -> V.Completion
-completion (Result result _ _) = result
+completion (Result result _ _ _) = result
 
 request :: Result -> Value
-request (Result _ actual _) = Request.value actual
+request (Result _ actual _ _) = Request.value actual
 
 checkedRequest :: Result -> Request.Request
-checkedRequest (Result _ actual _) = actual
+checkedRequest (Result _ actual _ _) = actual
+
+stream :: Result -> S.Stream
+stream (Result _ _ _ steps) = steps
 
 adapter :: Result -> String
-adapter (Result _ _ (Artifacts policy _ _)) = policy
+adapter (Result _ _ (Artifacts policy _ _) _) = policy
 
 learner :: Result -> String
-learner (Result _ _ (Artifacts _ checkpoint _)) = checkpoint
+learner (Result _ _ (Artifacts _ checkpoint _) _) = checkpoint
 
 gradients :: Result -> String
-gradients (Result _ _ (Artifacts _ _ (observation, _))) = observation
+gradients (Result _ _ (Artifacts _ _ (observation, _)) _) = observation
 
 probabilities :: Result -> String
-probabilities (Result _ _ (Artifacts _ _ (_, observation))) = observation
+probabilities (Result _ _ (Artifacts _ _ (_, observation)) _) = observation
+
+declaredSteps :: Request.Request -> Either Error S.Stream
+declaredSteps actual = parse (withObject "checked update request" plan) (Request.value actual)
+  where
+    plan fields = do
+        entries <- fields .: "samples"
+        declared <- traverse entry entries
+        steps <- fields .: "steps"
+        policy <- fields .: "policy"
+        profile <- Objective.Profile <$> fields .: "epsilon" <*> fields .: "penalty"
+        pure (S.begin profile policy declared steps)
+    entry = withObject "update sample" $ \fields -> S.Sample <$> fields .: "sample" <*> fields .: "behavior_bits" <*> fields .: "reference_bits" <*> fields .: "advantage_bits"
+
+stepping :: Context -> Progress -> String -> Object -> Either Error Progress
+stepping context (Consumed runtime registry fact actual steps _) stage value = do
+    (updated, reply) <- record (bound context) stage steps value
+    pure (Consumed runtime registry fact actual updated reply)
+stepping _ _ _ _ = Left (Unexpected "A learner step was reported before consumption")
+
+record :: V.Binding -> String -> S.Stream -> Object -> Either Error (S.Stream, Maybe S.Reply)
+record expected stage steps value = matching expected value >> stepRecord stage steps value
+
+stepRecord :: String -> S.Stream -> Object -> Either Error (S.Stream, Maybe S.Reply)
+stepRecord "proximal" steps value = (,Nothing) <$> (step' =<< S.proximal steps <$> parse (.: "sample") value <*> parse (.: "words") value)
+stepRecord "current" steps value = do
+    report <- parse (\fields -> S.Current <$> fields .: "step" <*> fields .: "sample" <*> fields .: "words" <*> fields .: "observation" <*> fields .: "state") value
+    fmap Just <$> step' (S.current steps report)
+stepRecord "applied" steps value = do
+    report <- S.Applied <$> parse (.: "step") value <*> parse (.: "before") value <*> parse (.: "after") value <*> parse (.: "consumed") value
+    (,Nothing) <$> step' (S.applied steps report)
+stepRecord name _ _ = Left (Unexpected ("Unexpected learner step record: " ++ name))
+
+step' :: Either S.Error value -> Either Error value
+step' = either (Left . Step) Right

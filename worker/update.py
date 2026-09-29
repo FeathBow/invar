@@ -1,4 +1,5 @@
 import hashlib
+import struct
 from dataclasses import asdict, dataclass
 
 from worker.cohort import Cohort, decode as cohort
@@ -26,27 +27,23 @@ def snapshot(path):
     return hashlib.sha256(encoded).hexdigest(), encoded
 
 
-def observation(trajectory, reward, *, advantage, reference):
-    from worker.advantage import word
-
-    if trajectory.request.sample != reward.sample or trajectory.request.group != reward.group:
-        raise ValueError("Actual reward and trajectory identities disagree")
+def observation(trajectory, item):
+    if trajectory.request.sample != item.sample or trajectory.request.group != item.group:
+        raise ValueError("Actual trajectory differs from the requested sample")
     return {**asdict(trajectory.request), "tokens": trajectory.tokens[0].tolist(),
             "prompt_length": trajectory.prompt_length,
-            "behavior_bits": [word(value) for value in trajectory.behavior.tolist()],
-            "reference_bits": list(reference),
-            "text": trajectory.text, "truncated": trajectory.truncated, "reward": reward.value,
-            "advantage_bits": word(advantage)}
+            "behavior_bits": [struct.unpack("!I", struct.pack("!f", value))[0] for value in trajectory.behavior.tolist()],
+            "reference_bits": list(item.reference_bits),
+            "text": trajectory.text, "truncated": trajectory.truncated, "reward": item.reward,
+            "advantage_bits": item.advantage_bits}
 
 
-def consumed(request, *, batch, rewards, loaded):
-    if len(rewards) != len(batch.samples) or len({item.sample for item in rewards}) != len(rewards):
-        raise ValueError("Actual rewards must match the prepared samples")
-    values = {item.sample: item for item in rewards}
-    scores = {item.sample: item.reference_bits for item in request.samples}
-    samples = [observation(item.trajectory, values[item.trajectory.request.sample], advantage=item.advantage,
-                           reference=scores[item.trajectory.request.sample]) for item in batch.samples]
+def consumed(request, *, trajectories, loaded):
+    values = {item.sample: item for item in request.samples}
+    if len(trajectories) != len(values) or {item.request.sample for item in trajectories} != set(values):
+        raise ValueError("Actual trajectories must match the requested samples")
+    samples = [observation(item, values[item.request.sample]) for item in trajectories]
     return {"specification": request.specification, **loaded,
             "behavior_model": asdict(request.behavior_model), "samples": samples,
-            "order": batch.order, "epsilon": batch.profile.epsilon,
-            "penalty": batch.profile.penalty, "delta": request.delta}
+            "order": list(request.order), "steps": [list(batch) for batch in request.steps],
+            "epsilon": request.epsilon, "penalty": request.penalty, "delta": request.delta}

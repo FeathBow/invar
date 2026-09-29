@@ -42,11 +42,13 @@ lower command@(E.Emission "update" "grpo-token-mean/v1" payload) = do
     epsilon <- field "epsilon" algorithm >>= number
     penalty <- field "penalty" algorithm >>= number
     delta <- field "delta" algorithm >>= number
+    count <- field "steps" algorithm >>= integer
     let ordered = zip [0 :: Natural ..] (order samples)
     supplied <- traverse (rewardInput samples) ordered
     expected <- first Numerical (Advantage.calculate delta supplied)
     entries <- traverse (sample samples expected) ordered
-    let encoded = object ["specification" .= ("grpo-token-mean/v1" :: String), "policy" .= policy, "learner" .= checkpoint, "tokenizer" .= tokenizer, "base" .= base, "assembly" .= assembly, "behavior_model" .= behavior, "reference" .= reference, "optimizer" .= optimizer, "epsilon" .= epsilon, "penalty" .= penalty, "delta" .= delta, "samples" .= entries, "order" .= map label [0 .. length entries - 1]]
+    unless (count > 0 && count <= toInteger (length entries)) (Left (Shape "Optimizer steps must be between one and the number of samples"))
+    let encoded = object ["specification" .= ("grpo-token-mean/v1" :: String), "policy" .= policy, "learner" .= checkpoint, "tokenizer" .= tokenizer, "base" .= base, "assembly" .= assembly, "behavior_model" .= behavior, "reference" .= reference, "optimizer" .= optimizer, "epsilon" .= epsilon, "penalty" .= penalty, "delta" .= delta, "steps" .= batches count (map label [0 .. length entries - 1]), "samples" .= entries, "order" .= map label [0 .. length entries - 1]]
     Request.value <$> first Shape (parseEither Request.parse encoded)
 lower _ = Left (Shape "Expected the GRPO update emission")
 
@@ -123,6 +125,13 @@ optimizerValue value = do
     decay <- field "weight_decay" value >>= number
     pure (object ["learning_rate" .= rate, "betas" .= betas, "epsilon" .= epsilon, "weight_decay" .= decay])
 
+batches :: Integer -> [String] -> [[String]]
+batches count = go (fromIntegral count)
+  where
+    go :: Int -> [String] -> [[String]]
+    go 0 _ = []
+    go remaining rest = let size = (length rest + remaining - 1) `div` remaining in take size rest : go (remaining - 1) (drop size rest)
+
 label :: (Show value) => value -> String
 label value = "s" ++ show value
 
@@ -170,7 +179,7 @@ number _ = Left (Shape "Expected a finite numeric value")
 
 integer :: V.Value Natural -> Either Error Integer
 integer (V.Atom (V.Number value)) | denominator value == 1 = Right (numerator value)
-integer _ = Left (Shape "Expected an integral sample seed")
+integer _ = Left (Shape "Expected an integral value")
 
 natural :: V.Value Natural -> Either Error Natural
 natural (V.Atom (V.Token value)) = Right value

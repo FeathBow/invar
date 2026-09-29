@@ -26,7 +26,7 @@ logical (Request _ ordered) = ordered
 
 parse :: Value -> Parser Request
 parse = withObject "numerical update request" $ \fields -> do
-    Json.fields ["specification", "policy", "learner", "reference", "tokenizer", "base", "assembly", "behavior_model", "samples", "order", "epsilon", "penalty", "delta", "optimizer"] fields
+    Json.fields ["specification", "policy", "learner", "reference", "tokenizer", "base", "assembly", "behavior_model", "samples", "order", "steps", "epsilon", "penalty", "delta", "optimizer"] fields
     specification <- fields .: "specification"
     unless (specification == ("grpo-token-mean/v1" :: Text)) (fail "Unsupported update specification")
     mapM_ ((.:) fields >=> Json.identity) ["policy", "learner", "reference", "tokenizer", "base", "assembly"]
@@ -42,6 +42,9 @@ parse = withObject "numerical update request" $ \fields -> do
     unless (length order == Map.size named && Set.fromList order == Map.keysSet named) (fail "Logical order must name every admitted sample exactly once")
     unless (all (>= minimumGroup) grouped) (fail "Each advantage group requires at least two samples")
     ordered <- traverse (maybe (fail "Missing logical sample") pure . (`Map.lookup` named)) order
+    steps <- fields .: "steps" :: Parser [[Text]]
+    when (null steps || any null steps) (fail "An update needs nonempty optimizer steps")
+    unless (Set.fromList (concat steps) == Map.keysSet named) (fail "Optimizer steps must use every admitted sample and no other")
     epsilon <- fields .: "epsilon" >>= Json.finite
     penalty <- fields .: "penalty" >>= Json.finite
     delta <- fields .: "delta" >>= Json.finite

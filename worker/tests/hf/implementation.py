@@ -93,7 +93,7 @@ def exercise_boundaries():
     inference = assembly.digest(learner.model, INFERENCE)
     activate(learner.model, state, base=base, assembly=binding, role=LEARNING)
     summary = update(learner, batch()).summary
-    path = Path(__file__).resolve().parents[2] / "hf" / "objective.py"
+    path = Path(__file__).resolve().parents[2] / "hf" / "learning.py"
     path.write_bytes(path.read_bytes() + b"\n# Changed implementation artifact.\n")
     check.assertNotEqual(binding, assembly.digest(learner.model, LEARNING))
     check.assertEqual(inference, assembly.digest(learner.model, INFERENCE))
@@ -156,6 +156,12 @@ class ImplementationTests(unittest.TestCase):
                 before = implementation.description(root, implementation.INFERENCE)
                 mutated(root, name)
                 self.assertNotEqual(implementation.description(root, implementation.INFERENCE), before)
+
+    def test_the_step_plan_mapping_is_part_of_the_learning_identity(self):
+        root = copied_worker()
+        before = implementation.description(root, LEARNING)
+        mutated(root, "logical.py")
+        self.assertNotEqual(implementation.description(root, LEARNING), before)
 
     def test_neutral_changes_keep_both_identities(self):
         root = copied_worker()

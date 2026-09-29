@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Process (Command (..), Launch (..), Exchange (..), Failure (..), run, batch) where
+module Invar.Process (Command (..), Launch (..), Exchange (..), Failure (..), run, conversation, batch) where
 
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as Bytes
@@ -26,39 +26,50 @@ exchangeAll report handles (exchange : remaining) collected = do
         Right output -> exchangeAll report handles remaining (output : collected)
 
 run :: Command -> (ByteString -> IO (Either problem ByteString)) -> IO (Either (Failure problem) ByteString)
-run command approve = withLaunch launch $ \handles -> do
+run command approve = conversation command approve Nothing
+
+conversation :: Command -> (ByteString -> IO (Either problem ByteString)) -> Maybe (ByteString -> IO (Either problem ByteString)) -> IO (Either (Failure problem) ByteString)
+conversation command approve replying = withLaunch launch $ \handles -> do
     send handles (input command)
-    consume (Session handles approve live) [] False
+    consume (Session handles approve live, replying) [] False
   where
     launch = Launch (executable command) (arguments command) (environment command) live
 
 live :: ByteString -> IO ()
 live line = Bytes.hPutStrLn stdout line >> hFlush stdout
 
-consume :: Session problem -> [ByteString] -> Bool -> IO (Either (Failure problem) ByteString)
-consume session collected granted = do
+consume :: (Session problem, Maybe (ByteString -> IO (Either problem ByteString))) -> [ByteString] -> Bool -> IO (Either (Failure problem) ByteString)
+consume context@(session, _) collected granted = do
     let (_, reader, child) = pipes session
     ended <- hIsEOF reader
     if ended
         then complete child collected granted
-        else Bytes.hGetLine reader >>= receive session (collected, granted)
+        else Bytes.hGetLine reader >>= receive context (collected, granted)
 
-receive :: Session problem -> ([ByteString], Bool) -> ByteString -> IO (Either (Failure problem) ByteString)
-receive session (collected, granted) line = do
+receive :: (Session problem, Maybe (ByteString -> IO (Either problem ByteString))) -> ([ByteString], Bool) -> ByteString -> IO (Either (Failure problem) ByteString)
+receive context@(session, replying) (collected, granted) line = do
     emit session line
     let observed = line : collected
     case stage line of
         Left problem -> reject session (Protocol problem)
         Right "consumed" | granted -> reject session (Protocol "Duplicate consumption request")
-        Right "consumed" -> authorize session observed
-        Right _ -> consume session observed granted
+        Right "consumed" -> authorize context observed
+        Right "current" | not granted -> reject session (Protocol "A learner step arrived without approved consumption")
+        Right "current" -> case replying of
+            Nothing -> reject session (Protocol "This worker does not answer learner steps")
+            Just answering -> do
+                replied <- answering (Bytes.unlines (reverse observed))
+                case replied of
+                    Left problem -> reject session (Rejected problem)
+                    Right encoded -> send (pipes session) encoded >> consume context observed granted
+        Right _ -> consume context observed granted
 
-authorize :: Session problem -> [ByteString] -> IO (Either (Failure problem) ByteString)
-authorize session collected = do
+authorize :: (Session problem, Maybe (ByteString -> IO (Either problem ByteString))) -> [ByteString] -> IO (Either (Failure problem) ByteString)
+authorize context@(session, _) collected = do
     permitted <- review session (Bytes.unlines (reverse collected))
     case permitted of
         Left problem -> reject session (Rejected problem)
-        Right permission -> send (pipes session) permission >> consume session collected True
+        Right permission -> send (pipes session) permission >> consume context collected True
 
 complete :: ProcessHandle -> [ByteString] -> Bool -> IO (Either (Failure problem) ByteString)
 complete child collected granted = do

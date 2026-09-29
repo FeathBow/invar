@@ -12,10 +12,9 @@ from dataclasses import replace
 import torch
 
 from worker import scalar
-from worker.hf.objective import Profile, Tokens, terms
-from worker.hf.probability import checked, checked_cotangents, cotangents, words
+from worker.scalar import Profile
+from worker.tests.hf.objective import Tokens, terms
 
-NEGATIVE_ZERO = 1 << 31
 LARGE = 2 ** 24
 ANALYTIC_TOLERANCE = 2e-6
 
@@ -27,18 +26,10 @@ def inputs(current, proximal, advantage):
 
 
 class ScalarTests(unittest.TestCase):
-    def test_equal_roles_and_real_tensor_vjp_have_the_analytic_result(self):
-        current = torch.tensor([-1.0, -1.0], requires_grad=True)
-        tokens = Tokens(current=current, proximal=current, behavior=current, reference=current,
-                        advantage=torch.full_like(current, 2), active=torch.ones(2, dtype=torch.bool))
-        observed = checked("sample", tokens, advantage=2, count=2)
-        evaluated, gradient, reward = cotangents(observed, Profile(epsilon=0.2, penalty=0.125),
-                                                 total=2, device=current.device, linearized=current)
-        self.assertEqual(evaluated.objective, (scalar.Output(term=scalar.word(-2),
-                         gradient=scalar.word(-1), reward_gradient=scalar.word(-1)),) * 2)
-        current.backward(gradient)
-        self.assertTrue(torch.equal(current.grad, torch.tensor([-1.0, -1.0])))
-        self.assertEqual(words(reward), words(gradient))
+    def test_equal_roles_have_the_analytic_result(self):
+        result = scalar.calculate(Profile(epsilon=0.2, penalty=0.125), 2, (inputs(-1, -1, 2),) * 2)
+        self.assertEqual(result, (scalar.Output(term=scalar.word(-2), gradient=scalar.word(-1),
+                                                reward_gradient=scalar.word(-1)),) * 2)
 
     def test_clipped_branches_and_rounded_minimum_ties(self):
         profile = Profile(epsilon=0.5, penalty=0)
@@ -80,19 +71,6 @@ class ScalarTests(unittest.TestCase):
         self.assertEqual(scalar.mean32(second), scalar.word(1 / 3))
         self.assertEqual(scalar.mean32(tuple(map(scalar.word, (1, 2, 3)))), scalar.word(2))
         self.assertNotEqual(scalar.mean32(first), scalar.word(math.fsum(map(scalar.number, first)) / 3))
-
-    def test_actual_cotangent_words_dtype_and_shape_are_checked(self):
-        profile = Profile(epsilon=0.2, penalty=0)
-        result, = scalar.calculate(profile, 1, (inputs(0, 0, 0),))
-        expected = ((result.gradient,), (result.reward_gradient,))
-        objective = torch.tensor([0.0])
-        reward = torch.tensor([-0.0])
-        self.assertEqual(expected, ((0,), (NEGATIVE_ZERO,)))
-        self.assertEqual(checked_cotangents(expected, (objective, reward), device=objective.device), expected)
-        for changed in ((objective.double(), reward), (objective, reward.reshape(())),
-                        (objective, -reward), (objective + 1, reward)):
-            with self.subTest(tensors=changed), self.assertRaises(ValueError):
-                checked_cotangents(expected, changed, device=objective.device)
 
     def test_nonfinite_ratios_conversion_and_sum_fail_explicitly(self):
         profile = Profile(epsilon=0.2, penalty=0.04)

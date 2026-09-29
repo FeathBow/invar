@@ -32,16 +32,16 @@ ROLES = {
     },
     LEARNING: {
         **SHARED,
-        "mlx/learning.py": "learner graph linearization and gradient accumulation",
+        "mlx/learning.py": "learner graph linearization, per-step gradient accumulation and AdamW steps in the declared order",
         "mlx/training.py": "learner log probabilities, the learning projection and its description",
         "mlx/backward.py": "layerwise vector-Jacobian products",
         "mlx/recurrentvjp.py": "recurrent vector-Jacobian products",
-        "mlx/probability.py": "cotangent application",
-        "mlx/step.py": "restored inputs, trajectory tensors and the optimizer step",
+        "mlx/probability.py": "cotangent tensors",
+        "mlx/step.py": "restored inputs, trajectory tensors and declared optimizer steps given to the learner",
         "mlx/checkpoint.py": "optimizer and parameter state saved and restored",
         "mlx/state.py": "random and optimizer state restored between updates",
         "mlx/learner.py": "resident learner state carried across updates",
-        "logical.py": "logical sample order of gradient accumulation",
+        "logical.py": "samples and trajectories of each declared optimizer step",
     },
 }
 NEUTRAL = {
@@ -69,9 +69,9 @@ NEUTRAL = {
     "resident.py": "owner protocol checked by the core",
     "update.py": "update request decoding checked by the core",
     "trajectory.py": "record types",
-    "advantage.py": "advantage words recomputed bit for bit by the core",
-    "scalar.py": "objective scalars and cotangents recomputed bit for bit by the core",
-    "record.py": "probability records recomputed bit for bit by the core",
+    "exchange.py": "learner step records and cotangent replies bound and checked by the core",
+    "scalar.py": "FP32 word conversion for probe values and optimizer settings",
+    "record.py": "probability records the core checks against the step exchange",
 }
 UNREACHED = {
     name: "Hugging Face inference path, imported only by the Hugging Face entry in hf/session"

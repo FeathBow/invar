@@ -5,12 +5,10 @@ module Invar.Learn.Trace (validate, validateObserved, readiness, completion) whe
 import Control.Monad (unless, when)
 import Data.Aeson (Object, Value (..), object, withObject, (.:), (.=))
 import Data.Aeson.KeyMap qualified as Fields
-import Data.Aeson.Types (Parser, parseEither)
+import Data.Aeson.Types (parseEither)
 import Data.Bifunctor (first)
 import Data.ByteString.Char8 qualified as Bytes
 import Data.Text qualified as Text
-import Data.Word (Word32)
-import GHC.Float (castFloatToWord32)
 import Invar.Infer.Wire qualified as Wire
 import Invar.Json qualified as Json
 import Invar.Learn qualified as Learn
@@ -33,7 +31,12 @@ validateObserved report events = do
 validateWith :: Image.Image -> Report.Report -> [Object] -> Either String ()
 validateWith selected report events = case reverse events of
     result : remaining | (staged, updated : preceding) <- span staging remaining -> do
-        pair <- readiness (Report.request report) (reverse preceding)
+        let (reported, ready) = span stepping preceding
+        pair <- readiness (Report.request report) (reverse ready)
+        bound <- parseEither (withObject "update invocation" Wire.binding) (Report.invocation report)
+        replayed <- first show (Protocol.replay bound (Report.checkedRequest report) (reverse reported))
+        adapter <- parseEither (.: "adapter") result
+        unless (replayed == adapter) (Left "Learner steps do not end at the staged adapter")
         bindings selected report pair
         stage "reward_update" updated
         mapM_ (\fields -> when (Fields.member "phase" fields) (Left "Unexpected learner observation stage")) staged
@@ -42,32 +45,24 @@ validateWith selected report events = case reverse events of
     _ -> Left "Incomplete learner execution trace"
   where
     staging fields = Fields.lookup "stage" fields `elem` map (Just . String) ["checkpoint", "artifacts"]
+    stepping fields = Fields.lookup "stage" fields `elem` map (Just . String) ["proximal", "current", "applied"]
 
 readiness :: Value -> [Object] -> Either String (Object, Object)
-readiness request events = case events of
-    loaded : measured : remaining -> do
+readiness _ events = case events of
+    [loaded, consumed] -> do
         stage "loaded_learner" loaded
-        stage "probability_roles" measured
         parseEither (Json.fields ["stage", "binding", "state", "load", "image", "model", "revision"]) loaded
         mapM_ (\key -> parseEither (\fields -> fields .: key >>= \value -> when (Text.null value) (fail "Expected learner model and revision")) loaded) ["model", "revision"]
-        let (roles, suffix) = span (\fields -> Fields.lookup "stage" fields == Just (String "roles")) remaining
-        input <- parseEither (withObject "update request" pure) request
-        samples <- parseEither (.: "samples") input
-        unless (length roles == length (samples :: [Object])) (Left "Update role observation inventory mismatch")
-        mapM_ (uncurry (role input)) (zip samples roles)
-        case suffix of
-            [consumed] -> do
-                stage "consumed" consumed
-                parseEither (Json.fields ["stage", "binding", "program", "request", "load"]) consumed
-                pure (loaded, consumed)
-            _ -> Left "Expected one ordered update consumption after all probability roles"
-    _ -> Left "Incomplete learner readiness trace"
+        stage "consumed" consumed
+        parseEither (Json.fields ["stage", "binding", "program", "request", "load"]) consumed
+        pure (loaded, consumed)
+    _ -> Left "Expected one learner load followed by one update consumption"
 
 completion :: Value -> Object -> Either String ()
 completion request result = do
     stage "result" result
     parseEither (Json.fields ["stage", "binding", "request", "update", "gradients", "probabilities", "adapter", "learner", "storage"]) result
-    parseEither (\fields -> fields .: "update" >>= withObject "update summary" (Json.fields ["loss", "gradient_norm", "reward_gradient_norm", "active_tokens", "before", "after", "nonzero_advantages"])) result
+    parseEither (\fields -> fields .: "update" >>= withObject "update summary" (Json.fields ["gradient_norm", "reward_gradient_norm", "active_tokens", "before", "after", "nonzero_advantages"])) result
     first show (Protocol.validateSummary request result)
 
 stage :: Text.Text -> Object -> Either String ()
@@ -83,14 +78,3 @@ bindings selected report (loaded, consumed) = do
     let loading = Wire.invocationValue bound (Load.program planned)
     mapM_ (\fields -> unless (Fields.lookup "load" fields == Just loading && Fields.lookup "binding" fields == Just (Wire.bindingValue bound)) (Left "Learner load invocation differs from the declared update")) [loaded, consumed]
     unless (Fields.lookup "state" loaded == Just state && Fields.lookup "image" loaded == Just image) (Left "Learner loaded state or image differs from the declared update")
-
-role :: Object -> Object -> Object -> Either String ()
-role request sample fields = do
-    parseEither (Json.fields ["stage", "sample", "proximal_policy", "reference_policy", "proximal", "reference", "advantage"]) fields
-    unless (Fields.lookup "sample" fields == Fields.lookup "sample" sample && Fields.lookup "proximal_policy" fields == Fields.lookup "policy" request && Fields.lookup "reference_policy" fields == Fields.lookup "reference" request) (Left "Probability role observation binding mismatch")
-    values <- traverse (\key -> parseEither (\value -> (value .: key :: Parser [Value]) >>= traverse Json.finite) fields) ["proximal", "reference"]
-    count <- parseEither (\value -> length <$> (value .: "behavior_bits" :: Parser [Value])) sample
-    unless (all ((== count) . length) values) (Left "Probability role observation token inventory mismatch")
-    advantage <- parseEither (\value -> value .: "advantage" >>= Json.finite) fields
-    expected <- parseEither (.: "advantage_bits") sample :: Either String Word32
-    unless (castFloatToWord32 (realToFrac advantage) == expected) (Left "Probability role advantage differs from the consumed word")

@@ -54,6 +54,7 @@ class Cohort:
     behavior_model: BehaviorModel
     samples: tuple[Observation, ...]
     order: tuple[str, ...]
+    steps: tuple[tuple[str, ...], ...]
     epsilon: float
     penalty: float
     delta: float
@@ -184,8 +185,16 @@ def logical_order(order, names):
         raise ValueError("Logical order must name every admitted sample exactly once")
 
 
+def optimizer_steps(value, names):
+    if not isinstance(value, list) or not value or any(not isinstance(batch, list) or not batch for batch in value):
+        raise ValueError("Optimizer steps must be nonempty sequences of sample identities")
+    if any(not isinstance(item, str) for batch in value for item in batch) or {item for batch in value for item in batch} != set(names):
+        raise ValueError("Optimizer steps must use every admitted sample and no other")
+    return tuple(tuple(batch) for batch in value)
+
+
 def decode(value):
-    value = fields(value, "specification policy learner reference tokenizer base assembly behavior_model samples order epsilon penalty delta optimizer")
+    value = fields(value, "specification policy learner reference tokenizer base assembly behavior_model samples order steps epsilon penalty delta optimizer")
     if value["specification"] != SPECIFICATION:
         raise ValueError("Unsupported update specification")
     if not isinstance(value["samples"], list):
@@ -202,7 +211,8 @@ def decode(value):
                   tokenizer=identity(value["tokenizer"]),
                   base=identity(value["base"]), assembly=identity(value["assembly"]),
                   behavior_model=behavior_model(value["behavior_model"]),
-                  samples=samples, order=tuple(value["order"]), epsilon=epsilon,
+                  samples=samples, order=tuple(value["order"]),
+                  steps=optimizer_steps(value["steps"], value["order"]), epsilon=epsilon,
                   penalty=penalty, delta=delta, optimizer=optimizer(value["optimizer"]))
 
 

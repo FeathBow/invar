@@ -36,10 +36,11 @@ def description(profile):
                                 "schedule": "one complete logical trajectory per native projection",
                                 "roles": ["objective_vjp", "reward_vjp"],
                                 "lifetime": "owned numerical operation; inference classes restored before state observation"}}
-    return {"probabilities": {"proximal": "behavior words of the request policy's own rollout",
+    return {"probabilities": {"behavior": "engine words of the request policy's own rollout",
                               "reference": "engine forced-path scoring inside the rollout transaction",
-                              "current": "proximal at the linearization point",
-                              "linearized": "learner graph at the rollout temperature", "temperature": "rollout request"},
+                              "proximal": "learner graph at the rollout temperature before the first optimizer step",
+                              "current": "learner graph at the rollout temperature at the weights of each optimizer step",
+                              "temperature": "rollout request"},
             **projection}
 
 

@@ -22,6 +22,7 @@ from worker.hf.probability import logprobs
 from worker.tests.hf.inference import IDENTITY, model
 from worker.tests.hf.learner import fixture
 from worker.tests.hf.handshake import cpu_measure
+from worker.tests.responder import request_core
 from worker.tests.hf.tokenization import make_tokenizer
 
 
@@ -36,8 +37,15 @@ class Peer:
         self.position, self.start = 0, 0
         self.owner = Owner(role="learning", session=0)
         self.messages = []
+        self.core, self.seen = None, 0
 
     def readline(self):
+        if self.core is not None:
+            lines = self.output.getvalue().splitlines()
+            answers = [answer for line in lines[self.seen:] if (answer := self.core.reply(line))]
+            self.seen = len(lines)
+            if answers:
+                return answers[-1]
         position = self.position
         self.position += 1
         group, phase = divmod(position, 3)
@@ -72,6 +80,7 @@ class Peer:
                                                               for item in self.call.request.samples)))
             checkpoint = self.paths.output.parent / ("service" + str(group - 1))
         self.start = len(self.output.getvalue())
+        self.core, self.seen = request_core(self.call.request), len(self.output.getvalue().splitlines())
         call = {"invocation": invocation(self.call.invocation), "load": invocation(self.call.load),
                 "request": asdict(self.call.request)}
         return {"format": FORMAT, "checkpoint": str(checkpoint), "output": str(output), "call": json.dumps(call)}
