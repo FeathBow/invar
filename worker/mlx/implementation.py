@@ -69,6 +69,7 @@ NEUTRAL = {
     "resident.py": "owner protocol checked by the core",
     "update.py": "update request decoding checked by the core",
     "trajectory.py": "record types",
+    "roles.py": "probability role sources, recorded by content in the learning assembly description",
     "exchange.py": "learner step records and cotangent replies bound and checked by the core",
     "float32.py": "FP32 word conversion for probe values, behavior words and optimizer settings",
     "record.py": "probability records the core checks against the step exchange",

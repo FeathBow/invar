@@ -8,6 +8,7 @@ from transformers import PreTrainedConfig
 from worker.hf import backend
 from worker.hf import decoding
 from worker import implementation
+from worker.roles import PROBABILITIES
 
 FORMAT = "invar-model-assembly-v4"
 LOCATION_FIELDS = {"_name_or_path", "base_model_name_or_path"}
@@ -73,7 +74,7 @@ def parameters(model):
 
 def description(model, role):
     modules = dict(model.named_modules(remove_duplicate=False))
-    generation = {"generation": decoding.description()} if role == implementation.INFERENCE else {}
+    generation = {"generation": decoding.description()} if role == implementation.INFERENCE else {"probabilities": PROBABILITIES}
     return {"format": FORMAT, "role": role, "numerical": backend.description(), "implementation": implementation.current(role),
             **generation,
             "classes": {name: kind(value) for name, value in modules.items()},

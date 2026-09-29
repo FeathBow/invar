@@ -51,6 +51,7 @@ NEUTRAL = {
     "update.py": "update request decoding checked by the core",
     "cohort.py": "request field decoding checked by the core",
     "trajectory.py": "record types",
+    "roles.py": "probability role sources, recorded by content in the learning assembly description",
     "record.py": "probability records the core checks against the step exchange",
     "float32.py": "FP32 word conversion for probe values, behavior words and optimizer settings",
 }
