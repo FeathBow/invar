@@ -2,28 +2,12 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Generic, TypeVar
 
-from worker.record import Evaluated
-from worker.scalar import Profile
+from worker.exchange import Exchange
 from worker.trajectory import Trajectory
 
 Tensor = TypeVar("Tensor")
 Model = TypeVar("Model")
 Optimizer = TypeVar("Optimizer")
-
-
-@dataclass(frozen=True, kw_only=True)
-class Sample(Generic[Tensor]):
-    trajectory: Trajectory[Tensor]
-    proximal: Tensor
-    reference: Tensor
-    advantage: float
-
-
-@dataclass(frozen=True, kw_only=True)
-class Batch(Generic[Tensor]):
-    samples: tuple[Sample, ...]
-    order: tuple[str, ...]
-    profile: Profile
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -34,16 +18,21 @@ class Learner(Generic[Model, Optimizer, Tensor]):
 
 
 @dataclass(frozen=True, kw_only=True)
-class Result(Generic[Tensor]):
+class Plan(Generic[Tensor]):
+    trajectories: dict[str, Trajectory[Tensor]]
+    steps: tuple[tuple[str, ...], ...]
+    nonzero: int
+    exchange: Exchange
+
+
+@dataclass(frozen=True, kw_only=True)
+class Update(Generic[Tensor]):
     summary: dict
     gradients: dict[str, Tensor]
-    probabilities: tuple[Evaluated, ...]
+    proximal: dict[str, tuple[int, ...]]
+    currents: tuple[tuple[int, str, tuple[int, ...]], ...]
 
 
-def ordered(batch):
-    if not batch.order or any(not name for name in batch.order) or len(set(batch.order)) != len(batch.order):
-        raise ValueError("Logical batch order must contain distinct sample identities")
-    samples = {item.trajectory.request.sample: item for item in batch.samples}
-    if len(samples) != len(batch.samples) or set(samples) != set(batch.order):
-        raise ValueError("Delivered samples do not match the declared logical batch")
-    return tuple(samples[name] for name in batch.order)
+def plan(request, trajectories, exchange):
+    return Plan(trajectories={item.request.sample: item for item in trajectories}, steps=request.steps,
+                nonzero=sum(item.advantage_bits & 0x7FFFFFFF != 0 for item in request.samples), exchange=exchange)

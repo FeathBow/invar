@@ -32,7 +32,7 @@ from worker.trajectory import Request
 from worker.hf.step import file_digest, optimizer_options, run
 from worker.tests.hf.tokenization import make_tokenizer
 from worker.update import decode
-from worker.tests.hf.responder import receiver, request_core
+from worker.tests.responder import receiver, request_core
 
 REWARDING_SEED = 1326
 OTHER_SEED = 41

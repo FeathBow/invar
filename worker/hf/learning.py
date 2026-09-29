@@ -1,36 +1,10 @@
-from collections.abc import Callable
-from dataclasses import dataclass
-
 import torch
 
-from worker.exchange import Exchange, observation
+from worker.exchange import observation
 from worker.hf.model import adapter_state
 from worker.hf.tensors import digest
 from worker.hf.probability import tensor, words
-from worker.trajectory import Trajectory
-
-
-@dataclass(frozen=True, kw_only=True)
-class Learner:
-    model: torch.nn.Module
-    optimizer: torch.optim.Optimizer
-    evaluate: Callable[[torch.nn.Module, Trajectory], torch.Tensor]
-
-
-@dataclass(frozen=True, kw_only=True)
-class Plan:
-    trajectories: dict[str, Trajectory]
-    steps: tuple[tuple[str, ...], ...]
-    nonzero: int
-    exchange: Exchange
-
-
-@dataclass(frozen=True, kw_only=True)
-class Update:
-    summary: dict
-    gradients: dict[str, torch.Tensor]
-    proximal: dict[str, tuple[int, ...]]
-    currents: tuple[tuple[int, str, tuple[int, ...]], ...]
+from worker.logical import Update
 
 
 def parameters(model):
