@@ -8,7 +8,7 @@ from pathlib import Path
 from worker import core, scalar
 from worker.cohort import fields, identity
 from worker.distribution import Probe
-from worker.hf.session import decode as decode_call
+from worker.session import decode as decode_call
 from worker.invocation import request as request_value
 from worker.trajectory import Request
 

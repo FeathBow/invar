@@ -22,7 +22,7 @@ from transformers import LlamaConfig, LlamaForCausalLM
 
 from worker.hf import assembly
 from worker.hf import frozen
-from worker.hf import session
+from worker import session
 from worker.hf import inference
 from worker import invocation
 from worker import registry

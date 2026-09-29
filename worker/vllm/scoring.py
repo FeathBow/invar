@@ -25,7 +25,7 @@ IMPLEMENTATIONS = ("worker.scoring", "worker.vllm.scoring", "worker.vllm.crosssc
                    "worker.vllm.prescribed", "worker.vllm.state", "worker.vllm.context", "worker.vllm.execution",
                    "worker.vllm.worker", "worker.vllm.runtime", "worker.vllm.entry",
                    "worker.vllm.profile", "worker.vllm.rollout", "worker.invocation",
-                   "worker.hf.session", "vllm.v1.sample.sampler",
+                   "worker.session", "vllm.v1.sample.sampler",
                    "vllm.v1.sample.ops.topk_topp_sampler", "vllm.model_executor.layers.batch_invariant",
                    "vllm.v1.worker.gpu_model_runner")
 

@@ -6,11 +6,11 @@ from worker.vllm import entry as vllm_entry
 def main():
     # Import the numerical protocol only after diagnostics have a dedicated stream.
     def protocol(options, **dependencies):
-        from worker.hf.session import serve
+        from worker.session import serve
 
         serve(options, **dependencies)
 
-    from worker.hf.session import declare
+    from worker.session import declare
 
     arguments = declare(vllm_entry.parser("Native inference session with one prepared engine"))
     arguments.add_argument("--cache", type=Path, required=True)

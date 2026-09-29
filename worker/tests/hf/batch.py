@@ -12,7 +12,8 @@ from types import SimpleNamespace
 import unittest
 
 from worker.batch import FORMAT, approve, capture, decode, serve
-from worker.hf import inference, session
+from worker import session
+from worker.hf import inference
 from worker.tests.hf.inference import envelope
 
 
