@@ -33,7 +33,8 @@ validateWith selected report events = case reverse events of
     result : remaining | (staged, updated : preceding) <- span staging remaining -> do
         let (reported, ready) = span stepping preceding
         pair <- readiness (Report.request report) (reverse ready)
-        replayed <- first show (Protocol.replay (Report.checkedRequest report) (reverse reported))
+        bound <- parseEither (withObject "update invocation" Wire.binding) (Report.invocation report)
+        replayed <- first show (Protocol.replay bound (Report.checkedRequest report) (reverse reported))
         adapter <- parseEither (.: "adapter") result
         unless (replayed == adapter) (Left "Learner steps do not end at the staged adapter")
         bindings selected report pair

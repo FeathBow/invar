@@ -37,7 +37,7 @@ import System.Posix.Files (createSymbolicLink)
 type Context = (V.Binding, V.Runtime)
 
 updates :: Group
-updates = Group "Bound update reports" [("completion retains the logical emission and actual wire request", once completed), ("each phase binds all invocation identities", once bindings), ("loaded state and actual inputs must match the checked lowering", once inputs), ("program identity and report order remain mandatory", once protocol), ("staged result must match the update and admitted token count", once result), ("gradient observation identity is mandatory", once gradients), ("gradient verification reads the complete reported artifact", once gradientFile), ("update approval requires actual loaded and consumed inputs", once approval), ("learner load identity and consumed lifetime authorize the update", once loading), ("completed updates extend the accepted consumption without renewed authority", once ownership)]
+updates = Group "Bound update reports" [("completion retains the logical emission and actual wire request", once completed), ("each phase binds all invocation identities", once bindings), ("loaded state and actual inputs must match the checked lowering", once inputs), ("program identity and report order remain mandatory", once protocol), ("staged result must match the update and admitted token count", once result), ("gradient observation identity is mandatory", once gradients), ("gradient verification reads the complete reported artifact", once gradientFile), ("update approval requires actual loaded and consumed inputs", once approval), ("learner load identity and consumed lifetime authorize the update", once loading), ("completed updates extend the accepted consumption without renewed authority", once ownership), ("history replay binds every step record to the update", once replayed)]
   where
     once = withTests 1 . property
 
@@ -281,6 +281,24 @@ ownership = do
             Left _ -> success
             Right _ -> failure
     mismatch (P.observe permit (wire (alter 0 (change "image" Null) events)))
+
+replayed :: PropertyT IO ()
+replayed = do
+    (context, events) <- setup
+    observed <- evalEither (observe context (wire events))
+    let consumed = events !! 1
+        finished = events !! 2
+    records <- evalEither (stepRecords (field "binding" consumed) (field "request" consumed) (field "adapter" finished))
+    objects <- traverse (evalEither . parseEither (withObject "step record" pure)) records
+    adapter <- evalEither (parseEither (withObject "result" (.: "adapter")) finished)
+    P.replay binding (P.checkedRequest observed) objects === Right adapter
+    let other = object ["call" .= Number 7, "attempt" .= Number 12, "instance" .= Number 13]
+    forM_ [0 .. length objects - 1] $ \position ->
+        forM_ [Just Null, Just other, Nothing] $ \replacement -> do
+            let changed = [if index == position then maybe (Fields.delete "binding" item) (\value -> Fields.insert "binding" value item) replacement else item | (index, item) <- zip [0 :: Int ..] objects]
+            case P.replay binding (P.checkedRequest observed) changed of
+                Left _ -> success
+                Right unexpected -> annotateShow (position, replacement, unexpected) >> failure
 
 stepped :: ByteString -> ByteString
 stepped output

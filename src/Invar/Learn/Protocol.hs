@@ -63,15 +63,15 @@ respond (Permit context prefix accepted fact) output = do
         Consumed _ _ _ _ _ (Just reply) -> Right (Permit context output advanced fact, Lazy.toStrict (encode (cotangents (bound context) reply)))
         _ -> Left (Unexpected "A reply was requested for a record that does not report a learner step")
 
-replay :: Request.Request -> [Object] -> Either Error String
-replay actual records = do
+replay :: V.Binding -> Request.Request -> [Object] -> Either Error String
+replay expected actual records = do
     begun <- declaredSteps actual
     finished' <- foldM follow begun records
     step' (S.complete finished')
   where
     follow current value = do
         name <- parse (.: "stage") value
-        fst <$> record name current value
+        fst <$> record expected name current value
 
 cotangents :: V.Binding -> S.Reply -> Value
 cotangents binding reply = object ["stage" .= ("cotangents" :: String), "binding" .= Binding.bindingValue binding, "step" .= S.replyStep reply, "sample" .= S.replySample reply, "observation" .= S.replyObservation reply, "state" .= S.replyState reply, "objective" .= S.objective reply, "reward" .= S.reward reply]
@@ -261,20 +261,22 @@ declaredSteps actual = parse (withObject "checked update request" plan) (Request
 
 stepping :: Context -> Progress -> String -> Object -> Either Error Progress
 stepping context (Consumed runtime registry fact actual steps _) stage value = do
-    _ <- matching (bound context) value
-    (updated, reply) <- record stage steps value
+    (updated, reply) <- record (bound context) stage steps value
     pure (Consumed runtime registry fact actual updated reply)
 stepping _ _ _ _ = Left (Unexpected "A learner step was reported before consumption")
 
-record :: String -> S.Stream -> Object -> Either Error (S.Stream, Maybe S.Reply)
-record "proximal" steps value = (,Nothing) <$> (step' =<< S.proximal steps <$> parse (.: "sample") value <*> parse (.: "words") value)
-record "current" steps value = do
+record :: V.Binding -> String -> S.Stream -> Object -> Either Error (S.Stream, Maybe S.Reply)
+record expected stage steps value = matching expected value >> stepRecord stage steps value
+
+stepRecord :: String -> S.Stream -> Object -> Either Error (S.Stream, Maybe S.Reply)
+stepRecord "proximal" steps value = (,Nothing) <$> (step' =<< S.proximal steps <$> parse (.: "sample") value <*> parse (.: "words") value)
+stepRecord "current" steps value = do
     report <- parse (\fields -> S.Current <$> fields .: "step" <*> fields .: "sample" <*> fields .: "words" <*> fields .: "observation" <*> fields .: "state") value
     fmap Just <$> step' (S.current steps report)
-record "applied" steps value = do
+stepRecord "applied" steps value = do
     report <- S.Applied <$> parse (.: "step") value <*> parse (.: "before") value <*> parse (.: "after") value <*> parse (.: "consumed") value
     (,Nothing) <$> step' (S.applied steps report)
-record name _ _ = Left (Unexpected ("Unexpected learner step record: " ++ name))
+stepRecord name _ _ = Left (Unexpected ("Unexpected learner step record: " ++ name))
 
 step' :: Either S.Error value -> Either Error value
 step' = either (Left . Step) Right
