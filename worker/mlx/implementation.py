@@ -41,6 +41,7 @@ ROLES = {
         "mlx/checkpoint.py": "optimizer and parameter state saved and restored",
         "mlx/state.py": "random and optimizer state restored between updates",
         "mlx/learner.py": "resident learner state carried across updates",
+        "logical.py": "samples and trajectories of each declared optimizer step",
     },
 }
 NEUTRAL = {
@@ -68,7 +69,6 @@ NEUTRAL = {
     "resident.py": "owner protocol checked by the core",
     "update.py": "update request decoding checked by the core",
     "trajectory.py": "record types",
-    "logical.py": "learner, plan and update record types",
     "exchange.py": "learner step records and cotangent replies bound and checked by the core",
     "scalar.py": "FP32 word conversion for probe values and optimizer settings",
     "record.py": "probability records the core checks against the step exchange",
