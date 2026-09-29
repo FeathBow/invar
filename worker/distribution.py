@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 import math
 
-from worker.scalar import number
+from worker.float32 import number
 
 FP32_BYTES = 4
 PROBE_FORMAT = "invar-cached-distribution-probe-v1"

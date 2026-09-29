@@ -1,4 +1,4 @@
-from worker import scalar
+from worker import float32
 
 from worker.invocation import request as reported_request
 from worker import registry
@@ -22,6 +22,6 @@ def result(call, trajectory, *, identities, emit, reference=None):
                     "request": reported_request(trajectory.request),
                     "tokens": trajectory.tokens[0].tolist(), "prompt_length": trajectory.prompt_length,
                     "behavior": trajectory.behavior.tolist(), "text": trajectory.text,
-                    "behavior_bits": [scalar.word(value) for value in trajectory.behavior.tolist()],
+                    "behavior_bits": [float32.word(value) for value in trajectory.behavior.tolist()],
                     "truncated": trajectory.truncated,
                     "reference": None if reference is None else {"adapter": reference[0], "bits": list(reference[1])}})

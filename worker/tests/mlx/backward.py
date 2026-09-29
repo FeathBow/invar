@@ -14,6 +14,7 @@ import mlx.nn as nn
 from worker.mlx import adapter as mlx_adapter
 from worker.mlx import backward as mlx_backward
 from worker.mlx import learning as mlx_learning
+from worker.tests.mlx import derivative
 from worker.mlx import probability as mlx_probability
 from worker.mlx import numerics as mlx_numerics
 from worker.mlx import rollout as mlx_rollout
@@ -51,7 +52,7 @@ class BackwardTests(unittest.TestCase):
         self.assertTrue(mlx_tensors.equal(mlx_adapter.state(numerical), parameters))
 
     def compare(self, numerical, trajectory, *, cotangent, parameters):
-        reference, whole = mlx_learning.linearize(numerical, trajectory, evaluate=mlx_training.logprobs)
+        reference, whole = derivative.linearize(numerical, trajectory, evaluate=mlx_training.logprobs)
         current, layered = mlx_backward.linearize(numerical, trajectory, evaluate=mlx_training.logprobs)
         self.assertEqual(mlx_probability.words(current), mlx_probability.words(reference))
         expected = whole(cotangent=cotangent)

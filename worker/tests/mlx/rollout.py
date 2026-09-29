@@ -21,7 +21,7 @@ from worker.mlx import probability as mlx_probability
 from worker.mlx import rollout as mlx_rollout
 from worker.mlx import tensors as mlx_tensors
 from worker.mlx import tokenization as mlx_tokenization
-from worker import scalar
+from worker.tests import scalar
 from worker.trajectory import Request
 
 WORDS = ("[UNK]", "[EOS]", "one", "two", "three", "four", "five", "assistant")

@@ -5,7 +5,7 @@ from importlib.util import find_spec
 import math
 from pathlib import Path
 
-from worker import core, scalar
+from worker import core, float32
 from worker.cohort import fields, identity
 from worker.distribution import Probe
 from worker.session import decode as decode_call
@@ -74,7 +74,7 @@ def source(encoded):
     if not isinstance(bits, list) or len(bits) != len(path.response):
         raise ValueError("Scoring source is missing sampled behavior words")
     for word in bits:
-        scalar.probability(word)
+        float32.probability(word)
     if type(value["truncated"]) is not bool or len(path.response) > requested["tokens"]:
         raise ValueError("Scoring source has an invalid stopping boundary")
     if value["truncated"] and len(path.response) != requested["tokens"]:

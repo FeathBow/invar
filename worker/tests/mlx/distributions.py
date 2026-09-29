@@ -3,7 +3,7 @@ import unittest
 
 import mlx.core as mx
 
-from worker import scalar
+from worker.tests import scalar
 from worker.distribution import Observed, Probe, Snapshot
 from worker.mlx import model, tensors
 from worker.mlx.crossscore import PathSampler, TokenPath, score

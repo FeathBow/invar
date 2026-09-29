@@ -1,6 +1,6 @@
 import json
 
-from worker import scalar
+from worker.tests import scalar
 from worker.exchange import observation
 
 

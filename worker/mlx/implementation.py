@@ -70,7 +70,7 @@ NEUTRAL = {
     "update.py": "update request decoding checked by the core",
     "trajectory.py": "record types",
     "exchange.py": "learner step records and cotangent replies bound and checked by the core",
-    "scalar.py": "FP32 word conversion for probe values and optimizer settings",
+    "float32.py": "FP32 word conversion for probe values, behavior words and optimizer settings",
     "record.py": "probability records the core checks against the step exchange",
 }
 UNREACHED = {

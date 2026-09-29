@@ -52,7 +52,7 @@ NEUTRAL = {
     "cohort.py": "request field decoding checked by the core",
     "trajectory.py": "record types",
     "record.py": "probability records the core checks against the step exchange",
-    "scalar.py": "FP32 word conversion for probe values and optimizer settings",
+    "float32.py": "FP32 word conversion for probe values, behavior words and optimizer settings",
 }
 IRRELEVANT = {
     INFERENCE: {},

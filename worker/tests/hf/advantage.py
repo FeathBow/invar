@@ -8,7 +8,7 @@ except ImportError as missing:
 import unittest
 from dataclasses import replace
 
-from worker.advantage import Reward, advantages, check, word
+from worker.tests.advantage import Reward, advantages, check, word
 from worker.cohort import decode
 from worker.tests.hf.cohort import request
 

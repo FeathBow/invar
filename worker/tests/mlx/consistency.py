@@ -23,7 +23,7 @@ from worker.mlx import tensors as mlx_tensors
 from worker.mlx.probability import words
 from worker.mlx.rollout import generate
 from worker.mlx.training import logprobs
-from worker import scalar
+from worker.tests import scalar
 from worker.tests.responder import Core
 from worker.tests.mlx.crossscore import SAMPLING, loaded
 from worker.batch import Reference

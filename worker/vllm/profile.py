@@ -88,7 +88,7 @@ NEUTRAL = {
     "vllm/resident.py": "process entry and argument parsing",
     "vllm/inspect.py": "process entry and argument parsing",
     "probeschema.py": "cost records",
-    "scalar.py": "number parsing only",
+    "float32.py": "FP32 word parsing only",
     "core.py": "core invocation protocol",
     "batch.py": "batch protocol checked by the core",
     "cohort.py": "request field decoding checked by the core",

@@ -11,8 +11,8 @@ from dataclasses import replace
 
 import torch
 
-from worker import scalar
-from worker.scalar import Profile
+from worker.tests import scalar
+from worker.tests.scalar import Profile
 from worker.tests.hf.objective import Tokens, terms
 
 LARGE = 2 ** 24
