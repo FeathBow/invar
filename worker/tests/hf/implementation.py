@@ -157,6 +157,12 @@ class ImplementationTests(unittest.TestCase):
                 mutated(root, name)
                 self.assertNotEqual(implementation.description(root, implementation.INFERENCE), before)
 
+    def test_the_step_plan_mapping_is_part_of_the_learning_identity(self):
+        root = copied_worker()
+        before = implementation.description(root, LEARNING)
+        mutated(root, "logical.py")
+        self.assertNotEqual(implementation.description(root, LEARNING), before)
+
     def test_neutral_changes_keep_both_identities(self):
         root = copied_worker()
         before = {role: implementation.description(root, role) for role in implementation.ROLES}

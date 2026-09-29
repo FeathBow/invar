@@ -26,6 +26,7 @@ ROLES = {
         "hf/step.py": "restored inputs, trajectory tensors and declared optimizer steps given to the learner",
         "hf/runtime.py": "resident learner state carried across updates",
         "binding.py": "optimizer parameter groups",
+        "logical.py": "samples and trajectories of each declared optimizer step",
     },
 }
 NEUTRAL = {
@@ -49,7 +50,8 @@ NEUTRAL = {
     "update.py": "update request decoding checked by the core",
     "cohort.py": "request field decoding checked by the core",
     "trajectory.py": "record types",
-    "scalar.py": "objective scalars and cotangents recomputed bit for bit by the core",
+    "record.py": "probability records the core checks against the step exchange",
+    "scalar.py": "FP32 word conversion for probe values and optimizer settings",
 }
 IRRELEVANT = {
     INFERENCE: {},

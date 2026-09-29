@@ -6,8 +6,9 @@ import torch
 
 from worker.exchange import Exchange
 from worker.hf import state as learner_state
-from worker.hf.learning import Learner, check_optimizer
-from worker.hf.step import consume, execute as update, loaded_inputs, optimizer_options, plan, restore_inputs
+from worker.hf.learning import check_optimizer
+from worker.hf.step import consume, execute as update, loaded_inputs, optimizer_options, restore_inputs
+from worker.logical import Learner, plan
 from worker.hf.tensors import digest
 from worker.cohort import validate
 from worker.tokenization import prompt

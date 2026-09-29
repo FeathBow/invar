@@ -27,7 +27,7 @@ from worker.hf import step
 from worker.tests.hf.inference import IDENTITY, measured, model
 from worker.tests.hf.learner import fixture
 from worker.tests.hf.handshake import cpu_measure
-from worker.tests.hf.responder import receiver, request_core
+from worker.tests.responder import receiver, request_core
 from worker.tests.hf.tokenization import make_tokenizer
 
 

@@ -22,7 +22,7 @@ from worker.hf.probability import logprobs
 from worker.tests.hf.inference import IDENTITY, model
 from worker.tests.hf.learner import fixture
 from worker.tests.hf.handshake import cpu_measure
-from worker.tests.hf.responder import request_core
+from worker.tests.responder import request_core
 from worker.tests.hf.tokenization import make_tokenizer
 
 

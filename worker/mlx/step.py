@@ -5,7 +5,8 @@ import json
 import mlx.core as mx
 import mlx.optimizers as optim
 
-from worker.logical import Batch, Learner, Sample
+from worker.exchange import Exchange
+from worker.logical import Learner, plan
 from worker.mlx import adapter as mlx_adapter
 from worker.mlx import backward as mlx_backward
 from worker.mlx import checkpoint as mlx_checkpoint
@@ -17,7 +18,6 @@ from worker.mlx import tensors as mlx_tensors
 from worker.mlx import tokenization as mlx_tokenization
 from worker.record import save as save_probabilities
 from worker import registry
-from worker.scalar import Profile
 from worker.implementation import file_digest
 from worker.trajectory import Request, Trajectory
 from worker.update import consumed, snapshot
@@ -55,29 +55,15 @@ def trajectory(item):
                       text=item.text, truncated=item.truncated)
 
 
-def batch(request, *, checked, measure, emit):
-    trajectories = tuple(trajectory(item) for item in request.samples)
-    scores = tuple(item.reference_bits for item in request.samples)
-    proximal, fixed = measure("probability_roles", partial(mlx_learning.probabilities, trajectories, scores))
-    normalized = dict(checked.values)
-    samples = tuple(Sample(trajectory=item, proximal=old, reference=ref, advantage=normalized[item.request.sample])
-                    for item, old, ref in zip(trajectories, proximal, fixed, strict=True))
-    for item in samples:
-        emit("roles", {"sample": item.trajectory.request.sample, "proximal_policy": request.policy,
-                       "reference_policy": request.reference, "proximal": item.proximal.tolist(),
-                       "reference": item.reference.tolist(), "advantage": item.advantage})
-    return Batch(samples=samples, order=request.order, profile=Profile(epsilon=request.epsilon, penalty=request.penalty))
-
-
-def consume(call, *, checked, measure, emit, runtime):
+def consume(call, *, emit, runtime):
     observed = loaded(call.request)
     emit("loaded_learner", {"binding": call.invocation.binding(), "state": observed, "load": registry.invocation(call.load),
                             "image": registry.learning(observed), "model": runtime.identity[0], "revision": runtime.identity[1]})
-    admitted = batch(call.request, checked=checked, measure=measure, emit=emit)
-    actual = consumed(call.request, batch=admitted, rewards=checked.rewards, loaded=observed)
+    trajectories = tuple(trajectory(item) for item in call.request.samples)
+    actual = consumed(call.request, trajectories=trajectories, loaded=observed)
     emit("consumed", {"binding": call.invocation.binding(), "program": call.invocation.program,
                       "request": actual, "load": registry.invocation(call.load)})
-    return admitted, actual
+    return trajectories, actual
 
 
 def save(runtime, learner, output, *, expected=None):
@@ -91,17 +77,18 @@ def save(runtime, learner, output, *, expected=None):
     return {"policy": policy, "learner": file_digest(output / "learner.pt"), **identities}
 
 
-def execute(runtime, learner, call, output, *, admitted, actual, measure):
+def execute(runtime, learner, call, output, *, trajectories, actual, measure, emit, receive):
     request = call.request
+    bound = call.invocation.binding()
+    planned = plan(request, trajectories, Exchange(binding=bound, emit=emit, receive=receive))
     with learning(runtime.numerics, learner.model):
-        result = measure("reward_update", partial(mlx_learning.update, learner, admitted, linearize=mlx_backward.linearize))
+        result = measure("reward_update", partial(mlx_learning.update, learner, planned, linearize=mlx_backward.linearize))
     if result.summary["before"] != request.policy:
         raise RuntimeError("Native update input differs from the declared policy")
-    bound = call.invocation.binding()
     gradients = output / "gradients.safetensors"
 
     def artifacts():
-        digest = save_probabilities(output / "probabilities.json", result.probabilities,
+        digest = save_probabilities(output / "probabilities.json", request.order, result,
                                     invocation={"binding": bound, "program": call.invocation.program}, request=actual)
         with gradients.open("xb") as target:
             mx.save_safetensors(target, result.gradients, metadata={"binding": json.dumps(bound, sort_keys=True),

@@ -17,14 +17,15 @@ from peft import LoraConfig, get_peft_model
 
 from worker import scalar
 from worker.exchange import Exchange, observation
-from worker.hf.learning import Learner, Plan, parameters, update
+from worker.hf.learning import parameters, update
+from worker.logical import Learner, Plan
 from worker.hf.checkpoint import ADAM_BETAS, ADAM_EPSILON, LEARNING_RATE
 from worker.hf.metrics import report
 from worker.hf.model import adapter_state
 from worker.hf.tensors import assert_equal, digest
 from worker.hf.probability import words
 from worker.trajectory import Request, Trajectory
-from worker.tests.hf.responder import Core, receiver
+from worker.tests.responder import Core, receiver
 
 SMALL_ADVANTAGE = 2 ** -28
 OVERFLOW_ADVANTAGE = 1e30

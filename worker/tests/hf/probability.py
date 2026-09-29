@@ -12,7 +12,8 @@ from pathlib import Path
 import torch
 
 from worker.hf.learning import update
-from worker.hf.probability import FORMAT, save, words
+from worker.hf.probability import words
+from worker.record import FORMAT, save
 from worker.tests.hf.learning import LOGICAL_ORDER, batch, make_learner
 
 NEGATIVE_ZERO = 0x80000000

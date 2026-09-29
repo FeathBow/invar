@@ -79,13 +79,6 @@ def trajectory(item):
                       truncated=item.truncated)
 
 
-def plan(request, trajectories, exchange):
-    from worker.hf.learning import Plan
-
-    return Plan(trajectories={item.request.sample: item for item in trajectories}, steps=request.steps,
-                nonzero=sum(item.advantage_bits & 0x7FFFFFFF != 0 for item in request.samples), exchange=exchange)
-
-
 def checkpoint_update(learner, request, output, *, tokenizer, summary):
     from worker.hf.checkpoint import CheckpointIdentity, checkpoint
 
@@ -123,7 +116,7 @@ def load_with(options, request, *, measure, emit):
 
 def run(call, options, *, loader, measure, permission, evaluate, receive):
     from worker.exchange import Exchange
-    from worker.hf.learning import Learner
+    from worker.logical import Learner, plan
     from worker.hf.metrics import report
 
     options.output.mkdir(exist_ok=False)
@@ -153,7 +146,7 @@ def consume(call, *, loaded, identity, emit):
 def execute(learner, call, output, *, plan, actual, tokenizer, measure):
     from worker.hf.learning import update
     from safetensors.torch import save_file
-    from worker.hf.probability import save as save_probabilities
+    from worker.record import save as save_probabilities
     from worker.hf.tensors import digest
 
     request = call.request
