@@ -82,7 +82,7 @@ def update(learner, plan, *, linearize):
     model.train()
     proximal = {}
     for name in later:
-        current, _ = response(model, plan.trajectories[name], evaluate=learner.evaluate, linearize=linearize)
+        current = response(model, plan.trajectories[name], evaluate=learner.evaluate, linearize=linearize)[0]
         proximal[name] = probability.words(current)
         exchange.proximal(sample=name, words=proximal[name])
     currents, norms, recorded = [], None, None

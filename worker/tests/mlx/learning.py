@@ -13,6 +13,7 @@ from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
+import weakref
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -183,6 +184,27 @@ class LearningTests(unittest.TestCase):
         self.assertEqual(records[4][4], tuple(planned.exchange.answered[1:]))
         self.assertNotEqual(records[3][3], records[0][2])
         self.assertEqual(live.optimizer.step.item(), 2)
+
+    def test_proximal_callbacks_are_released_before_the_first_step(self):
+        live = learner()
+        planned = batch(live.model)
+        steps = (("a",), ("b",))
+        released = []
+
+        def linearize(model, trajectory, *, evaluate):
+            current, differentiate = mlx_learning.linearize(model, trajectory, evaluate=evaluate)
+            released.append(weakref.ref(differentiate))
+            return current, differentiate
+
+        class Checked(Core):
+            def current(self, **values):
+                if values["step"] == 0:
+                    self.proximal_alive = released[0]() is not None
+                return super().current(**values)
+
+        core = Checked(planned.exchange.samples, steps, planned.exchange.profile)
+        mlx_learning.update(live, replace(planned, steps=steps, exchange=core), linearize=linearize)
+        self.assertFalse(core.proximal_alive)
 
     def compare(self, directory, results, logical, *, input_state, reference):
         arguments = ["compare", "states", "--codec-mode", "stdio", "--policy", directory / "first/adapter.safetensors"]
