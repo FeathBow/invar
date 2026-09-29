@@ -5,16 +5,11 @@ import mlx.core as mx
 from mlx.utils import tree_flatten, tree_unflatten
 import numpy as np
 
-from worker.logical import Result, ordered
+from worker.exchange import observation
+from worker.logical import Update
 from worker.mlx import probability as probability
 from worker.mlx import tensors as mlx_tensors
 from worker.mlx.adapter import state as adapter
-from worker.record import loss
-from worker import scalar
-
-
-def evaluate_many(model, trajectories, *, evaluate):
-    return tuple(finite(mx.stop_gradient(evaluate(model, item))) for item in trajectories)
 
 
 def finite(values):
@@ -22,13 +17,6 @@ def finite(values):
     if values.dtype != mx.float32 or not np.isfinite(np.asarray(values)).all():
         raise ValueError("Expected finite native FP32 model probabilities")
     return values
-
-
-def probabilities(trajectories, scores):
-    proximal = tuple(item.behavior for item in trajectories)
-    if not any(scores):
-        return proximal, proximal
-    return proximal, tuple(finite(probability.tensor(words)) for words in scores)
 
 
 def transform(model, trajectory, *, evaluate, cotangent):
@@ -65,15 +53,6 @@ def linearize(model, trajectory, *, evaluate):
     return current, partial(vjp, model, trajectory, evaluate=evaluate, current=current)
 
 
-def observation(item, current, *, profile, total, linearized):
-    count = item.trajectory.tokens.shape[-1] - item.trajectory.prompt_length
-    roles = {"current": current, "proximal": item.proximal, "reference": item.reference,
-             "behavior": item.trajectory.behavior, "advantage": mx.full(current.shape, item.advantage, dtype=mx.float32)}
-    actual = probability.checked(item.trajectory.request.sample, roles, mx.ones(current.shape, dtype=mx.bool_),
-                                 advantage=item.advantage, count=count)
-    return probability.cotangents(actual, profile, total=total, linearized=linearized)
-
-
 def norm(values):
     squares = [np.square(np.asarray(value, dtype=np.float64)).sum().item() for _, value in sorted(values.items())]
     result = math.sqrt(math.fsum(squares))
@@ -87,37 +66,60 @@ def check_optimizer(optimizer):
         raise RuntimeError("Nonfinite native optimizer state")
 
 
-def update(learner, batch, *, linearize):
-    samples = ordered(batch)
-    model, optimizer = learner.model, learner.optimizer
+def response(model, trajectory, *, evaluate, linearize):
+    current, differentiate = linearize(model, trajectory, evaluate=evaluate)
+    if current.dtype != mx.float32 or current.shape != trajectory.behavior.shape:
+        raise ValueError("Learner graph values must be native FP32 response vectors")
+    return finite(current), differentiate
+
+
+def update(learner, plan, *, linearize):
+    model, optimizer, exchange = learner.model, learner.optimizer, plan.exchange
     check_optimizer(optimizer)
-    count = sum(item.trajectory.behavior.size for item in samples)
-    parameters = adapter(model)
-    before = mlx_tensors.digest(parameters)
-    accumulated = {role: {name: mx.zeros_like(value) for name, value in parameters.items()}
-                   for role in ("objective", "reward")}
-    observations = []
+    before = state = mlx_tensors.digest(adapter(model))
+    first = set(plan.steps[0])
+    later = dict.fromkeys(name for batch in plan.steps[1:] for name in batch if name not in first)
     model.train()
-    for item in samples:
-        linearized, differentiate = linearize(model, item.trajectory, evaluate=learner.evaluate)
-        evaluated, objective, reward = observation(item, item.proximal, profile=batch.profile, total=count, linearized=linearized)
-        observations.append(evaluated)
-        for role, cotangent in (("objective", objective), ("reward", reward)):
-            contribution = differentiate(cotangent=cotangent)
-            if contribution.keys() != parameters.keys() or any(value.dtype != mx.float32 or value.shape != parameters[name].shape
-                                                               or not np.isfinite(np.asarray(value)).all() for name, value in contribution.items()):
-                raise RuntimeError("Native differentiation produced invalid FP32 parameter gradients")
-            accumulated[role] = {name: value + contribution[name] for name, value in accumulated[role].items()}
-            mx.eval(accumulated[role])
-        del differentiate, contribution
-    gradient_norm, reward_norm = (norm(accumulated[role]) for role in ("objective", "reward"))
-    optimizer.update(model, tree_unflatten(list(accumulated["objective"].items())))
-    mx.eval(model.trainable_parameters(), optimizer.state)
-    check_optimizer(optimizer)
-    after = mlx_tensors.digest(adapter(model))
+    proximal = {}
+    for name in later:
+        current, _ = response(model, plan.trajectories[name], evaluate=learner.evaluate, linearize=linearize)
+        proximal[name] = probability.words(current)
+        exchange.proximal(sample=name, words=proximal[name])
+    currents, norms, recorded = [], None, None
+    for step, batch in enumerate(plan.steps):
+        parameters = adapter(model)
+        accumulated = {role: {name: mx.zeros_like(value) for name, value in parameters.items()}
+                       for role in ("objective", "reward")}
+        consumed = []
+        for name in batch:
+            current, differentiate = response(model, plan.trajectories[name], evaluate=learner.evaluate, linearize=linearize)
+            observed = probability.words(current)
+            if step == 0:
+                proximal[name] = observed
+            currents.append((step, name, observed))
+            objective, reward = exchange.current(step=step, sample=name, words=observed, state=state)
+            cotangents = (("objective", probability.tensor(objective)), ("reward", probability.tensor(reward)))
+            consumed.append(observation(tuple(word for _, value in cotangents for word in probability.words(value))))
+            for role, cotangent in cotangents:
+                contribution = differentiate(cotangent=cotangent)
+                if contribution.keys() != parameters.keys() or any(value.dtype != mx.float32 or value.shape != parameters[key].shape
+                                                                   or not np.isfinite(np.asarray(value)).all() for key, value in contribution.items()):
+                    raise RuntimeError("Native differentiation produced invalid FP32 parameter gradients")
+                accumulated[role] = {key: value + contribution[key] for key, value in accumulated[role].items()}
+                mx.eval(accumulated[role])
+            del differentiate, contribution
+        measured = norm(accumulated["objective"]), norm(accumulated["reward"])
+        if step == 0:
+            norms = measured
+            recorded = {role + "/" + key: value for role, values in accumulated.items() for key, value in values.items()}
+        optimizer.update(model, tree_unflatten(list(accumulated["objective"].items())))
+        mx.eval(model.trainable_parameters(), optimizer.state)
+        check_optimizer(optimizer)
+        after = mlx_tensors.digest(adapter(model))
+        exchange.applied(step=step, before=state, after=after, consumed=consumed)
+        state = after
     model.eval()
-    summary = {"loss": scalar.number(loss(observations)), "gradient_norm": gradient_norm,
-               "reward_gradient_norm": reward_norm, "active_tokens": count, "before": before, "after": after,
-               "nonzero_advantages": sum(item.advantage != 0 for item in samples)}
-    recorded = {role + "/" + name: value for role, values in accumulated.items() for name, value in values.items()}
-    return Result(summary=summary, gradients=recorded, probabilities=tuple(observations))
+    summary = {"gradient_norm": norms[0], "reward_gradient_norm": norms[1],
+               "active_tokens": sum(item.behavior.size for item in plan.trajectories.values()),
+               "before": before, "after": state, "nonzero_advantages": plan.nonzero}
+    return Update(summary=summary, gradients=recorded, proximal=proximal, currents=tuple(currents))

@@ -88,7 +88,8 @@ def serve(options, *, loader, scope, source, transcript):
             else:
                 learner = measured("activation", partial(mlx_learner.activate, learner, call.request, paths))
             learner = mlx_learner.execute(learner, call, paths.output, measure=measured,
-                                          approve=partial(approve, source=source), emit=transcript.emit)
+                                          approve=partial(approve, source=source), emit=transcript.emit,
+                                          receive=source.readline)
             loads = (call.load,)
         resident.release(owner, loads, source=source, transcript=transcript,
                          operation=partial(released, learner), measure=measure)

@@ -5,12 +5,13 @@ try:
 except ImportError as missing:
     raise unittest.SkipTest(f"{missing.name} is not installed") from missing
 
-from functools import partial
+from dataclasses import replace
 import hashlib
 import json
 import os
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 
 import mlx.core as mx
@@ -20,7 +21,7 @@ import mlx.optimizers as optim
 from worker.advantage import Reward, advantages
 from worker.cohort import Optimizer
 from worker import core
-from worker.logical import Batch, Learner, Sample
+from worker.logical import Learner, Plan
 from worker.mlx import checkpoint as mlx_checkpoint
 from worker.mlx import codec as mlx_codec
 from worker.mlx import learning as mlx_learning
@@ -29,6 +30,7 @@ from worker.mlx import state as mlx_state
 from worker.mlx import tensors as mlx_tensors
 from worker import record as probability_record
 from worker import scalar
+from worker.tests.responder import Core
 from worker.trajectory import Request, Trajectory
 from worker.update import observation
 
@@ -70,7 +72,7 @@ def learner():
 
 def batch(model, *, reference=None):
     normalized = dict(advantages(REWARDS, DELTA))
-    samples = []
+    trajectories, samples = {}, {}
     for index, reward in enumerate(REWARDS, 1):
         request = Request(sample=reward.sample, group=reward.group, prompt="native derivative fixture",
                           seed=index, limit=1, temperature=1.0)
@@ -79,13 +81,18 @@ def batch(model, *, reference=None):
                              behavior=mx.zeros((1,), dtype=mx.float32), text="fixture", truncated=True)
         probability = evaluate(model, initial)
         mx.eval(probability)
-        trajectory = Trajectory(request=request, tokens=tokens, prompt_length=1, behavior=probability,
-                                text=initial.text, truncated=True)
-        samples.append(Sample(trajectory=trajectory, proximal=probability,
-                              reference=probability if reference is None else reference[index - 1],
-                              advantage=normalized[reward.sample]))
-    return Batch(samples=tuple(samples), order=tuple(reward.sample for reward in REWARDS),
-                 profile=scalar.Profile(epsilon=0.2, penalty=0.01))
+        trajectories[reward.sample] = Trajectory(request=request, tokens=tokens, prompt_length=1, behavior=probability,
+                                                 text=initial.text, truncated=True)
+        samples[reward.sample] = (mlx_probability.words(probability), () if reference is None else reference[index - 1],
+                                  scalar.word(normalized[reward.sample]))
+    order = tuple(reward.sample for reward in REWARDS)
+    return Plan(trajectories=trajectories, steps=(order,), nonzero=sum(value != 0 for value in normalized.values()),
+                exchange=Core(samples, (order,), scalar.Profile(epsilon=0.2, penalty=0.01)))
+
+
+def again(plan):
+    core = plan.exchange
+    return replace(plan, exchange=Core(core.samples, core.steps, core.profile))
 
 
 def save(directory, actual):
@@ -98,21 +105,26 @@ def save(directory, actual):
 
 
 def report(directory, result, logical, *, binding, input_state, reference):
+    order = logical.steps[0]
     optimizer = {"learning_rate": SETTINGS.learning_rate, "betas": SETTINGS.betas,
                  "epsilon": SETTINGS.epsilon, "weight_decay": SETTINGS.weight_decay}
     request = {"specification": "grpo-token-mean/v1", "policy": input_state[0], "learner": input_state[1],
                "reference": reference, **IDENTITIES, "behavior_model": {name: IDENTITIES[name] for name in ("base", "assembly")},
-               "optimizer": optimizer, "samples": [observation(item.trajectory, reward, advantage=item.advantage,
-                                                               reference=() if reference == input_state[0] else mlx_probability.words(item.reference))
-                                                      for item, reward in zip(logical.samples, REWARDS, strict=True)],
-               "order": logical.order, "epsilon": logical.profile.epsilon, "penalty": logical.profile.penalty, "delta": DELTA}
+               "optimizer": optimizer,
+               "samples": [observation(logical.trajectories[reward.sample],
+                                       SimpleNamespace(sample=reward.sample, group=reward.group, reward=reward.value,
+                                                       reference_bits=() if reference == input_state[0] else logical.exchange.samples[reward.sample][1],
+                                                       advantage_bits=logical.exchange.samples[reward.sample][2]))
+                           for reward in REWARDS],
+               "order": list(order), "steps": [list(batch) for batch in logical.steps],
+               "epsilon": logical.exchange.profile.epsilon, "penalty": logical.exchange.profile.penalty, "delta": DELTA}
     bound = {"call": binding, "attempt": binding, "instance": binding}
     program = "native checkpoint association fixture; no execution-authority claim"
     gradients = directory / "gradients.safetensors"
     with gradients.open("xb") as target:
         mx.save_safetensors(target, result.gradients, metadata={"binding": json.dumps(bound), "program": program,
                                                                "policy": input_state[0], "observation": "objective and reward gradients before AdamW"})
-    probability = probability_record.save(directory / "probabilities.json", result.probabilities,
+    probability = probability_record.save(directory / "probabilities.json", order, result,
                                            invocation={"binding": bound, "program": program}, request=request)
     policy = mlx_tensors.digest(mlx_tensors.policy(directory / "adapter.safetensors", result.summary["after"]))
     finished = {"stage": "result", "binding": bound, "request": request, "update": result.summary, "adapter": policy,
@@ -126,15 +138,6 @@ def report(directory, result, logical, *, binding, input_state, reference):
 
 
 class LearningTests(unittest.TestCase):
-    def test_reference_role_is_the_supplied_engine_scores(self):
-        trajectories = tuple(item.trajectory for item in batch(learner().model).samples)
-        proximal, fixed = mlx_learning.probabilities(trajectories, ((),) * len(trajectories))
-        self.assertIs(fixed, proximal)
-        self.assertTrue(all(value is item.behavior for value, item in zip(proximal, trajectories, strict=True)))
-        scores = tuple((scalar.word(-0.25),) * item.behavior.size for item in trajectories)
-        _, supplied = mlx_learning.probabilities(trajectories, scores)
-        self.assertEqual([mlx_probability.words(value) for value in supplied], list(scores))
-
     def test_actual_parameter_vjp_and_saved_two_step_continuation(self):
         mx.random.seed(17)
         mx.eval(mx.random.uniform(shape=(3,)))
@@ -143,26 +146,43 @@ class LearningTests(unittest.TestCase):
         first = batch(live.model)
         reference = mlx_tensors.digest(mlx_learning.adapter(live.model))
         result = mlx_learning.update(live, first, linearize=mlx_learning.linearize)
-        quarter = scalar.word(scalar.rounded(first.samples[0].advantage) / 4)
+        quarter = scalar.word(scalar.rounded(scalar.number(first.exchange.samples["a"][2])) / 4)
         self.assertEqual(mlx_probability.words(result.gradients["reward/projection.lora_b"].reshape(-1)),
                          (quarter, scalar.word(-scalar.number(quarter))))
         self.assertNotEqual(result.summary["before"], result.summary["after"])
         saved = save(directory / "first", live)
         checkpoint = mlx_checkpoint.load((directory / "first/learner.pt").read_bytes())
         self.assertNotEqual(checkpoint["rng"][0].tolist(), mx.random.key(17).tolist())
-        second = batch(live.model, reference=tuple(item.reference for item in first.samples))
+        self.assertEqual(result.proximal, {name: values[0] for name, values in first.exchange.samples.items()})
+        second = batch(live.model, reference=tuple(values[0] for values in first.exchange.samples.values()))
         continued = mlx_learning.update(live, second, linearize=mlx_learning.linearize)
         save(directory / "live", live)
         restored = learner()
         policy = mlx_tensors.policy(directory / "first/adapter.safetensors", saved[0])
         mlx_state.restore(restored, checkpoint, policy=policy, identities={"adapter": saved[0], **IDENTITIES}, settings=SETTINGS)
-        repeated = mlx_learning.update(restored, second, linearize=mlx_learning.linearize)
+        repeated = mlx_learning.update(restored, again(second), linearize=mlx_learning.linearize)
         save(directory / "restored", restored)
         self.assertEqual(continued.summary, repeated.summary)
         self.assertTrue(mlx_tensors.equal(continued.gradients, repeated.gradients))
         self.assertEqual(live.optimizer.step.item(), 2)
         self.compare(directory, (continued, repeated), second, input_state=saved, reference=reference)
         self.random_continuation(restored, checkpoint, policy, saved[0])
+
+    def test_later_steps_report_proximal_first_and_chain_the_state(self):
+        live = learner()
+        planned = batch(live.model)
+        planned = replace(planned, steps=(("a",), ("b",)),
+                          exchange=Core(planned.exchange.samples, (("a",), ("b",)), planned.exchange.profile))
+        initial = mlx_tensors.digest(mlx_learning.adapter(live.model))
+        result = mlx_learning.update(live, planned, linearize=mlx_learning.linearize)
+        records = planned.exchange.records
+        self.assertEqual([record[:2] for record in records], [("proximal", "b"), ("current", 0), ("applied", 0), ("current", 1), ("applied", 1)])
+        self.assertEqual(records[1][4], initial)
+        self.assertEqual((records[2][2], records[3][4], records[4][2]), (initial, records[2][3], records[2][3]))
+        self.assertEqual(records[4][3], result.summary["after"])
+        self.assertEqual(records[4][4], tuple(planned.exchange.answered[1:]))
+        self.assertNotEqual(records[3][3], records[0][2])
+        self.assertEqual(live.optimizer.step.item(), 2)
 
     def compare(self, directory, results, logical, *, input_state, reference):
         arguments = ["compare", "states", "--codec-mode", "stdio", "--policy", directory / "first/adapter.safetensors"]
