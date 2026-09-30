@@ -75,7 +75,8 @@ def fixture(directory, name, *, call):
                  "learner": sha(initial / "learner.pt"), "reference": digest(adapter_state(learner.model)),
                  "tokenizer": tokenizer_digest(make_tokenizer()),
                  "base": materialization["base"], "assembly": materialization["assembly"],
-                 "samples": [observation(item, SimpleNamespace(sample=name, group=item.request.group, reward=reward,
+                 "samples": [observation(item, SimpleNamespace(sample=name, group=item.request.group, reward=reward, version=0,
+                                                               behavior_policy=digest(adapter_state(learner.model)),
                                                                reference_bits=(), advantage_bits=advantage))
                              for (name, item), (_, _, advantage), reward in zip(logical.trajectories.items(),
                                                                                 logical.exchange.samples.values(), ADVANTAGES, strict=True)],

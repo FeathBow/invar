@@ -32,6 +32,7 @@ def observation(trajectory, item):
         raise ValueError("Actual trajectory differs from the requested sample")
     return {**asdict(trajectory.request), "tokens": trajectory.tokens[0].tolist(),
             "prompt_length": trajectory.prompt_length,
+            "version": item.version, "behavior_policy": item.behavior_policy,
             "behavior_bits": [struct.unpack("!I", struct.pack("!f", value))[0] for value in trajectory.behavior.tolist()],
             "reference_bits": list(item.reference_bits),
             "text": trajectory.text, "truncated": trajectory.truncated, "reward": item.reward,
@@ -44,6 +45,6 @@ def consumed(request, *, trajectories, loaded):
         raise ValueError("Actual trajectories must match the requested samples")
     samples = [observation(item, values[item.request.sample]) for item in trajectories]
     return {"specification": request.specification, **loaded,
-            "behavior_model": asdict(request.behavior_model), "samples": samples,
+            "behavior_model": asdict(request.behavior_model), "schedule": asdict(request.schedule), "samples": samples,
             "order": list(request.order), "steps": [list(batch) for batch in request.steps],
             "epsilon": request.epsilon, "penalty": request.penalty, "delta": request.delta}

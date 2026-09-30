@@ -76,7 +76,9 @@ class Peer:
             self.call = replace(self.call, invocation=replace(self.call.invocation, **ordinal),
                                 load=replace(self.call.load, **ordinal),
                                 request=replace(self.call.request, policy=result["adapter"], learner=result["learner"],
-                                                samples=tuple(replace(item, reference_bits=item.behavior_bits)
+                                                schedule=replace(self.call.request.schedule, update=group),
+                                                samples=tuple(replace(item, version=group, behavior_policy=result["adapter"],
+                                                                      reference_bits=item.behavior_bits)
                                                               for item in self.call.request.samples)))
             checkpoint = self.paths.output.parent / ("service" + str(group - 1))
         self.start = len(self.output.getvalue())

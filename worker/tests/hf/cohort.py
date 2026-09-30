@@ -14,19 +14,24 @@ from worker.hf.step import optimizer_options
 def request():
     samples = [{"sample": "b", "group": "question", "prompt": "Compute the answer.",
                 "seed": 17, "limit": 1, "temperature": 0.8,
-                "tokens": [11, 12], "prompt_length": 1, "behavior_bits": [0xBF800000], "reference_bits": [0xBFA00000],
+                "tokens": [11, 12], "prompt_length": 1, "version": 0, "behavior_policy": "a" * 64, "behavior_bits": [0xBF800000], "reference_bits": [0xBFA00000],
                 "text": "#### 437", "truncated": False, "reward": 1.0, "advantage_bits": 0x3F7FF2E5},
                {"sample": "a", "group": "question", "prompt": "Compute the answer.",
                 "seed": 18, "limit": 1, "temperature": 0.8,
-                "tokens": [11, 13], "prompt_length": 1, "behavior_bits": [0xBF000000], "reference_bits": [0xBF400000],
+                "tokens": [11, 13], "prompt_length": 1, "version": 0, "behavior_policy": "a" * 64, "behavior_bits": [0xBF000000], "reference_bits": [0xBF400000],
                 "text": "#### 438", "truncated": False, "reward": 0.0, "advantage_bits": 0xBF7FF2E5}]
     return {"specification": SPECIFICATION, "policy": "a" * 64, "learner": "b" * 64,
             "reference": "c" * 64, "tokenizer": "d" * 64, "base": "e" * 64, "assembly": "f" * 64,
             "behavior_model": {"base": "0" * 64, "assembly": "1" * 64},
-            "samples": samples, "order": ["a", "b"], "steps": [["a", "b"]],
+            "schedule": {"update": 0, "staleness": 0}, "samples": samples, "order": ["a", "b"], "steps": [["a", "b"]],
             "epsilon": 0.2, "penalty": 0.04, "delta": 1e-4,
             "optimizer": {"learning_rate": 1e-4, "betas": [0.9, 0.999],
                           "epsilon": 1e-8, "weight_decay": 0.0}}
+
+
+def synchronous(value):
+    return {**value, "samples": [{**item, "version": value["schedule"]["update"], "behavior_policy": value["policy"]}
+                                 for item in value["samples"]]}
 
 
 class CohortTests(unittest.TestCase):
@@ -81,6 +86,32 @@ class CohortTests(unittest.TestCase):
         changed["samples"][0]["behavior_bits"] = [0x80000000]
         word = decode(changed).samples[0].behavior_bits[0]
         self.assertEqual(word, 0x80000000)
+
+    def test_samples_follow_the_schedule_and_their_behavior_policy(self):
+        base = request()
+        earlier = {**base, "policy": "9" * 64, "schedule": {"update": 1, "staleness": 1},
+                   "samples": [{**item, "behavior_policy": "c" * 64, "reference_bits": []} for item in base["samples"]]}
+        decoded = decode(earlier)
+        self.assertEqual((decoded.schedule.update, decoded.schedule.staleness, decoded.schedule.version()), (1, 1, 0))
+        self.assertEqual({item.behavior_policy for item in decoded.samples}, {"c" * 64})
+        decode({**earlier, "samples": [{**item, "behavior_policy": "e" * 64, "reference_bits": [0xBFA00000]} for item in base["samples"]]})
+        startup = decode({**base, "schedule": {"update": 0, "staleness": 1}})
+        self.assertEqual({item.version for item in startup.samples}, {0})
+        later = decode({**earlier, "schedule": {"update": 3, "staleness": 1},
+                        "samples": [{**item, "version": 2} for item in earlier["samples"]]})
+        self.assertEqual((later.schedule.version(), {item.version for item in later.samples}), (2, {2}))
+        invalid = [{**earlier, "samples": [{**item, "reference_bits": [0xBFA00000]} for item in earlier["samples"]]},
+                   {**earlier, "samples": [{**item, "behavior_policy": "e" * 64} for item in earlier["samples"]]},
+                   {**earlier, "schedule": {"update": 2, "staleness": 1}},
+                   {**earlier, "samples": [{**item, "version": 1} for item in earlier["samples"]]},
+                   {**base, "samples": [{**item, "behavior_policy": "9" * 64} for item in base["samples"]]},
+                   {**base, "schedule": {"update": 0, "staleness": True}},
+                   {**base, "schedule": {"update": 0, "staleness": 1}, "samples": [{**item, "behavior_policy": "9" * 64} for item in base["samples"]]},
+                   {**earlier, "samples": [{**earlier["samples"][0], "behavior_policy": "e" * 64, "reference_bits": [0xBFA00000]}, earlier["samples"][1]]},
+                   {**base, "schedule": {"update": 0}}]
+        for value in invalid:
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                decode(value)
 
     def test_missing_extra_duplicate_and_incomplete_inputs_fail(self):
         variants = []
