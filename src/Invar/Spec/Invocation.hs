@@ -55,7 +55,7 @@ newtype Instance = Instance Natural
 data Selection = Selection {selectedCall :: CallId, inputs :: E.World}
 
 data Binding = Binding {boundCall :: CallId, boundAttempt :: AttemptId, boundInstance :: Instance}
-    deriving (Eq, Show)
+    deriving (Eq, Ord, Show)
 
 ordinal :: Natural -> Binding
 ordinal index = Binding (CallId index) (AttemptId index) (Instance index)

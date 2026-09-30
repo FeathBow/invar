@@ -316,8 +316,8 @@ stepped output
 stepRecords :: Value -> Value -> Value -> Either String [Value]
 stepRecords identity actual adapter = do
     (profile, policy, samples, plan, final) <- parseEither parser (object ["request" .= actual, "adapter" .= adapter])
-    let begun = S.begin profile policy samples plan
-        outside = [sample | sample <- samples, S.name sample `notElem` concat (take 1 plan)]
+    begun <- Bifunctor.first show (S.begin binding profile policy samples plan)
+    let outside = [sample | sample <- samples, S.name sample `notElem` concat (take 1 plan)]
         proximals = [object ["stage" .= String "proximal", "binding" .= identity, "sample" .= S.name sample, "words" .= S.behaviorWords sample] | sample <- outside]
         states = policy : [show index | index <- [1 .. length plan - 1]] ++ [final]
         named = Map.fromList [(S.name sample, sample) | sample <- samples]
@@ -343,7 +343,7 @@ stepRecords identity actual adapter = do
     step named accumulated (index, batch, (before, after)) = do
         (current, records) <- accumulated
         (answered, currents, digests) <- foldl (sampleStep named (index, before)) (Right (current, [], [])) batch
-        applied <- Bifunctor.first show (S.applied answered (S.Applied (fromIntegral index) before after digests))
+        (applied, _) <- Bifunctor.first show (S.applied answered (S.Applied (fromIntegral index) before after digests))
         pure (applied, records ++ currents ++ [object ["stage" .= String "applied", "binding" .= identity, "step" .= index, "before" .= before, "after" .= after, "consumed" .= digests]])
     sampleStep named (index, before) accumulated name = do
         (current, records, digests) <- accumulated
