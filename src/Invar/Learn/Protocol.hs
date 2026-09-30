@@ -65,7 +65,7 @@ respond (Permit context prefix accepted fact) output = do
 
 replay :: V.Binding -> Request.Request -> [Object] -> Either Error String
 replay expected actual records = do
-    begun <- declaredSteps actual
+    begun <- declaredSteps expected actual
     finished' <- foldM follow begun records
     step' (S.complete finished')
   where
@@ -142,7 +142,7 @@ consumed context (Loaded runtime registry fact) value = do
     actual <- matchingRequest (numerical context) value
     command <- lifecycle (V.intent runtime (V.boundCall binding))
     accepted <- lifecycle (V.consume (V.Consumption binding program command) runtime)
-    begun <- declaredSteps actual
+    begun <- declaredSteps binding actual
     pure (Consumed accepted registry fact actual begun Nothing)
 consumed _ _ _ = Left (Unexpected "Duplicate consumption or consumption before learner load")
 
@@ -247,8 +247,8 @@ gradients (Result _ _ (Artifacts _ _ (observation, _)) _) = observation
 probabilities :: Result -> String
 probabilities (Result _ _ (Artifacts _ _ (_, observation)) _) = observation
 
-declaredSteps :: Request.Request -> Either Error S.Stream
-declaredSteps actual = parse (withObject "checked update request" plan) (Request.value actual)
+declaredSteps :: V.Binding -> Request.Request -> Either Error S.Stream
+declaredSteps binding actual = parse (withObject "checked update request" plan) (Request.value actual) >>= step'
   where
     plan fields = do
         entries <- fields .: "samples"
@@ -256,7 +256,7 @@ declaredSteps actual = parse (withObject "checked update request" plan) (Request
         steps <- fields .: "steps"
         policy <- fields .: "policy"
         profile <- Objective.Profile <$> fields .: "epsilon" <*> fields .: "penalty"
-        pure (S.begin profile policy declared steps)
+        pure (S.begin binding profile policy declared steps)
     entry = withObject "update sample" $ \fields -> S.Sample <$> fields .: "sample" <*> fields .: "behavior_bits" <*> fields .: "reference_bits" <*> fields .: "advantage_bits"
 
 stepping :: Context -> Progress -> String -> Object -> Either Error Progress
@@ -275,7 +275,7 @@ stepRecord "current" steps value = do
     fmap Just <$> step' (S.current steps report)
 stepRecord "applied" steps value = do
     report <- S.Applied <$> parse (.: "step") value <*> parse (.: "before") value <*> parse (.: "after") value <*> parse (.: "consumed") value
-    (,Nothing) <$> step' (S.applied steps report)
+    (,Nothing) . fst <$> step' (S.applied steps report)
 stepRecord name _ _ = Left (Unexpected ("Unexpected learner step record: " ++ name))
 
 step' :: Either S.Error value -> Either Error value

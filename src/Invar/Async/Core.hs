@@ -1,6 +1,6 @@
 {-# LANGUAGE Safe #-}
 
-module Invar.Async.Core (Worker (..), Epoch (..), Attempt (..), Digest, Event (..), Command (..), Failure (..), Phase (..), State, start, step, recover, committed, results, learning, highest) where
+module Invar.Async.Core (Worker (..), Epoch (..), Attempt (..), Digest, Event (..), Command (..), Failure (..), Phase (..), State, start, step, authorize, recover, committed, results, learning, highest, exchanged) where
 
 import Control.Monad (unless)
 import Data.Map.Strict (Map)
@@ -8,7 +8,10 @@ import Data.Map.Strict qualified as Map
 import Data.Maybe (isJust, isNothing)
 import Data.Set (Set)
 import Data.Set qualified as Set
+import Invar.Async.Completion (Completion)
+import Invar.Async.Completion qualified as Completion
 import Invar.Async.Plan (Declared (..), Plan, Request, Update (..), Version, available, declared, owner, updates, version)
+import Invar.Spec.Invocation (Binding)
 import Numeric.Natural (Natural)
 
 newtype Worker = Worker Natural
@@ -27,9 +30,9 @@ data Event
     | Lost Worker Epoch
     | Started Worker Epoch Request
     | Completed Worker Epoch Request Digest
-    | Proximal Update Attempt Digest Digest
-    | Current Update Attempt Natural Digest Digest
-    | Applied Update Attempt Natural Digest Digest
+    | Ready Update Attempt Binding Digest Digest
+    | Current Update Attempt Natural Digest
+    | Applied Update Attempt Completion
     | Staged Update Attempt Digest
     | Recorded Update Attempt
     | Committed Update Attempt
@@ -39,7 +42,7 @@ data Event
 data Command
     = Dispatch Request Version
     | Send Update Attempt
-    | Cotangents Update Attempt Natural Digest Digest
+    | Open Update Attempt Natural Digest
     | Record Update Attempt Digest
     | Commit Update Attempt
     deriving (Eq, Ord, Show)
@@ -55,14 +58,17 @@ data Failure
     | StaleAttempt Update Attempt
     | Unexpected Event
     | BindingMismatch Update Attempt Natural
+    | NotOpen Update Attempt Natural
+    | ReusedBinding Binding
+    | ForeignCompletion Update Attempt Natural
     | UncertainCommit Update Attempt
     | InvalidRecovery
     deriving (Eq, Show)
 
 data Phase
-    = Scoring Attempt
+    = Loading Attempt
     | Forward Attempt Natural Digest
-    | Backward Attempt Natural Digest Digest
+    | Answering Attempt Natural Digest
     | Staging Attempt
     | Recording Attempt Digest
     | Committing Attempt
@@ -79,6 +85,8 @@ data State = State
     , done :: [Update]
     , active :: Maybe (Update, Phase)
     , attempts :: Natural
+    , exchange :: Maybe (Binding, Digest)
+    , exchanges :: Set Binding
     , seen :: Set Event
     }
     deriving (Eq, Show)
@@ -92,17 +100,20 @@ results = completedResults
 learning :: State -> Maybe (Update, Phase)
 learning = active
 
+exchanged :: State -> Set Binding
+exchanged = exchanges
+
 highest :: State -> Map Worker Epoch
 highest = used
 
 start :: Plan -> (State, [Command])
-start chosen = advance (State chosen Map.empty Map.empty Set.empty Map.empty Map.empty Map.empty [] Nothing 0 Set.empty)
+start chosen = advance (State chosen Map.empty Map.empty Set.empty Map.empty Map.empty Map.empty [] Nothing 0 Nothing Set.empty Set.empty)
 
-recover :: Plan -> [Update] -> Map Request Digest -> Map Worker Epoch -> Natural -> Either Failure (State, [Command])
-recover chosen published stored lowest fresh = do
+recover :: Plan -> [Update] -> Map Request Digest -> Map Worker Epoch -> Set Binding -> Natural -> Either Failure (State, [Command])
+recover chosen published stored lowest bound fresh = do
     unless (published == take (length published) (updates chosen)) (Left InvalidRecovery)
     unless (all (isJust . owner chosen) (Map.keys stored)) (Left InvalidRecovery)
-    pure (advance (State chosen Map.empty lowest (Map.keysSet stored) Map.empty stored Map.empty published Nothing fresh Set.empty))
+    pure (advance (State chosen Map.empty lowest (Map.keysSet stored) Map.empty stored Map.empty published Nothing fresh Nothing bound Set.empty))
 
 step :: State -> Event -> Either Failure (State, [Command])
 step state event = case event of
@@ -141,6 +152,11 @@ step state event = case event of
     _ | Set.member event (seen state) -> pure (state, [])
     _ -> learner state event
 
+authorize :: State -> Update -> Attempt -> Natural -> Either Failure ()
+authorize state update attempt index = case active state of
+    Just (active', Answering attempt' index' _) | active' == update && attempt' == attempt && index' == index -> pure ()
+    _ -> Left (NotOpen update attempt index)
+
 current :: State -> Worker -> Epoch -> Either Failure ()
 current state worker epoch = case Map.lookup worker (epochs state) of
     Just connected
@@ -157,29 +173,32 @@ learner state event = do
     let accepted next commands = pure (state {active = next, seen = Set.insert event (seen state)}, commands)
         moving next = accepted (Just (update, next))
     case (event, phase) of
-        (Proximal _ _ _ before, Scoring _) -> moving (Forward attempt 0 before) []
-        (Current _ _ index observation before, Forward _ expected state')
-            | index == expected && before == state' -> moving (Backward attempt index observation before) [Cotangents update attempt index observation before]
+        (Ready _ _ bound digest before, Loading _)
+            | Set.member bound (exchanges state) -> Left (ReusedBinding bound)
+            | otherwise -> pure (state {active = Just (update, Forward attempt 0 before), exchange = Just (bound, digest), exchanges = Set.insert bound (exchanges state), seen = Set.insert event (seen state)}, [])
+        (Current _ _ index before, Forward _ expected state')
+            | index == expected && before == state' -> moving (Answering attempt index before) [Open update attempt index before]
             | otherwise -> Left (BindingMismatch update attempt index)
-        (Applied _ _ index observation after, Backward _ expected bound _)
-            | index == expected && observation == bound -> moving (if index + 1 < count then Forward attempt (index + 1) after else Staging attempt) []
-            | otherwise -> Left (BindingMismatch update attempt index)
+        (Applied _ _ completion, Answering _ expected state')
+            | exchange state /= Just (Completion.binding completion, Completion.plan completion) -> Left (ForeignCompletion update attempt (Completion.step completion))
+            | Completion.step completion == expected && Completion.before completion == state' -> moving (if expected + 1 < count then Forward attempt (expected + 1) (Completion.after completion) else Staging attempt) []
+            | otherwise -> Left (BindingMismatch update attempt (Completion.step completion))
         (Staged _ _ digest, Staging _) -> moving (Recording attempt digest) [Record update attempt digest]
         (Recorded _ _, Recording _ _) -> moving (Committing attempt) [Commit update attempt]
         (Committed _ _, Committing _) -> do
-            let (next, commands) = advance state {active = Nothing, done = done state ++ [update], seen = Set.insert event (seen state)}
+            let (next, commands) = advance state {active = Nothing, exchange = Nothing, done = done state ++ [update], seen = Set.insert event (seen state)}
             pure (next, commands)
         (Abandoned _ _, Committing _) -> Left (UncertainCommit update attempt)
         (Abandoned _ _, _) -> do
             let fresh = Attempt (attempts state)
-            pure (state {active = Just (update, Scoring fresh), attempts = attempts state + 1, seen = Set.insert event (seen state)}, [Send update fresh])
+            pure (state {active = Just (update, Loading fresh), exchange = Nothing, attempts = attempts state + 1, seen = Set.insert event (seen state)}, [Send update fresh])
         _ -> Left (Unexpected event)
 
 addressed :: Event -> Maybe (Update, Attempt)
 addressed event = case event of
-    Proximal update attempt _ _ -> Just (update, attempt)
-    Current update attempt _ _ _ -> Just (update, attempt)
-    Applied update attempt _ _ _ -> Just (update, attempt)
+    Ready update attempt _ _ _ -> Just (update, attempt)
+    Current update attempt _ _ -> Just (update, attempt)
+    Applied update attempt _ -> Just (update, attempt)
     Staged update attempt _ -> Just (update, attempt)
     Recorded update attempt -> Just (update, attempt)
     Committed update attempt -> Just (update, attempt)
@@ -188,9 +207,9 @@ addressed event = case event of
 
 attemptOf :: Phase -> Attempt
 attemptOf phase = case phase of
-    Scoring attempt -> attempt
+    Loading attempt -> attempt
     Forward attempt _ _ -> attempt
-    Backward attempt _ _ _ -> attempt
+    Answering attempt _ _ -> attempt
     Staging attempt -> attempt
     Recording attempt _ -> attempt
     Committing attempt -> attempt
@@ -220,7 +239,7 @@ advance state = (next, dispatches ++ starting)
     (next, starting)
         | isNothing (active state) && complete =
             let fresh = Attempt (attempts marked)
-             in (marked {active = Just (upcoming, Scoring fresh), attempts = attempts marked + 1}, [Send upcoming fresh])
+             in (marked {active = Just (upcoming, Loading fresh), attempts = attempts marked + 1}, [Send upcoming fresh])
         | otherwise = (marked, [])
 
 known :: State -> Request -> Either Failure ()

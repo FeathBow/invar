@@ -1,16 +1,24 @@
-module Invar.Learn.Stream (Sample (..), Current (..), Applied (..), Reply (..), Stream, Error (..), begin, proximal, current, applied, complete, digest, observationOf, proximals, currents) where
+module Invar.Learn.Stream (Sample (..), Current (..), Applied (..), Reply (..), Stream, Error (..), begin, proximal, current, applied, complete, digest, observationOf, proximals, currents, identity) where
 
 import Control.Monad (unless, when)
 import Crypto.Hash.SHA256 qualified as SHA256
+import Data.ByteString qualified as Bytes
 import Data.ByteString.Builder qualified as Builder
 import Data.ByteString.Lazy qualified as Lazy
 import Data.List (genericLength, zip4)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
+import Data.Set qualified as Set
 import Data.Text (Text)
+import Data.Text qualified as Text
+import Data.Text.Encoding qualified as Text
 import Data.Word (Word32)
+import GHC.Float (castDoubleToWord64)
 import Invar.Artifact qualified as Artifact
+import Invar.Async.Completion.Internal (Completion (Completion))
+import Invar.Async.Completion.Internal qualified as Completion
 import Invar.Learn.Objective qualified as Objective
+import Invar.Spec.Invocation qualified as V
 import Numeric.Natural (Natural)
 
 data Sample = Sample {name :: Text, behaviorWords :: [Word32], referenceWords :: [Word32], advantageWord :: Word32}
@@ -40,10 +48,13 @@ data Error
     | Finished
     | Unfinished
     | Scalar Objective.Error
+    | InvalidPlan String
     deriving (Eq, Show)
 
 data Stream = Stream
-    { profile :: Objective.Profile
+    { binding :: V.Binding
+    , planned :: String
+    , profile :: Objective.Profile
     , samples :: Map Text Sample
     , plan :: [[Text]]
     , position :: Natural
@@ -54,8 +65,23 @@ data Stream = Stream
     }
     deriving (Eq, Show)
 
-begin :: Objective.Profile -> String -> [Sample] -> [[Text]] -> Stream
-begin chosen initial declared steps = Stream chosen (Map.fromList [(name entry, entry) | entry <- declared]) steps 0 [] initial Map.empty []
+begin :: V.Binding -> Objective.Profile -> String -> [Sample] -> [[Text]] -> Either Error Stream
+begin bound chosen initial declared steps = do
+    let named = Map.fromList [(name entry, entry) | entry <- declared]
+    when (null declared || Map.size named /= length declared) (Left (InvalidPlan "Samples must be nonempty and distinct"))
+    when (any (null . behaviorWords) declared) (Left (InvalidPlan "Every sample needs at least one response token"))
+    when (any (\entry -> not (null (referenceWords entry)) && length (referenceWords entry) /= length (behaviorWords entry)) declared) (Left (InvalidPlan "Reference words must cover every response token"))
+    when (null steps || any null steps) (Left (InvalidPlan "Optimizer steps must be nonempty"))
+    unless (Set.fromList (concat steps) == Map.keysSet named) (Left (InvalidPlan "Optimizer steps must use every sample and no other"))
+    pure (Stream bound (planIdentity chosen initial declared steps) chosen named steps 0 [] initial Map.empty [])
+
+planIdentity :: Objective.Profile -> String -> [Sample] -> [[Text]] -> String
+planIdentity chosen initial declared steps = Artifact.hex (SHA256.hash (Lazy.toStrict (Builder.toLazyByteString encoded)))
+  where
+    encoded = Builder.word64LE (castDoubleToWord64 (Objective.epsilon chosen)) <> Builder.word64LE (castDoubleToWord64 (Objective.penalty chosen)) <> text (Text.pack initial) <> counted (map entry declared) <> counted (map (counted . map text) steps)
+    entry value = text (name value) <> counted (map Builder.word32LE (behaviorWords value)) <> counted (map Builder.word32LE (referenceWords value)) <> Builder.word32LE (advantageWord value)
+    text value = let bytes = Text.encodeUtf8 value in Builder.word64LE (fromIntegral (Bytes.length bytes)) <> Builder.byteString bytes
+    counted values = Builder.word64LE (fromIntegral (length values)) <> mconcat values
 
 proximal :: Stream -> Text -> [Word32] -> Either Error Stream
 proximal stream named values = do
@@ -93,7 +119,7 @@ current stream report = do
         , reply
         )
 
-applied :: Stream -> Applied -> Either Error Stream
+applied :: Stream -> Applied -> Either Error (Stream, Completion)
 applied stream report = do
     batch <- maybe (Left Finished) Right (selected stream)
     unless (appliedStep report == position stream) (Left (StepMismatch (position stream) (appliedStep report)))
@@ -103,7 +129,8 @@ applied stream report = do
     when (position stream == 0) $ case [entry | entry <- Map.keys (samples stream), Map.notMember entry (fixed stream)] of
         missing : _ -> Left (MissingProximal missing)
         [] -> pure ()
-    pure stream {position = position stream + 1, answered = [], expected = after report}
+    let closed = Completion {Completion.binding = binding stream, Completion.plan = planned stream, Completion.step = position stream, Completion.consumed = consumedDigest (consumed report), Completion.before = before report, Completion.after = after report}
+    pure (stream {position = position stream + 1, answered = [], expected = after report}, closed)
 
 complete :: Stream -> Either Error String
 complete stream
@@ -113,8 +140,14 @@ complete stream
 digest :: Reply -> String
 digest reply = observationOf (objective reply ++ reward reply)
 
+consumedDigest :: [String] -> String
+consumedDigest values = Artifact.hex (SHA256.hash (Lazy.toStrict (Builder.toLazyByteString (foldMap (\value -> Builder.stringUtf8 value <> Builder.char7 '\n') values))))
+
 observationOf :: [Word32] -> String
 observationOf values = Artifact.hex (SHA256.hash (Lazy.toStrict (Builder.toLazyByteString (foldMap Builder.word32LE values))))
+
+identity :: Stream -> String
+identity = planned
 
 proximals :: Stream -> Map Text [Word32]
 proximals = fixed

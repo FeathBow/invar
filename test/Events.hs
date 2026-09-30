@@ -5,13 +5,20 @@ module Events (events) where
 import Control.Monad (forM_, unless, when)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
+import Data.Set qualified as Set
+import Data.Word (Word32)
+import GHC.Float (castFloatToWord32)
 import Hedgehog hiding (Action, Command, Update)
 import Hedgehog.Gen qualified as Gen
 import Hedgehog.Range qualified as Range
+import Invar.Async.Completion (Completion)
 import Invar.Async.Core (Attempt (..), Command (..), Epoch (..), Event (..), Failure (..), Phase (..), Worker (..))
 import Invar.Async.Core qualified as C
 import Invar.Async.Plan (Declared (..), Request (..), Update (..), Version (..))
 import Invar.Async.Plan qualified as P
+import Invar.Learn.Objective qualified as O
+import Invar.Learn.Stream qualified as S
+import Invar.Spec.Invocation qualified as V
 import Numeric.Natural (Natural)
 
 events :: Group
@@ -24,7 +31,9 @@ events =
         , ("reports from a superseded worker epoch change nothing", withTests 1 (property superseded))
         , ("an epoch at or below one a worker has used is refused after loss and recovery", withTests 1 (property regression))
         , ("only the worker epoch that started a request may complete it", withTests 1 (property ownership))
-        , ("cotangents are bound to their update, step, observation and state", withTests 1 (property binding))
+        , ("steps are opened and closed only on their attempt and state chain", withTests 1 (property binding))
+        , ("a reply is authorized only while its step is open", withTests 1 (property authorization))
+        , ("a completion counts only for the exchange and plan its attempt was bound to", withTests 1 (property foreign'))
         , ("recovery decides publication from the commit point alone", withTests 1 (property recovery))
         , ("a different result for a completed request is a conflict", withTests 1 (property conflict))
         ]
@@ -87,7 +96,7 @@ data World = World
     , bindings :: Map Request (Worker, Epoch)
     , restarts :: Natural
     , accepted :: [Event]
-    , traces :: Map (Update, Attempt) [(Natural, String, String)]
+    , traces :: Map (Update, Attempt) [(Natural, String)]
     , winners :: Map Update Attempt
     , published :: [Update]
     , windows :: Natural
@@ -101,8 +110,27 @@ workers = [Worker 0, Worker 1]
 digest :: Request -> Version -> String
 digest (Request request) (Version selected) = "result " ++ show request ++ " " ++ show selected
 
-observation :: Update -> Natural -> String
-observation (Update update) index = "observation " ++ show update ++ " " ++ show index
+exchangeOf :: Update -> Attempt -> V.Binding
+exchangeOf (Update update) (Attempt attempt) = V.Binding (V.CallId update) (V.AttemptId attempt) (V.Instance 0)
+
+exchange :: V.Binding -> Word32 -> [String] -> (String, [Completion])
+exchange caller advantage states = either (error . show) id $ do
+    begun <- S.begin caller (O.Profile 0.2 0) (headOf states) [S.Sample "x" [word] [] advantage] (replicate (length states - 1) ["x"])
+    closed <- go begun (zip3 [0 ..] states (drop 1 states))
+    pure (S.identity begun, closed)
+  where
+    word = castFloatToWord32 (-1)
+    headOf values = case values of
+        value : _ -> value
+        [] -> error "An exchange needs an initial state"
+    go _ [] = Right []
+    go stream ((position, opened, closed) : rest) = do
+        (answered, reply) <- S.current stream (S.Current position "x" [word] (S.observationOf [word]) opened)
+        (next, done) <- S.applied answered (S.Applied position opened closed [S.digest reply])
+        (done :) <$> go next rest
+
+ordinary :: Word32
+ordinary = castFloatToWord32 1
 
 before :: Update -> Natural -> String
 before (Update update) index = "state " ++ show update ++ " " ++ show index
@@ -126,7 +154,7 @@ interleavings = do
     C.results (core finished) === Map.fromList [(request, digest request (P.version chosen update)) | update <- P.updates chosen, Just (Declared members _) <- [P.declared chosen update], request <- members]
     forM_ (P.updates chosen) $ \update -> do
         attempt <- maybe failure pure (Map.lookup update (winners finished))
-        Map.lookup (update, attempt) (traces finished) === Just [(index, observation update index, before update index) | index <- [0 .. count chosen update - 1]]
+        Map.lookup (update, attempt) (traces finished) === Just [(index, before update index) | index <- [0 .. count chosen update - 1]]
   where
     foldM' world [] = pure world
     foldM' world (event : rest) = feed world 0 event >>= (`foldM'` rest)
@@ -181,7 +209,7 @@ perform world (next : rest) = do
         Restart -> do
             let window = [() | Item issued (Receipt _ _) <- pending world, issued == restarts world]
             let base = 1000 * (restarts world + 1)
-            (recovered, commands) <- evalEither (C.recover (plan world) (published world) (C.results (core world)) (issued world) base)
+            (recovered, commands) <- evalEither (C.recover (plan world) (published world) (C.results (core world)) (issued world) (C.exchanged (core world)) base)
             let raised = Map.map (\(Epoch epoch) -> Epoch (epoch + 1)) (issued world)
                 restarted = enqueue world {core = recovered, restarts = restarts world + 1, windows = windows world + (if null window then 0 else 1), epochs = raised, issued = raised, bindings = Map.empty} commands
             foldl (\acted (worker, epoch) -> acted >>= \current -> feed current (restarts current) (Connected worker epoch)) (pure restarted) (Map.toList (epochs restarted))
@@ -215,19 +243,22 @@ deliver world index choice = do
 learn :: World -> Natural -> Command -> PropertyT IO World
 learn world issued command = case command of
     Send update attempt -> do
-        proximal <- feed world issued (Proximal update attempt (observation update 0) (before update 0))
-        feed proximal issued (Current update attempt 0 (observation update 0) (before update 0))
-    Cotangents update attempt index seen state -> do
-        let traced = world {traces = Map.insertWith (flip (++)) (update, attempt) [(index, seen, state)] (traces world)}
-        applied <- feed traced issued (Applied update attempt index seen (before update (index + 1)))
+        ready <- feed world issued (Ready update attempt (exchangeOf update attempt) (fst (planned world update attempt)) (before update 0))
+        feed ready issued (Current update attempt 0 (before update 0))
+    Open update attempt index state -> do
+        let traced = world {traces = Map.insertWith (flip (++)) (update, attempt) [(index, state)] (traces world)}
+        applied <- feed traced issued (Applied update attempt (snd (planned world update attempt) !! fromIntegral index))
         if index + 1 < count (plan world) update
-            then feed applied issued (Current update attempt (index + 1) (observation update (index + 1)) (before update (index + 1)))
+            then feed applied issued (Current update attempt (index + 1) (before update (index + 1)))
             else feed applied issued (Staged update attempt ("successor " ++ show update))
     Record update attempt _ -> feed world issued (Recorded update attempt)
     Commit update attempt -> do
         when (update `elem` published world) (annotateShow update >> annotate "a published update was committed again" >> failure)
         pure world {published = published world ++ [update], winners = Map.insert update attempt (winners world), pending = pending world ++ [Item issued (Receipt update attempt)]}
     Dispatch _ _ -> failure
+
+planned :: World -> Update -> Attempt -> (String, [Completion])
+planned world update attempt = exchange (exchangeOf update attempt) ordinary [before update index | index <- [0 .. count (plan world) update]]
 
 feed :: World -> Natural -> Event -> PropertyT IO World
 feed world issued event = case C.step (core world) event of
@@ -287,9 +318,9 @@ duplicable event = case event of
 
 addressed :: Event -> Maybe (Update, Attempt)
 addressed event = case event of
-    Proximal update attempt _ _ -> Just (update, attempt)
-    Current update attempt _ _ _ -> Just (update, attempt)
-    Applied update attempt _ _ _ -> Just (update, attempt)
+    Ready update attempt _ _ _ -> Just (update, attempt)
+    Current update attempt _ _ -> Just (update, attempt)
+    Applied update attempt _ -> Just (update, attempt)
     Staged update attempt _ -> Just (update, attempt)
     Recorded update attempt -> Just (update, attempt)
     Committed update attempt -> Just (update, attempt)
@@ -298,9 +329,9 @@ addressed event = case event of
 
 attemptOf :: Phase -> Attempt
 attemptOf phase = case phase of
-    Scoring attempt -> attempt
+    Loading attempt -> attempt
     Forward attempt _ _ -> attempt
-    Backward attempt _ _ _ -> attempt
+    Answering attempt _ _ -> attempt
     Staging attempt -> attempt
     Recording attempt _ -> attempt
     Committing attempt -> attempt
@@ -331,35 +362,91 @@ superseded = do
     C.step started (Completed (Worker 1) (Epoch 0) (Request 0) "unknown") === Left (NotConnected (Worker 1) (Epoch 0))
     C.results started === Map.empty
 
+prepared :: IO C.State
+prepared = do
+    (_, connected) <- single
+    either (fail . show) pure (run connected [Started (Worker 0) (Epoch 0) (Request 0), Completed (Worker 0) (Epoch 0) (Request 0) "r"])
+
 binding :: PropertyT IO ()
 binding = do
-    (_, connected) <- evalIO single
+    completed <- evalIO prepared
     let update = Update 0
         attempt = Attempt 0
-    scoring <- evalEither (run connected [Started (Worker 0) (Epoch 0) (Request 0), Completed (Worker 0) (Epoch 0) (Request 0) "r", Proximal update attempt "p" "s0"])
-    C.step scoring (Current update attempt 0 "o0" "other") === Left (BindingMismatch update attempt 0)
-    C.step scoring (Current update attempt 1 "o0" "s0") === Left (BindingMismatch update attempt 1)
-    (forward, commands) <- evalEither (C.step scoring (Current update attempt 0 "o0" "s0"))
-    commands === [Cotangents update attempt 0 "o0" "s0"]
-    C.step forward (Applied update attempt 0 "late" "s1") === Left (BindingMismatch update attempt 0)
-    C.step forward (Applied update attempt 1 "o0" "s1") === Left (BindingMismatch update attempt 1)
-    C.step forward (Applied update (Attempt 7) 0 "o0" "s1") === Left (StaleAttempt update (Attempt 7))
-    second <- evalEither (run forward [Applied update attempt 0 "o0" "s1"])
-    C.step second (Current update attempt 1 "o1" "s0") === Left (BindingMismatch update attempt 1)
-    (_, next) <- evalEither (C.step second (Current update attempt 1 "o1" "s1"))
-    next === [Cotangents update attempt 1 "o1" "s1"]
+        caller = exchangeOf update attempt
+        (identity, closed) = exchange caller ordinary ["s0", "s1", "s2"]
+        (first', second') = case closed of
+            [a, b] -> (a, b)
+            _ -> error "Expected two steps"
+    ready <- evalEither (run completed [Ready update attempt caller identity "s0"])
+    C.step ready (Current update attempt 0 "other") === Left (BindingMismatch update attempt 0)
+    C.step ready (Current update attempt 1 "s0") === Left (BindingMismatch update attempt 1)
+    C.step ready (Applied update attempt first') === Left (Unexpected (Applied update attempt first'))
+    (opened, commands) <- evalEither (C.step ready (Current update attempt 0 "s0"))
+    commands === [Open update attempt 0 "s0"]
+    C.step opened (Applied update attempt second') === Left (BindingMismatch update attempt 1)
+    C.step opened (Applied update (Attempt 7) first') === Left (StaleAttempt update (Attempt 7))
+    second <- evalEither (run opened [Applied update attempt first'])
+    (same, none) <- evalEither (C.step second (Applied update attempt first'))
+    (same, none) === (second, [])
+    C.step second (Current update attempt 1 "s0") === Left (BindingMismatch update attempt 1)
+    (_, next) <- evalEither (C.step second (Current update attempt 1 "s1"))
+    next === [Open update attempt 1 "s1"]
+
+foreign' :: PropertyT IO ()
+foreign' = do
+    completed <- evalIO prepared
+    let update = Update 0
+        old = exchangeOf update (Attempt 0)
+        fresh = exchangeOf update (Attempt 1)
+        (identity, previous) = exchange old ordinary ["s0", "s1", "s2"]
+        (_, current') = exchange fresh ordinary ["s0", "s1", "s2"]
+        (otherPlan, otherClosed) = exchange fresh (castFloatToWord32 (-1)) ["s0", "s1", "s2"]
+        firstOf values = case values of
+            value : _ -> value
+            [] -> error "Expected a step"
+    abandoned <- evalEither (run completed [Ready update (Attempt 0) old identity "s0", Current update (Attempt 0) 0 "s0", Abandoned update (Attempt 0)])
+    C.step abandoned (Ready update (Attempt 1) old identity "s0") === Left (ReusedBinding old)
+    opened <- evalEither (run abandoned [Ready update (Attempt 1) fresh identity "s0", Current update (Attempt 1) 0 "s0"])
+    C.step opened (Applied update (Attempt 1) (firstOf previous)) === Left (ForeignCompletion update (Attempt 1) 0)
+    C.step opened (Applied update (Attempt 1) (firstOf otherClosed)) === Left (ForeignCompletion update (Attempt 1) 0)
+    assert (otherPlan /= identity)
+    _ <- evalEither (C.step opened (Applied update (Attempt 1) (firstOf current')))
+    success
+
+authorization :: PropertyT IO ()
+authorization = do
+    completed <- evalIO prepared
+    let update = Update 0
+        attempt = Attempt 0
+        caller = exchangeOf update attempt
+        (identity, closed) = exchange caller ordinary ["s0", "s1", "s2"]
+        first' = case closed of
+            value : _ -> value
+            [] -> error "Expected a step"
+    ready <- evalEither (run completed [Ready update attempt caller identity "s0"])
+    C.authorize ready update attempt 0 === Left (C.NotOpen update attempt 0)
+    opened <- evalEither (run ready [Current update attempt 0 "s0"])
+    C.authorize opened update attempt 0 === Right ()
+    C.authorize opened update attempt 1 === Left (C.NotOpen update attempt 1)
+    C.authorize opened update (Attempt 1) 0 === Left (C.NotOpen update (Attempt 1) 0)
+    stepped <- evalEither (run opened [Applied update attempt first'])
+    C.authorize stepped update attempt 0 === Left (C.NotOpen update attempt 0)
+    abandoned <- evalEither (run opened [Abandoned update attempt])
+    C.authorize abandoned update attempt 0 === Left (C.NotOpen update attempt 0)
 
 recovery :: PropertyT IO ()
 recovery = do
     chosen <- evalEither (P.prepare 0 [Declared [Request 0] [[Request 0]], Declared [Request 1] [[Request 1]]])
     let stored = Map.fromList [(Request 0, "r0")]
-    (unpublished, commands) <- evalEither (C.recover chosen [] stored Map.empty 5)
+    (unpublished, commands) <- evalEither (C.recover chosen [] stored Map.empty Set.empty 5)
     commands === [Send (Update 0) (Attempt 5)]
-    (published, resumed) <- evalEither (C.recover chosen [Update 0] stored Map.empty 5)
+    (published, resumed) <- evalEither (C.recover chosen [Update 0] stored Map.empty Set.empty 5)
     resumed === [Dispatch (Request 1) (Version 1)]
     C.committed published === [Update 0]
-    C.recover chosen [Update 1] stored Map.empty 5 === Left InvalidRecovery
-    recording <- evalEither (run unpublished [Proximal (Update 0) (Attempt 5) "p" "s0", Current (Update 0) (Attempt 5) 0 "o" "s0", Applied (Update 0) (Attempt 5) 0 "o" "s1", Staged (Update 0) (Attempt 5) "d", Recorded (Update 0) (Attempt 5)])
+    C.recover chosen [Update 1] stored Map.empty Set.empty 5 === Left InvalidRecovery
+    let caller = exchangeOf (Update 0) (Attempt 5)
+        (identity, closed) = exchange caller ordinary ["s0", "s1"]
+    recording <- evalEither (run unpublished ([Ready (Update 0) (Attempt 5) caller identity "s0", Current (Update 0) (Attempt 5) 0 "s0"] ++ [Applied (Update 0) (Attempt 5) done | done <- closed] ++ [Staged (Update 0) (Attempt 5) "d", Recorded (Update 0) (Attempt 5)]))
     C.learning recording === Just (Update 0, Committing (Attempt 5))
     C.step recording (Abandoned (Update 0) (Attempt 5)) === Left (UncertainCommit (Update 0) (Attempt 5))
 
@@ -378,7 +465,7 @@ regression = do
     raised <- evalEither (run connected [Lost (Worker 0) (Epoch 0), Connected (Worker 0) (Epoch 5), Lost (Worker 0) (Epoch 5)])
     C.step raised (Connected (Worker 0) (Epoch 1)) === Left (StaleEpoch (Worker 0) (Epoch 1))
     C.step raised (Connected (Worker 0) (Epoch 5)) === Left (StaleEpoch (Worker 0) (Epoch 5))
-    (recovered, _) <- evalEither (C.recover chosen [] Map.empty (C.highest raised) 9)
+    (recovered, _) <- evalEither (C.recover chosen [] Map.empty (C.highest raised) Set.empty 9)
     C.step recovered (Connected (Worker 0) (Epoch 1)) === Left (StaleEpoch (Worker 0) (Epoch 1))
     _ <- evalEither (C.step recovered (Connected (Worker 0) (Epoch 6)))
     success
