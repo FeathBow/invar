@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 
-module LearnerFixture (Exchange (..), Scenario (..), configured, withPlan, admit, prepare, scenario, run, execute, worker, owner, timer, wire, require) where
+module LearnerFixture (Exchange (..), Scenario (..), configured, withPlan, withAdjusted, admit, prepare, scenario, run, execute, process, stage, worker, owner, timer, wire, require) where
 
 import BatchCalls (quote)
 import Calls qualified
@@ -43,12 +43,15 @@ configured :: L.Settings
 configured = L.Settings (Infer.artifact Calls.request) (replicate 64 'b') (Infer.artifact Calls.request) (Infer.tokenizer Calls.request) (replicate 64 '0') (replicate 64 '1') (Infer.base Calls.request) (Infer.assembly Calls.request) 0.2 0.04 0.0001 1 (L.Optimizer 0.002 0.8 0.95 0.0000001 0.01) (L.synchronous 0 (Infer.artifact Calls.request))
 
 withPlan :: FilePath -> (forall scope. L.Plan scope -> IO value) -> PropertyT IO value
-withPlan root action = do
+withPlan = withAdjusted id
+
+withAdjusted :: (L.Settings -> L.Settings) -> FilePath -> (forall scope. L.Plan scope -> IO value) -> PropertyT IO value
+withAdjusted adjust root action = do
     fixture <- Rollout.setup root 1 [Infer.artifact Calls.request]
     let selected = Rollout.initial fixture
     observed <- evalIO $ R.withConfiguredDriver R.Resident (R.worker selected, R.sessions selected) $ \driver -> do
         batch <- R.run driver selected >>= require
-        require (L.prepare configured batch) >>= action
+        require (L.prepare (adjust configured) batch) >>= action
     evalEither observed
 
 admit :: FilePath -> [L.Settings -> L.Settings] -> PropertyT IO [Either L.Error ()]
@@ -134,11 +137,8 @@ script root selected = unlines (header ++ concat (zipWith groupScript [0 :: Int 
                , "printf '%s\\n' released > " ++ quote (root </> ("learner-released" ++ show index))
                , emit [released exchange]
                ]
-    stepScript record = emit [record] : ["IFS= read -r reply || exit 23" | Just (String "current") <- [stage record]]
-    stage (Object fields) = Fields.lookup "stage" fields
-    stage _ = Nothing
+    stepScript record = emit [record] : ["IFS= read -r reply || exit 23" | stage record == Just "current"]
     receive variable expected = "IFS= read -r " ++ variable ++ " || exit 21\ntest \"$" ++ variable ++ "\" = " ++ quote (Bytes.unpack expected) ++ " || exit 22"
-    emit values = "printf '%s\\n' " ++ unwords (map (quote . Bytes.unpack) (Bytes.lines (wire values)))
 
 run :: FilePath -> Scenario scope -> (forall ownerScope. Resident.Resident ownerScope -> IO (Either W.Failure value)) -> IO (Either W.Failure value, ByteString)
 run root selected action = do
@@ -155,3 +155,18 @@ execute ownerScope (exchange : remaining) = do
     case returned of
         Left problem -> pure (Left problem)
         Right receipt -> fmap (receipt :) <$> execute ownerScope remaining
+
+process :: FilePath -> Exchange scope -> String
+process replies exchange = unlines (["IFS= read -r input || exit 21", emit kept, "IFS= read -r permission || exit 22"] ++ concatMap stepLines (steps exchange) ++ [emit (after exchange)])
+  where
+    kept = [event | event <- before exchange, stage event `elem` [Just "loaded_learner", Just "consumed"]]
+    stepLines record = emit [record] : ["IFS= read -r reply || exit 23\nprintf '%s\\n' \"$reply\" >> " ++ quote replies | stage record == Just "current"]
+
+emit :: [Value] -> String
+emit values = "printf '%s\\n' " ++ unwords (map (quote . Bytes.unpack) (Bytes.lines (wire values)))
+
+stage :: Value -> Maybe Text.Text
+stage (Object fields) = case Fields.lookup "stage" fields of
+    Just (String name) -> Just name
+    _ -> Nothing
+stage _ = Nothing

@@ -62,7 +62,7 @@ run :: Resident owner -> Paths -> W.Call scope -> IO (Either W.Failure (Receipt 
 run (Resident process state identity) paths call = do
     progress <- newIORef Awaiting
     let message = Lazy.toStrict (encode (object ["format" .= ("invar-learning-resident-v1" :: String), "checkpoint" .= checkpoint paths, "output" .= output paths, "call" .= W.input call]))
-        exchange = Process.Exchange message (authorize process (state, progress) call) (complete (identity, output paths) progress) (Just (answer progress))
+        exchange = Process.Exchange message (authorize process (state, progress) call) (complete (identity, output paths) progress) (Just (answer call progress))
         transaction = Transport.Transaction exchange (release (state, progress) (paths, call))
     returned <- Transport.exchange process transaction
     case first failure returned of
@@ -74,7 +74,7 @@ run (Resident process state identity) paths call = do
                 _ -> Left (W.ProtocolFailure "Resident update has no checked release acknowledgement")
 
 authorize :: Transport.Resident owner -> (IORef State, IORef (Progress scope)) -> W.Call scope -> ByteString -> IO (Either W.Failure ByteString)
-authorize process (state, progress) call@(W.Call planned binding runtime _) encoded = mask_ $ do
+authorize process (state, progress) call@(W.Call planned binding runtime _ hooks) encoded = mask_ $ do
     current <- readIORef progress
     State registry groups <- readIORef state
     physical <- Transport.groups process
@@ -82,9 +82,13 @@ authorize process (state, progress) call@(W.Call planned binding runtime _) enco
         Awaiting -> case admit registry physical of
             Left problem -> pure (Left problem)
             Right (updated, permit) -> do
-                writeIORef state (State updated groups)
-                writeIORef progress (Consumed permit)
-                pure (Right (W.permission call))
+                announced <- W.announce hooks permit
+                case announced of
+                    Left problem -> pure (Left (W.InvalidOutput problem))
+                    Right () -> do
+                        writeIORef state (State updated groups)
+                        writeIORef progress (Consumed permit)
+                        pure (Right (W.permission call))
         _ -> pure (Left (W.ProtocolFailure "Resident update already holds a consumption permit"))
   where
     admit registry groups = do
@@ -92,13 +96,17 @@ authorize process (state, progress) call@(W.Call planned binding runtime _) enco
         first W.ProtocolFailure (Framing.readiness (groups == 0) request encoded)
         first W.InvalidOutput (P.authorizeResident registry (binding, runtime) encoded)
 
-answer :: IORef (Progress scope) -> ByteString -> IO (Either W.Failure ByteString)
-answer progress encoded = mask_ $ do
+answer :: W.Call scope -> IORef (Progress scope) -> ByteString -> IO (Either W.Failure ByteString)
+answer (W.Call _ _ _ _ hooks) progress encoded = mask_ $ do
     current <- readIORef progress
     case current of
         Consumed permit -> case P.respond permit encoded of
             Left problem -> pure (Left (W.InvalidOutput problem))
-            Right (advanced, reply) -> writeIORef progress (Consumed advanced) >> pure (Right reply)
+            Right (advanced, reply) -> do
+                permitted <- W.consult hooks advanced
+                case permitted of
+                    Left problem -> pure (Left (W.InvalidOutput problem))
+                    Right () -> writeIORef progress (Consumed advanced) >> pure (Right reply)
         _ -> pure (Left (W.ProtocolFailure "A learner step was reported outside an authorized resident update"))
 
 complete :: (Boundary.Owner, FilePath) -> IORef (Progress scope) -> ByteString -> IO (Either W.Failure ())
@@ -122,7 +130,7 @@ complete (identity, directory) progress encoded = do
         pure (result, fact, prepared)
 
 release :: (IORef State, IORef (Progress scope)) -> (Paths, W.Call scope) -> ByteString -> IO (Either W.Failure (Transport.Handshake W.Failure))
-release (state, progress) (paths, W.Call planned _ _ _) _ = do
+release (state, progress) (paths, W.Call planned _ _ _ _) _ = do
     current <- readIORef progress
     pure $ case current of
         Completed result fact prepared -> Right (Transport.Handshake (Boundary.request prepared) (acknowledge prepared result fact))

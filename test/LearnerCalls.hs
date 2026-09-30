@@ -2,15 +2,14 @@
 
 module LearnerCalls (learnerCalls) where
 
-import BatchCalls (quote)
 import Control.Monad (forM_, void)
 import Data.Aeson (Value (..), decodeStrict, object, toJSON, withObject, (.:), (.=))
-import Data.Aeson.KeyMap qualified as Fields
 import Data.Aeson.Types (parseMaybe)
 import Data.ByteString.Char8 qualified as Bytes
-import Data.IORef (newIORef, readIORef, writeIORef)
+import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Text qualified as Text
 import Hedgehog
+import Invar.Async.Completion qualified as Completion
 import Invar.Learn qualified as L
 import Invar.Learn.Protocol qualified as P
 import Invar.Learn.Stream qualified as S
@@ -24,10 +23,10 @@ import Store (workspace)
 import System.Directory (doesFileExist)
 import System.Exit (ExitCode (ExitFailure))
 import System.FilePath ((</>))
-import Updates (alter, change, field, wire)
+import Updates (alter, change, field)
 
 learnerCalls :: Group
-learnerCalls = Group "Resident learner admission" [("two acknowledged updates share a child and retain exact historical facts", once completed), ("all staged artifacts are checked before release", once artifacts), ("initial load and activation are mandatory before permission", once readiness), ("a step from another state, step or cotangent stops the update before release", once steps), ("a later update cannot replay a physical model load", once activation), ("a checked result requires one actual update measurement", once completion), ("mismatched release poisons the owner before another update", once acknowledgement), ("retired learner load instances cannot be reused", once replay), ("final closing failure propagates after acknowledged updates", once closing), ("escaped learner owners cannot start another process", once escaped), ("a process learner receives the core cotangents for every reported step", once processed), ("admission follows the sample's version and behavior policy", once admission)]
+learnerCalls = Group "Resident learner admission" [("two acknowledged updates share a child and retain exact historical facts", once completed), ("all staged artifacts are checked before release", once artifacts), ("initial load and activation are mandatory before permission", once readiness), ("a step from another state, step or cotangent stops the update before release", once steps), ("a later update cannot replay a physical model load", once activation), ("a checked result requires one actual update measurement", once completion), ("mismatched release poisons the owner before another update", once acknowledgement), ("retired learner load instances cannot be reused", once replay), ("final closing failure propagates after acknowledged updates", once closing), ("escaped learner owners cannot start another process", once escaped), ("a process learner receives the core cotangents for every reported step", once processed), ("admission follows the sample's version and behavior policy", once admission), ("the runtime sees each attempt and step before its reply and can refuse one", once hooked), ("a resident learner asks the runtime before permission and before each reply", once residentHooks)]
   where
     once = withTests 1 . property
 
@@ -211,12 +210,8 @@ processed = do
         exchange <- F.prepare root (0, binding 7) planned
         let directory = Resident.output (F.paths exchange)
             worker = W.Worker "/bin/sh" (root </> "process.sh") root "process checkpoint" "process reference" directory
-            kept = [event | event <- F.before exchange, stage event `elem` [Just "loaded_learner", Just "consumed"]]
-            emit values = "printf '%s\\n' " ++ unwords (map (quote . Bytes.unpack) (Bytes.lines (wire values)))
-            stepLines record = emit [record] : ["IFS= read -r reply || exit 23\nprintf '%s\\n' \"$reply\" >> " ++ quote (root </> "replies") | stage record == Just "current"]
-            script = unlines (["IFS= read -r input || exit 21", emit kept, "IFS= read -r permission || exit 22"] ++ concatMap stepLines (F.steps exchange) ++ [emit (F.after exchange)])
-            applied = [value | value <- F.steps exchange, stage value == Just "applied"]
-        writeFile (W.script worker) script
+            applied = [value | value <- F.steps exchange, F.stage value == Just "applied"]
+        writeFile (W.script worker) (F.process (root </> "replies") exchange)
         outcome <- W.run worker (F.call exchange)
         received <- Bytes.readFile (root </> "replies")
         pure (void outcome, received, concat [digests | value <- applied, Just digests <- [parseMaybe (withObject "applied" (.: "consumed")) value]])
@@ -225,11 +220,6 @@ processed = do
         reported = [S.digest (S.Reply 0 "" "" "" objective reward) | value <- decoded, Just (objective, reward) <- [parseMaybe (withObject "cotangents" (\fields -> (,) <$> fields .: "objective" <*> fields .: "reward")) value]]
     assert (not (null digests))
     reported === digests
-  where
-    stage (Object fields) = case Fields.lookup "stage" fields of
-        Just (String name) -> Just name
-        _ -> Nothing
-    stage _ = Nothing
 
 admission :: PropertyT IO ()
 admission = do
@@ -251,3 +241,67 @@ admission = do
             , \settings -> settings {L.schedule = L.Schedule 0 1 1 generated}
             ]
     outcomes === [Right (), Right (), Left L.PolicyMismatch, Left (L.InvalidSettings "Samples of the update's own version must come from the policy being updated"), Left (L.InvalidSettings "Samples must come from version max(0, update - staleness)"), Left L.ReferenceMismatch, Left L.PolicyMismatch, Right (), Left (L.InvalidSettings "Samples must come from version max(0, update - staleness)")]
+
+hooked :: PropertyT IO ()
+hooked = do
+    root <- workspace
+    (accepted, refused) <- F.withAdjusted (\settings -> settings {L.steps = 2}) root $ \planned -> do
+        exchange <- F.prepare root (0, binding 7) planned
+        let attempt name refuse = do
+                let directory = Resident.output (F.paths exchange)
+                    worker = W.Worker "/bin/sh" (root </> name ++ ".sh") root "hooked checkpoint" "hooked reference" directory
+                    replies = root </> name ++ ".replies"
+                events <- newIORef []
+                let record event = modifyIORef' events (++ [event])
+                    hooks = W.Hooks (\stream -> Right () <$ record ("ready", S.identity stream, S.opening stream, 0)) $ \stream reply ->
+                        if refuse == Just (S.replyStep reply)
+                            then pure (Left "refused by the runtime")
+                            else Right () <$ record ("reply " ++ Text.unpack (S.replySample reply), S.replyState reply, show (map Completion.step (S.completions stream)), S.replyStep reply)
+                writeFile replies ""
+                writeFile (W.script worker) (F.process replies exchange)
+                outcome <- W.run worker (W.hooked hooks (F.call exchange))
+                (,,) (void outcome) <$> readIORef events <*> (length . Bytes.lines <$> Bytes.readFile replies)
+        (,) <$> attempt "accepted" Nothing <*> attempt "refused" (Just 1)
+    let (acceptedOutcome, acceptedEvents, acceptedReplies) = accepted
+        (refusedOutcome, refusedEvents, refusedReplies) = refused
+    acceptedOutcome === Right ()
+    map (\(name, _, _, _) -> name) acceptedEvents === ["ready", "reply s0", "reply s1", "reply s2"]
+    [(closed, index) | (_, _, closed, index) <- drop 1 acceptedEvents] === [("[]", 0), ("[]", 0), ("[0]", 1)]
+    acceptedReplies === 3
+    case refusedOutcome of
+        Left (W.InvalidOutput (P.Refused _)) -> success
+        unexpected -> annotateShow unexpected >> failure
+    map (\(name, _, _, _) -> name) refusedEvents === ["ready", "reply s0", "reply s1"]
+    refusedReplies === 2
+
+residentHooks :: PropertyT IO ()
+residentHooks = do
+    forM_ [Nothing, Just Nothing, Just (Just 0)] $ \refusal -> do
+        root <- workspace
+        (returned, events) <- F.withPlan root $ \planned -> do
+            original <- F.prepare root (0, binding 7) planned
+            events <- newIORef []
+            let record event = modifyIORef' events (++ [event])
+                hooks =
+                    W.Hooks
+                        (\stream -> if refusal == Just Nothing then pure (Left "not ready") else Right () <$ record ("ready " ++ S.opening stream))
+                        (\_ reply -> if refusal == Just (Just (S.replyStep reply)) then pure (Left "refused") else Right () <$ record ("reply " ++ Text.unpack (S.replySample reply)))
+                exchange = original {F.call = W.hooked hooks (F.call original)}
+            outcome <- fmap (void . fst) (F.run root (F.scenario [exchange]) (\owner -> F.execute owner [exchange]))
+            (,) outcome <$> readIORef events
+        case refusal of
+            Nothing -> do
+                returned === Right ()
+                events === ["ready " ++ L.policy F.configured, "reply s0", "reply s1", "reply s2"]
+            Just Nothing -> do
+                refused returned
+                events === []
+                evalIO (doesFileExist (root </> "learner-approved0")) >>= (=== False)
+            Just (Just _) -> do
+                refused returned
+                events === ["ready " ++ L.policy F.configured]
+                evalIO (doesFileExist (root </> "learner-released0")) >>= (=== False)
+  where
+    refused returned = case returned of
+        Left (W.InvalidOutput (P.Refused _)) -> success
+        unexpected -> annotateShow unexpected >> failure

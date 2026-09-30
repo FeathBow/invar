@@ -1,6 +1,6 @@
 {-# LANGUAGE RoleAnnotations #-}
 
-module Invar.Rollout (Driver, Mode (..), Options (..), Batch, Sample, Error (..), withDriver, withConfiguredDriver, run, samples, delivered, name, group, observation, reward, scored, completion, loaded) where
+module Invar.Rollout (Driver, Mode (..), Options (..), Observer (..), Batch, Sample, Error (..), withDriver, withConfiguredDriver, run, runObserved, silent, samples, delivered, name, group, observation, reward, scored, completion, loaded) where
 
 import Control.Concurrent (forkIOWithUnmask, killThread)
 import Control.Concurrent.MVar (newEmptyMVar, newMVar, putMVar, takeMVar, withMVar)
@@ -28,6 +28,11 @@ data Mode = Serial | Batched | Resident | Shared deriving (Eq, Show)
 
 data Options = Options {worker :: W.Worker, mode :: Mode, sessions :: [[(String, String)]], definition :: C.Definition, order :: [Natural], delivery :: [Natural], reference :: Maybe Batch.Reference}
 
+data Observer = Observer {dispatched :: Natural -> [(Natural, V.Binding)] -> IO (), checked :: Natural -> V.Binding -> R.Result -> IO ()}
+
+silent :: Observer
+silent = Observer (\_ _ -> pure ()) (\_ _ _ -> pure ())
+
 type role Batch nominal
 data Batch scope = Batch [Sample] [V.Binding]
 
@@ -50,17 +55,20 @@ withConfiguredDriver Shared _ _ = pure (Left (Dispatch "Shared inference require
 withConfiguredDriver _ _ action = Right <$> withDriver action
 
 run :: Driver scope -> Options -> IO (Either Error (Batch scope))
-run driver options = case C.withCohort (definition options) (collect driver options) of
+run driver = runObserved driver silent
+
+runObserved :: Driver scope -> Observer -> Options -> IO (Either Error (Batch scope))
+runObserved driver observer options = case C.withCohort (definition options) (collect driver observer options) of
     Left problem -> pure (Left (Declaration problem))
     Right action -> action
 
-collect :: Driver scope -> Options -> C.Cohort cohort -> IO (Either Error (Batch scope))
-collect driver@(Driver lock _ _) options cohort = case planning of
+collect :: Driver scope -> Observer -> Options -> C.Cohort cohort -> IO (Either Error (Batch scope))
+collect driver@(Driver lock _ _) observer options cohort = case planning of
     Left problem -> pure (Left problem)
     Right (plan, selected) -> withMVar lock $ \() -> do
         let count = fromIntegral (length selected)
         base <- reserve driver count
-        completed <- execute driver options (base, selected)
+        completed <- execute driver observer options (base, selected)
         pure $ do
             values <- completed
             supplied <- first Scheduling (S.deliver plan [(index, (observed, executed)) | (index, observed, executed) <- values])
@@ -72,26 +80,34 @@ collect driver@(Driver lock _ _) options cohort = case planning of
         selected <- first Scheduling (S.execute plan members)
         pure (plan, selected)
 
-execute :: Driver driver -> Options -> (Natural, [(Natural, C.Member scope)]) -> IO (Either Error [(Natural, C.Observation scope, Observed.Observation)])
-execute driver@(Driver _ _ pool) options (base, selected) = case prepared of
+execute :: Driver driver -> Observer -> Options -> (Natural, [(Natural, C.Member scope)]) -> IO (Either Error [(Natural, C.Observation scope, Observed.Observation)])
+execute driver@(Driver _ _ pool) observer options (base, selected) = case prepared of
     Left problem -> pure (Left problem)
     Right (calls, workers) -> dispatch calls workers `finally` mapM_ Resident.flush pool
   where
     prepared = (,) <$> traverse (prepareCall base) selected <*> runners driver options
     dispatch _ [] = pure (Left (Dispatch "At least one session is required"))
-    dispatch calls [single] = finishSession selected <$> single echo calls
+    dispatch calls [single] = do
+        dispatched observer 0 [(index, I.binding call) | ((index, _), call) <- zip selected calls]
+        returned <- single echo calls
+        report (finishSession selected returned)
     dispatch calls workers = do
         let assigned = partition (length workers) (zip selected calls)
-        outcomes <- concurrently [session launch members | (launch, members) <- zip workers assigned]
+        outcomes <- concurrently [session slot launch members | (slot, launch, members) <- zip3 [0 ..] workers assigned]
         mapM_ (mapM_ echo . fst) outcomes
         pure $ do
-            completed <- traverse (\(_, (members, returned)) -> finishSession members returned) outcomes
+            completed <- traverse snd outcomes
             pure (sortOn (\(index, _, _) -> index) (concat completed))
-    session launch members = do
+    session slot launch members = do
+        dispatched observer slot [(index, I.binding call) | ((index, _), call) <- members]
         buffer <- newIORef []
         returned <- launch (\line -> modifyIORef' buffer (line :)) (map snd members)
         emitted <- reverse <$> readIORef buffer
-        pure (emitted, (map fst members, returned))
+        finished <- report (finishSession (map fst members) returned)
+        pure (emitted, finished)
+    report finished = do
+        mapM_ (mapM_ (\(index, _, executed) -> checked observer index (V.completedBinding (Observed.completion executed)) (Observed.report executed))) finished
+        pure finished
 
 type Runner = (Bytes.ByteString -> IO ()) -> [I.Call] -> IO (Either W.Failure [Observed.Observation])
 

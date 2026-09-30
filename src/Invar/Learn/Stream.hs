@@ -1,4 +1,4 @@
-module Invar.Learn.Stream (Sample (..), Current (..), Applied (..), Reply (..), Stream, Error (..), begin, proximal, current, applied, complete, digest, observationOf, proximals, currents, identity) where
+module Invar.Learn.Stream (Sample (..), Current (..), Applied (..), Reply (..), Stream, Error (..), begin, proximal, current, applied, complete, digest, observationOf, proximals, currents, identity, exchange, opening, completions) where
 
 import Control.Monad (unless, when)
 import Crypto.Hash.SHA256 qualified as SHA256
@@ -62,6 +62,7 @@ data Stream = Stream
     , expected :: String
     , fixed :: Map Text [Word32]
     , observed :: [(Natural, Text, [Word32])]
+    , closed :: [Completion]
     }
     deriving (Eq, Show)
 
@@ -73,7 +74,7 @@ begin bound chosen initial declared steps = do
     when (any (\entry -> not (null (referenceWords entry)) && length (referenceWords entry) /= length (behaviorWords entry)) declared) (Left (InvalidPlan "Reference words must cover every response token"))
     when (null steps || any null steps) (Left (InvalidPlan "Optimizer steps must be nonempty"))
     unless (Set.fromList (concat steps) == Map.keysSet named) (Left (InvalidPlan "Optimizer steps must use every sample and no other"))
-    pure (Stream bound (planIdentity chosen initial declared steps) chosen named steps 0 [] initial Map.empty [])
+    pure (Stream bound (planIdentity chosen initial declared steps) chosen named steps 0 [] initial Map.empty [] [])
 
 planIdentity :: Objective.Profile -> String -> [Sample] -> [[Text]] -> String
 planIdentity chosen initial declared steps = Artifact.hex (SHA256.hash (Lazy.toStrict (Builder.toLazyByteString encoded)))
@@ -129,8 +130,8 @@ applied stream report = do
     when (position stream == 0) $ case [entry | entry <- Map.keys (samples stream), Map.notMember entry (fixed stream)] of
         missing : _ -> Left (MissingProximal missing)
         [] -> pure ()
-    let closed = Completion {Completion.binding = binding stream, Completion.plan = planned stream, Completion.step = position stream, Completion.consumed = consumedDigest (consumed report), Completion.before = before report, Completion.after = after report}
-    pure (stream {position = position stream + 1, answered = [], expected = after report}, closed)
+    let done = Completion {Completion.binding = binding stream, Completion.plan = planned stream, Completion.step = position stream, Completion.consumed = consumedDigest (consumed report), Completion.before = before report, Completion.after = after report}
+    pure (stream {position = position stream + 1, answered = [], expected = after report, closed = closed stream ++ [done]}, done)
 
 complete :: Stream -> Either Error String
 complete stream
@@ -148,6 +149,15 @@ observationOf values = Artifact.hex (SHA256.hash (Lazy.toStrict (Builder.toLazyB
 
 identity :: Stream -> String
 identity = planned
+
+exchange :: Stream -> V.Binding
+exchange = binding
+
+opening :: Stream -> String
+opening = expected
+
+completions :: Stream -> [Completion]
+completions = closed
 
 proximals :: Stream -> Map Text [Word32]
 proximals = fixed

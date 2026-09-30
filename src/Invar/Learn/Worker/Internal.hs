@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RoleAnnotations #-}
 
-module Invar.Learn.Worker.Internal (Mode (..), Worker (..), Call (..), Failure (..), prepare, input, permission, verifyArtifacts, verifyGradients, verifyProbabilities, verifyCheckpoint) where
+module Invar.Learn.Worker.Internal (Mode (..), Worker (..), Call (..), Hooks (..), Failure (..), prepare, hooked, announce, consult, input, permission, verifyArtifacts, verifyGradients, verifyProbabilities, verifyCheckpoint) where
 
 import Control.Exception (bracket)
 import Crypto.Hash.SHA256 qualified as SHA256
@@ -16,6 +16,7 @@ import Invar.Infer.Wire qualified as Binding
 import Invar.Learn qualified as L
 import Invar.Learn.Probability qualified as Probability
 import Invar.Learn.Protocol qualified as P
+import Invar.Learn.Stream qualified as S
 import Invar.Learn.Wire qualified as Wire
 import Invar.Load qualified as Load
 import Invar.Policy qualified as Policy
@@ -28,7 +29,9 @@ data Mode = Process | Resident | Shared deriving (Eq, Show)
 data Worker = Worker {executable :: FilePath, script :: FilePath, cache :: FilePath, checkpoint :: FilePath, reference :: FilePath, output :: FilePath}
 
 type role Call nominal
-data Call scope = Call (L.Plan scope) V.Binding V.Runtime String
+data Call scope = Call (L.Plan scope) V.Binding V.Runtime String Hooks
+
+data Hooks = Hooks {ready :: S.Stream -> IO (Either String ()), replying :: S.Stream -> S.Reply -> IO (Either String ())}
 
 data Failure = Preparation L.Error | Lowering Wire.Error | Loading Load.Error | WorkerExit ExitCode | InvalidOutput P.Error | GradientMismatch String String | ProbabilityMismatch String String | InvalidProbability String | PolicyMismatch String String | LearnerMismatch String String | ProtocolFailure String
     deriving (Eq, Show)
@@ -41,13 +44,26 @@ prepare binding planned = do
     loading <- first Loading (Load.prepare binding image)
     let invocation = Binding.invocationValue binding (L.program planned)
         encoded = encode (object ["invocation" .= invocation, "request" .= request, "load" .= Binding.invocationValue binding (Load.program loading)])
-    pure (Call planned binding runtime (Text.unpack (decodeUtf8 (Lazy.toStrict encoded))))
+    pure (Call planned binding runtime (Text.unpack (decodeUtf8 (Lazy.toStrict encoded))) (Hooks (const (pure (Right ()))) (\_ _ -> pure (Right ()))))
+
+announce :: Hooks -> P.Permit -> IO (Either P.Error ())
+announce hooks permit = case P.exchanging permit of
+    Just (steps, Nothing) -> either (Left . P.Refused) Right <$> ready hooks steps
+    _ -> pure (Left (P.Unexpected "Update was authorized without a fresh checked exchange"))
+
+consult :: Hooks -> P.Permit -> IO (Either P.Error ())
+consult hooks permit = case P.exchanging permit of
+    Just (steps, Just reply) -> either (Left . P.Refused) Right <$> replying hooks steps reply
+    _ -> pure (Left (P.Unexpected "A reply has no checked learner step"))
+
+hooked :: Hooks -> Call scope -> Call scope
+hooked hooks (Call planned binding runtime encoded _) = Call planned binding runtime encoded hooks
 
 input :: Call scope -> String
-input (Call _ _ _ encoded) = encoded
+input (Call _ _ _ encoded _) = encoded
 
 permission :: Call scope -> Bytes.ByteString
-permission (Call planned binding _ _) = Lazy.toStrict (encode (Binding.invocationValue binding (L.program planned)))
+permission (Call planned binding _ _ _) = Lazy.toStrict (encode (Binding.invocationValue binding (L.program planned)))
 
 verifyGradients :: FilePath -> P.Result -> IO (Either Failure ())
 verifyGradients directory result = do
