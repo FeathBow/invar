@@ -21,6 +21,7 @@ from worker.hf.model import adapter_state
 from worker.hf.tensors import assert_equal, digest
 from worker.hf.checkpoint import checkpoint
 from worker.hf.step import file_digest, restore_inputs
+from worker.tests.hf.cohort import synchronous
 from worker.tests.hf.tokenization import admitted_request, make_tokenizer
 
 
@@ -34,10 +35,10 @@ def prepared():
     tokenizer = make_tokenizer()
     policy = checkpoint(original.model, original.optimizer, directory, tokenizer=tokenizer, expected=None)
     saved = torch.load(directory / "learner.pt", weights_only=True)
-    declared = decode({**admitted_request(tokenizer), "policy": digest(policy),
+    declared = decode(synchronous({**admitted_request(tokenizer), "policy": digest(policy),
                        "learner": file_digest(directory / "learner.pt"),
                        "base": saved["base"], "assembly": saved["assembly"],
-                       "reference": digest(reference)})
+                       "reference": digest(reference)}))
     options = SimpleNamespace(checkpoint=directory, reference=reference_path, tokenizer=tokenizer)
     return original, reference, declared, options
 

@@ -1,10 +1,11 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 
-module LearnerFixture (Exchange (..), Scenario (..), withPlan, prepare, scenario, run, execute, worker, owner, timer, wire, require) where
+module LearnerFixture (Exchange (..), Scenario (..), configured, withPlan, admit, prepare, scenario, run, execute, worker, owner, timer, wire, require) where
 
 import BatchCalls (quote)
 import Calls qualified
+import Control.Monad (void)
 import Data.Aeson (Value (..), eitherDecodeStrict, object, toJSON, (.=))
 import Data.Aeson.KeyMap qualified as Fields
 import Data.ByteString (ByteString)
@@ -38,14 +39,25 @@ data Scenario scope = Scenario {groups :: [Exchange scope], closed :: Value, end
 require :: (Show problem) => Either problem value -> IO value
 require = either (ioError . userError . show) pure
 
+configured :: L.Settings
+configured = L.Settings (Infer.artifact Calls.request) (replicate 64 'b') (Infer.artifact Calls.request) (Infer.tokenizer Calls.request) (replicate 64 '0') (replicate 64 '1') (Infer.base Calls.request) (Infer.assembly Calls.request) 0.2 0.04 0.0001 1 (L.Optimizer 0.002 0.8 0.95 0.0000001 0.01) (L.synchronous 0 (Infer.artifact Calls.request))
+
 withPlan :: FilePath -> (forall scope. L.Plan scope -> IO value) -> PropertyT IO value
 withPlan root action = do
     fixture <- Rollout.setup root 1 [Infer.artifact Calls.request]
     let selected = Rollout.initial fixture
-        configured = L.Settings (Infer.artifact Calls.request) (replicate 64 'b') (Infer.artifact Calls.request) (Infer.tokenizer Calls.request) (replicate 64 '0') (replicate 64 '1') (Infer.base Calls.request) (Infer.assembly Calls.request) 0.2 0.04 0.0001 1 (L.Optimizer 0.002 0.8 0.95 0.0000001 0.01)
     observed <- evalIO $ R.withConfiguredDriver R.Resident (R.worker selected, R.sessions selected) $ \driver -> do
         batch <- R.run driver selected >>= require
         require (L.prepare configured batch) >>= action
+    evalEither observed
+
+admit :: FilePath -> [L.Settings -> L.Settings] -> PropertyT IO [Either L.Error ()]
+admit root changes = do
+    fixture <- Rollout.setup root 1 [Infer.artifact Calls.request]
+    let selected = Rollout.initial fixture
+    observed <- evalIO $ R.withConfiguredDriver R.Resident (R.worker selected, R.sessions selected) $ \driver -> do
+        batch <- R.run driver selected >>= require
+        pure [void (L.prepare (adjust configured) batch) | adjust <- changes]
     evalEither observed
 
 owner :: Value

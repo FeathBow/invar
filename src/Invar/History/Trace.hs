@@ -67,7 +67,7 @@ advance run (current, offset, accepted, state, remaining) (index, workload) = do
     policy <- Report.artifact "adapter" (Cohort.update observed)
     learner <- Report.artifact "learner" (Cohort.update observed)
     let diagnostic = [observedFrame | observedFrame@(Frame _ fields) <- body, Fields.lookup "stage" fields `elem` map (Just . String) ["loading", "profile", "load", "activation", "released", "loaded_learner", "inference", "proximal", "current", "applied", "reward_update", "artifacts", "checkpoint"]]
-    pure (current {Learn.policy, Learn.learner}, call + 1, Generation observed published finished diagnostic groups modelProfiles : accepted, next, rest)
+    pure (current {Learn.policy, Learn.learner, Learn.schedule = Learn.synchronous (index + 1) policy}, call + 1, Generation observed published finished diagnostic groups modelProfiles : accepted, next, rest)
 
 phase :: Text -> Frame -> Bool
 phase expected (Frame _ fields) = Fields.lookup "phase" fields == Just (String expected)

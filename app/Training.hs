@@ -85,7 +85,8 @@ methodName Store.LinkImmutable = "reference"
 settings :: O.Fields -> Either String Learn.Settings
 settings fields = do
     optimizer <- Learn.Optimizer <$> number "rate" <*> number "beta1" <*> number "beta2" <*> number "optimizer-epsilon" <*> number "decay"
-    Learn.Settings <$> string "policy" <*> string "learner" <*> string "reference-digest" <*> string "tokenizer-digest" <*> string "base-digest" <*> string "assembly-digest" <*> string "behavior-base-digest" <*> string "behavior-assembly-digest" <*> number "clip" <*> number "penalty" <*> number "delta" <*> maybe (pure 1) (const (O.numeric fields "steps")) (O.optional fields "steps") <*> pure optimizer
+    current <- string "policy"
+    Learn.Settings current <$> string "learner" <*> string "reference-digest" <*> string "tokenizer-digest" <*> string "base-digest" <*> string "assembly-digest" <*> string "behavior-base-digest" <*> string "behavior-assembly-digest" <*> number "clip" <*> number "penalty" <*> number "delta" <*> maybe (pure 1) (const (O.numeric fields "steps")) (O.optional fields "steps") <*> pure optimizer <*> pure (Learn.synchronous 0 current)
   where
     string = O.required fields
     number = O.numeric fields

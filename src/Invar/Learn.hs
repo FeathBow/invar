@@ -1,6 +1,6 @@
 {-# LANGUAGE RoleAnnotations #-}
 
-module Invar.Learn (Optimizer (..), Settings (..), Plan, Error (..), validate, materialization, prepare, observedInput, input, program, emission, rollout, invocation) where
+module Invar.Learn (Optimizer (..), Schedule (..), Settings (..), Plan, Error (..), synchronous, validate, materialization, prepare, observedInput, input, program, emission, rollout, invocation) where
 
 import Control.Monad (unless)
 import Data.Aeson (encode)
@@ -30,6 +30,12 @@ import Numeric.Natural (Natural)
 data Optimizer = Optimizer {learningRate :: Double, firstMoment :: Double, secondMoment :: Double, epsilon :: Double, weightDecay :: Double}
     deriving (Eq, Show)
 
+data Schedule = Schedule {update :: Natural, staleness :: Natural, version :: Natural, behaviorPolicy :: String}
+    deriving (Eq, Show)
+
+synchronous :: Natural -> String -> Schedule
+synchronous index current = Schedule {update = index, staleness = 0, version = index, behaviorPolicy = current}
+
 data Settings = Settings
     { policy :: String
     , learner :: String
@@ -44,6 +50,7 @@ data Settings = Settings
     , delta :: Double
     , steps :: Natural
     , optimizer :: Optimizer
+    , schedule :: Schedule
     }
     deriving (Eq, Show)
 
@@ -70,7 +77,7 @@ observedInput settings batch = do
 compileInput :: Settings -> [InputSample] -> Either Error (A.Checked, E.World, E.Emission, ByteString)
 compileInput settings samples = do
     validate settings
-    unless (all ((== policy settings) . I.artifact . Result.consumed . sampleResult) samples) (Left PolicyMismatch)
+    unless (all ((== behaviorPolicy (schedule settings)) . I.artifact . Result.consumed . sampleResult) samples) (Left PolicyMismatch)
     mapM_ (materialization settings . Result.consumed . sampleResult) samples
     unless (all (scoredBy settings . Result.referenceScores . sampleResult) samples) (Left ReferenceMismatch)
     checked <- either (Left . Construction) Right P.checked
@@ -84,7 +91,7 @@ compileInput settings samples = do
 
 scoredBy :: Settings -> Maybe Output.Scored -> Bool
 scoredBy settings scored
-    | reference settings == policy settings = null scored
+    | reference settings == behaviorPolicy (schedule settings) = null scored
     | otherwise = fmap Output.adapter scored == Just (reference settings)
 
 validate :: Settings -> Either Error ()
@@ -93,11 +100,15 @@ validate settings = do
     unless (identity (tokenizer settings)) (Left (InvalidSettings "Expected a lowercase SHA-256 tokenizer identity"))
     unless algorithm (Left (InvalidSettings "Invalid GRPO coefficients"))
     unless (steps settings > 0) (Left (InvalidSettings "An update needs at least one optimizer step"))
+    unless (identity (behaviorPolicy chosenSchedule)) (Left (InvalidSettings "Expected a lowercase SHA-256 behavior policy identity"))
+    unless (version chosenSchedule == (if update chosenSchedule > staleness chosenSchedule then update chosenSchedule - staleness chosenSchedule else 0)) (Left (InvalidSettings "Samples must come from version max(0, update - staleness)"))
+    unless (version chosenSchedule /= update chosenSchedule || behaviorPolicy chosenSchedule == policy settings) (Left (InvalidSettings "Samples of the update's own version must come from the policy being updated"))
     unless adamw (Left (InvalidSettings "Invalid AdamW coefficients"))
   where
     algorithm = finite (clip settings) && clip settings > 0 && clip settings < 1 && nonnegative (penalty settings) && positive (delta settings)
     adamw = nonnegative (learningRate chosen) && positive (epsilon chosen) && nonnegative (weightDecay chosen) && all moment [firstMoment chosen, secondMoment chosen]
     chosen = optimizer settings
+    chosenSchedule = schedule settings
     identity = Digest.sha256
     finite value = not (isNaN value || isInfinite value)
     positive value = finite value && value > 0
@@ -110,10 +121,12 @@ materialization settings requested = do
     unless (behaviorBase settings == I.base requested && behaviorAssembly settings == I.assembly requested) (Left MaterializationMismatch)
 
 world :: Settings -> [InputSample] -> E.World
-world settings samples = Map.fromList [(Semantic "policy", Load.imageValue image), (Semantic "learner", learnerValue settings), (Semantic "reference", text (reference settings)), (Semantic "algorithm", algorithm), (Semantic "trajectories", keyed (trajectory . sampleResult)), (Semantic "behavior_model", behaviorModel), (Semantic "behavior", keyed (Sequence . map (Atom . Bits32) . Result.behaviorBits . sampleResult)), (Semantic "reference_scores", keyed (Sequence . map (Atom . Bits32) . maybe [] Output.scores . Result.referenceScores . sampleResult)), (Semantic "rewards", keyed (Atom . Number . sampleReward)), (Semantic "groups", groupValues indexed), (Semantic "order", Sequence [Mapping (Map.singleton index marker) | (index, _) <- indexed])]
+world settings samples = Map.fromList [(Semantic "policy", Load.imageValue image), (Semantic "learner", learnerValue settings), (Semantic "reference", text (reference settings)), (Semantic "algorithm", algorithm), (Semantic "trajectories", keyed (trajectory . sampleResult)), (Semantic "behavior_model", behaviorModel), (Semantic "schedule", record [("update", Atom (Token (update chosenSchedule))), ("staleness", Atom (Token (staleness chosenSchedule)))]), (Semantic "generations", keyed (const generation)), (Semantic "behavior", keyed (Sequence . map (Atom . Bits32) . Result.behaviorBits . sampleResult)), (Semantic "reference_scores", keyed (Sequence . map (Atom . Bits32) . maybe [] Output.scores . Result.referenceScores . sampleResult)), (Semantic "rewards", keyed (Atom . Number . sampleReward)), (Semantic "groups", groupValues indexed), (Semantic "order", Sequence [Mapping (Map.singleton index marker) | (index, _) <- indexed])]
   where
     image = Materialization.learning (policy settings, learner settings, tokenizer settings, base settings, assembly settings, reference settings)
     behaviorModel = record [("base", text (behaviorBase settings)), ("assembly", text (behaviorAssembly settings))]
+    chosenSchedule = schedule settings
+    generation = record [("version", Atom (Token (version chosenSchedule))), ("policy", text (behaviorPolicy chosenSchedule))]
     indexed = zip [0 ..] samples
     keyed project = Mapping (Map.fromList [(index, project sample) | (index, sample) <- indexed])
     algorithm = record [("epsilon", number (clip settings)), ("penalty", number (penalty settings)), ("delta", number (delta settings)), ("steps", Atom (Number (fromIntegral (steps settings))))]

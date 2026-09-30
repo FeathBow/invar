@@ -56,6 +56,7 @@ def fixture(*, directory=None):
         actual = generate(loaded, tokenizer, numerical, device="cpu")
         samples.append({**asdict(numerical), "tokens": actual.tokens[0].tolist(),
                         "prompt_length": actual.prompt_length, "text": actual.text,
+                        "version": 0, "behavior_policy": digest(state),
                         "truncated": actual.truncated,
                         "behavior_bits": actual.behavior.view(torch.uint32).tolist(), "reference_bits": [],
                         "reward": (1.0, 0.0)[index],

@@ -27,7 +27,7 @@ import System.FilePath ((</>))
 import Updates (alter, change, field, wire)
 
 learnerCalls :: Group
-learnerCalls = Group "Resident learner admission" [("two acknowledged updates share a child and retain exact historical facts", once completed), ("all staged artifacts are checked before release", once artifacts), ("initial load and activation are mandatory before permission", once readiness), ("a step from another state, step or cotangent stops the update before release", once steps), ("a later update cannot replay a physical model load", once activation), ("a checked result requires one actual update measurement", once completion), ("mismatched release poisons the owner before another update", once acknowledgement), ("retired learner load instances cannot be reused", once replay), ("final closing failure propagates after acknowledged updates", once closing), ("escaped learner owners cannot start another process", once escaped), ("a process learner receives the core cotangents for every reported step", once processed)]
+learnerCalls = Group "Resident learner admission" [("two acknowledged updates share a child and retain exact historical facts", once completed), ("all staged artifacts are checked before release", once artifacts), ("initial load and activation are mandatory before permission", once readiness), ("a step from another state, step or cotangent stops the update before release", once steps), ("a later update cannot replay a physical model load", once activation), ("a checked result requires one actual update measurement", once completion), ("mismatched release poisons the owner before another update", once acknowledgement), ("retired learner load instances cannot be reused", once replay), ("final closing failure propagates after acknowledged updates", once closing), ("escaped learner owners cannot start another process", once escaped), ("a process learner receives the core cotangents for every reported step", once processed), ("admission follows the sample's version and behavior policy", once admission)]
   where
     once = withTests 1 . property
 
@@ -230,3 +230,24 @@ processed = do
         Just (String name) -> Just name
         _ -> Nothing
     stage _ = Nothing
+
+admission :: PropertyT IO ()
+admission = do
+    root <- workspace
+    let generated = L.policy F.configured
+        successor = replicate 64 'd'
+        stale settings = settings {L.policy = successor, L.learner = replicate 64 '9', L.schedule = L.Schedule 1 1 0 generated}
+    outcomes <-
+        F.admit
+            root
+            [ id
+            , stale
+            , \settings -> (stale settings) {L.schedule = L.Schedule 1 1 0 successor}
+            , \settings -> (stale settings) {L.schedule = L.Schedule 1 0 1 generated}
+            , \settings -> (stale settings) {L.schedule = L.Schedule 2 1 0 generated}
+            , \settings -> (stale settings) {L.reference = replicate 64 '7'}
+            , \settings -> settings {L.policy = successor, L.schedule = L.synchronous 0 successor}
+            , \settings -> settings {L.schedule = L.Schedule 0 1 0 generated}
+            , \settings -> settings {L.schedule = L.Schedule 0 1 1 generated}
+            ]
+    outcomes === [Right (), Right (), Left L.PolicyMismatch, Left (L.InvalidSettings "Samples of the update's own version must come from the policy being updated"), Left (L.InvalidSettings "Samples must come from version max(0, update - staleness)"), Left L.ReferenceMismatch, Left L.PolicyMismatch, Right (), Left (L.InvalidSettings "Samples must come from version max(0, update - staleness)")]

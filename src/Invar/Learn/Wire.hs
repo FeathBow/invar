@@ -23,7 +23,7 @@ import Numeric.Natural (Natural)
 data Error = Shape String | Membership String | Numerical Advantage.Error
     deriving (Eq, Show)
 
-data Inputs = Inputs {trajectories :: Map Natural (V.Value Natural), behavior :: Map Natural (V.Value Natural), scores :: Map Natural (V.Value Natural), rewards :: Map Natural (V.Value Natural), groups :: Map Natural String, order :: [Natural]}
+data Inputs = Inputs {trajectories :: Map Natural (V.Value Natural), generations :: Map Natural (V.Value Natural), behavior :: Map Natural (V.Value Natural), scores :: Map Natural (V.Value Natural), rewards :: Map Natural (V.Value Natural), groups :: Map Natural String, order :: [Natural]}
 
 lower :: E.Emission -> Either Error Value
 lower command@(E.Emission "update" "grpo-token-mean/v1" payload) = do
@@ -37,6 +37,7 @@ lower command@(E.Emission "update" "grpo-token-mean/v1" payload) = do
     base <- field "base" learner >>= text
     assembly <- field "assembly" learner >>= text
     behavior <- field "behavior_model" payload >>= modelValue
+    schedule <- field "schedule" payload >>= scheduleValue
     reference <- field "reference" payload >>= text
     optimizer <- field "optimizer" learner >>= optimizerValue
     epsilon <- field "epsilon" algorithm >>= number
@@ -48,7 +49,7 @@ lower command@(E.Emission "update" "grpo-token-mean/v1" payload) = do
     expected <- first Numerical (Advantage.calculate delta supplied)
     entries <- traverse (sample samples expected) ordered
     unless (count > 0 && count <= toInteger (length entries)) (Left (Shape "Optimizer steps must be between one and the number of samples"))
-    let encoded = object ["specification" .= ("grpo-token-mean/v1" :: String), "policy" .= policy, "learner" .= checkpoint, "tokenizer" .= tokenizer, "base" .= base, "assembly" .= assembly, "behavior_model" .= behavior, "reference" .= reference, "optimizer" .= optimizer, "epsilon" .= epsilon, "penalty" .= penalty, "delta" .= delta, "steps" .= batches count (map label [0 .. length entries - 1]), "samples" .= entries, "order" .= map label [0 .. length entries - 1]]
+    let encoded = object ["specification" .= ("grpo-token-mean/v1" :: String), "policy" .= policy, "learner" .= checkpoint, "tokenizer" .= tokenizer, "base" .= base, "assembly" .= assembly, "behavior_model" .= behavior, "schedule" .= schedule, "reference" .= reference, "optimizer" .= optimizer, "epsilon" .= epsilon, "penalty" .= penalty, "delta" .= delta, "steps" .= batches count (map label [0 .. length entries - 1]), "samples" .= entries, "order" .= map label [0 .. length entries - 1]]
     Request.value <$> first Shape (parseEither Request.parse encoded)
 lower _ = Left (Shape "Expected the GRPO update emission")
 
@@ -70,19 +71,20 @@ image _ = Left (Shape "Expected the GRPO update emission")
 inputs :: V.Value Natural -> Either Error Inputs
 inputs payload = do
     trajectories <- field "trajectories" payload >>= mapping
+    generations <- field "generations" payload >>= mapping
     behavior <- field "behavior" payload >>= mapping
     scores <- field "reference_scores" payload >>= mapping
     rewards <- field "rewards" payload >>= mapping
     order <- field "order" payload >>= sequenceValues >>= traverse singleton
     let keys = Map.keysSet trajectories
     unless (not (null order) && length order == Set.size keys && Set.fromList order == keys) (Left (Membership "Order must select every trajectory exactly once"))
-    unless (Map.keysSet behavior == keys && Map.keysSet scores == keys && Map.keysSet rewards == keys) (Left (Membership "Behavior, reference scores and rewards must share the trajectory keys"))
+    unless (Map.keysSet generations == keys && Map.keysSet behavior == keys && Map.keysSet scores == keys && Map.keysSet rewards == keys) (Left (Membership "Generations, behavior, reference scores and rewards must share the trajectory keys"))
     grouped <- field "groups" payload >>= sequenceValues >>= traverse selectors
     unless (all ((>= minimumGroup) . length) grouped) (Left (Membership "Every advantage group must contain at least two samples"))
     let assignments = [(key, "g" ++ show index) | (index, group) <- zip [0 :: Natural ..] grouped, key <- group]
         groups = Map.fromList assignments
     unless (length assignments == Set.size keys && Map.keysSet groups == keys) (Left (Membership "Groups must partition the trajectory keys"))
-    pure Inputs {trajectories, behavior, scores, rewards, groups, order}
+    pure Inputs {trajectories, generations, behavior, scores, rewards, groups, order}
 
 minimumGroup :: Int
 minimumGroup = 2
@@ -96,6 +98,9 @@ rewardInput batch (position, key) = do
 sample :: Inputs -> Map String Word32 -> (Natural, Natural) -> Either Error Value
 sample batch expected (position, key) = do
     trajectory <- lookupKey key (trajectories batch)
+    generation <- lookupKey key (generations batch)
+    version <- field "version" generation >>= natural
+    behaviorPolicy <- field "policy" generation >>= text
     group <- lookupKey key (groups batch)
     probabilities <- lookupKey key (behavior batch) >>= sequenceValues >>= traverse bits
     scored <- lookupKey key (scores batch) >>= sequenceValues >>= traverse bits
@@ -109,13 +114,19 @@ sample batch expected (position, key) = do
     prefix <- field "prompt_length" trajectory >>= natural
     response <- field "text" trajectory >>= text
     truncated <- field "truncated" trajectory >>= boolean
-    pure (object ["sample" .= label position, "group" .= group, "prompt" .= prompt, "seed" .= seed, "limit" .= limit, "temperature" .= temperature, "tokens" .= tokens, "prompt_length" .= prefix, "behavior_bits" .= probabilities, "reference_bits" .= scored, "text" .= response, "truncated" .= truncated, "reward" .= reward, "advantage_bits" .= advantage])
+    pure (object ["sample" .= label position, "group" .= group, "prompt" .= prompt, "seed" .= seed, "limit" .= limit, "temperature" .= temperature, "tokens" .= tokens, "prompt_length" .= prefix, "version" .= version, "behavior_policy" .= behaviorPolicy, "behavior_bits" .= probabilities, "reference_bits" .= scored, "text" .= response, "truncated" .= truncated, "reward" .= reward, "advantage_bits" .= advantage])
 
 modelValue :: V.Value Natural -> Either Error Value
 modelValue value = do
     base <- field "base" value >>= text
     assembly <- field "assembly" value >>= text
     pure (object ["base" .= base, "assembly" .= assembly])
+
+scheduleValue :: V.Value Natural -> Either Error Value
+scheduleValue value = do
+    update <- field "update" value >>= natural
+    staleness <- field "staleness" value >>= natural
+    pure (object ["update" .= update, "staleness" .= staleness])
 
 optimizerValue :: V.Value Natural -> Either Error Value
 optimizerValue value = do

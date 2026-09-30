@@ -20,6 +20,8 @@ class Observation:
     temperature: float
     tokens: tuple[int, ...]
     prompt_length: int
+    version: int
+    behavior_policy: str
     behavior_bits: tuple[int, ...]
     reference_bits: tuple[int, ...]
     text: str
@@ -43,6 +45,15 @@ class BehaviorModel:
 
 
 @dataclass(frozen=True, kw_only=True)
+class Schedule:
+    update: int
+    staleness: int
+
+    def version(self):
+        return max(0, self.update - self.staleness)
+
+
+@dataclass(frozen=True, kw_only=True)
 class Cohort:
     specification: str
     policy: str
@@ -52,6 +63,7 @@ class Cohort:
     base: str
     assembly: str
     behavior_model: BehaviorModel
+    schedule: Schedule
     samples: tuple[Observation, ...]
     order: tuple[str, ...]
     steps: tuple[tuple[str, ...], ...]
@@ -89,7 +101,7 @@ def identity(value):
 
 
 def sample(value):
-    value = fields(value, "sample group prompt seed limit temperature tokens prompt_length behavior_bits reference_bits text truncated reward advantage_bits")
+    value = fields(value, "sample group prompt seed limit temperature tokens prompt_length version behavior_policy behavior_bits reference_bits text truncated reward advantage_bits")
     if any(not isinstance(value[name], str) for name in ("sample", "group", "prompt", "text")):
         raise ValueError("Prompt and logical identities must be text")
     if not value["sample"] or not value["group"]:
@@ -99,12 +111,15 @@ def sample(value):
     temperature = number(value["temperature"])
     if temperature <= 0:
         raise ValueError("Sample temperature must be positive")
+    if type(value["version"]) is not int or value["version"] < 0:
+        raise ValueError("Sample version must be a nonnegative integer")
     tokens, probabilities = observation(value)
     scores = behavior_words(value["reference_bits"])
     if scores and len(scores) != len(probabilities):
         raise ValueError("Reference scores must cover every response token")
     return Observation(**{**value, "temperature": temperature, "reward": number(value["reward"]),
-                          "tokens": tokens, "behavior_bits": probabilities, "reference_bits": scores,
+                          "tokens": tokens, "behavior_policy": identity(value["behavior_policy"]),
+                          "behavior_bits": probabilities, "reference_bits": scores,
                           "advantage_bits": finite_word(value["advantage_bits"])})
 
 
@@ -163,6 +178,13 @@ def optimizer(value):
     return result
 
 
+def schedule(value):
+    fields(value, "update staleness")
+    if any(type(value[name]) is not int or value[name] < 0 for name in ("update", "staleness")):
+        raise ValueError("Update schedule values must be nonnegative integers")
+    return Schedule(update=value["update"], staleness=value["staleness"])
+
+
 def behavior_model(value):
     fields(value, "base assembly")
     return BehaviorModel(base=identity(value["base"]), assembly=identity(value["assembly"]))
@@ -194,15 +216,22 @@ def optimizer_steps(value, names):
 
 
 def decode(value):
-    value = fields(value, "specification policy learner reference tokenizer base assembly behavior_model samples order steps epsilon penalty delta optimizer")
+    value = fields(value, "specification policy learner reference tokenizer base assembly behavior_model schedule samples order steps epsilon penalty delta optimizer")
     if value["specification"] != SPECIFICATION:
         raise ValueError("Unsupported update specification")
     if not isinstance(value["samples"], list):
         raise ValueError("Expected an explicit cohort sequence")
     samples = tuple(sample(item) for item in value["samples"])
     logical_batch(samples, value["order"])
-    if any(bool(item.reference_bits) != (value["reference"] != value["policy"]) for item in samples):
-        raise ValueError("Reference scores must be present exactly when the reference differs from the policy")
+    planned = schedule(value["schedule"])
+    if any(item.version != planned.version() for item in samples):
+        raise ValueError("Every sample must come from version max(0, update - staleness)")
+    if len({item.behavior_policy for item in samples}) != 1:
+        raise ValueError("Every sample of one version must come from the one policy published as that version")
+    if planned.version() == planned.update and any(item.behavior_policy != value["policy"] for item in samples):
+        raise ValueError("Samples of the update's own version must come from the policy being updated")
+    if any(bool(item.reference_bits) != (value["reference"] != item.behavior_policy) for item in samples):
+        raise ValueError("Reference scores must be present exactly when the reference differs from the sample's behavior policy")
     epsilon, penalty, delta = (number(value[name]) for name in ("epsilon", "penalty", "delta"))
     if not 0 < epsilon < 1 or penalty < 0 or delta <= 0:
         raise ValueError("Invalid GRPO coefficient configuration")
@@ -210,7 +239,7 @@ def decode(value):
                   learner=identity(value["learner"]), reference=identity(value["reference"]),
                   tokenizer=identity(value["tokenizer"]),
                   base=identity(value["base"]), assembly=identity(value["assembly"]),
-                  behavior_model=behavior_model(value["behavior_model"]),
+                  behavior_model=behavior_model(value["behavior_model"]), schedule=planned,
                   samples=samples, order=tuple(value["order"]),
                   steps=optimizer_steps(value["steps"], value["order"]), epsilon=epsilon,
                   penalty=penalty, delta=delta, optimizer=optimizer(value["optimizer"]))

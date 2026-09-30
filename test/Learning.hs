@@ -20,7 +20,7 @@ import Numeric.Natural (Natural)
 import Properties (campaign)
 
 learning :: Group
-learning = Group "Keyed learning emissions" [("lowering preserves the declared update request", once request), ("joint key renaming preserves the numerical payload", campaign renaming), ("one-source relabeling changes sample reward association", once association), ("groups order and probability roles cannot be substituted", once membership), ("interleaved samples retain their declared groups", once groups), ("source types reject non-bit behavior and operational inputs", once types), ("behavior bit patterns are not converted to numeric floats", once bits), ("load image must agree with each materialized input identity", once materialized), ("behavior representation is distinct from the learner load", once representations), ("reference scores are present exactly when the reference differs from the policy", once scored), ("optimizer steps split the logical order into consecutive mini-batches", once steps)]
+learning = Group "Keyed learning emissions" [("lowering preserves the declared update request", once request), ("joint key renaming preserves the numerical payload", campaign renaming), ("one-source relabeling changes sample reward association", once association), ("groups order and probability roles cannot be substituted", once membership), ("interleaved samples retain their declared groups", once groups), ("source types reject non-bit behavior and operational inputs", once types), ("behavior bit patterns are not converted to numeric floats", once bits), ("load image must agree with each materialized input identity", once materialized), ("behavior representation is distinct from the learner load", once representations), ("reference scores are present exactly when the reference differs from the policy", once scored), ("optimizer steps split the logical order into consecutive mini-batches", once steps), ("samples come from version max(0, u - d) and need reference scores only when their behavior policy is not the reference", once versions)]
   where
     once = withTests 1 . property
 
@@ -33,21 +33,24 @@ text = Sequence . map (Atom . Token . fromIntegral . ord)
 number :: Rational -> Value Natural
 number = Atom . Number
 
+generation :: Natural -> String -> Value Natural
+generation version producer = record [("version", Atom (Token version)), ("policy", text producer)]
+
 selector :: [Natural] -> Value Natural
 selector keys = Mapping (Map.fromList [(key, Atom (Boolean True)) | key <- keys])
 
 world :: E.World
-world = Map.fromList [(S.Semantic "policy", image), (S.Semantic "learner", learner), (S.Semantic "reference", text (replicate 64 'c')), (S.Semantic "algorithm", record [("epsilon", number (1 / 5)), ("penalty", number (1 / 25)), ("delta", number (1 / 10000)), ("steps", number 1)]), (S.Semantic "trajectories", Mapping (Map.fromList [(2, trajectory 17 12), (9, trajectory 18 13)])), (S.Semantic "behavior_model", record [("base", text (replicate 64 '0')), ("assembly", text (replicate 64 '1'))]), (S.Semantic "behavior", Mapping (Map.fromList [(2, Sequence [Atom (Bits32 0xbf800000)]), (9, Sequence [Atom (Bits32 0xbf000000)])])), (S.Semantic "reference_scores", Mapping (Map.fromList [(2, Sequence [Atom (Bits32 0xbfa00000)]), (9, Sequence [Atom (Bits32 0xbf400000)])])), (S.Semantic "rewards", Mapping (Map.fromList [(2, number 1), (9, number 0)])), (S.Semantic "groups", Sequence [selector [2, 9]]), (S.Semantic "order", Sequence [selector [9], selector [2]])]
+world = Map.fromList [(S.Semantic "policy", image), (S.Semantic "learner", learner), (S.Semantic "reference", text (replicate 64 'c')), (S.Semantic "algorithm", record [("epsilon", number (1 / 5)), ("penalty", number (1 / 25)), ("delta", number (1 / 10000)), ("steps", number 1)]), (S.Semantic "trajectories", Mapping (Map.fromList [(2, trajectory 17 12), (9, trajectory 18 13)])), (S.Semantic "behavior_model", record [("base", text (replicate 64 '0')), ("assembly", text (replicate 64 '1'))]), (S.Semantic "schedule", record [("update", Atom (Token 0)), ("staleness", Atom (Token 0))]), (S.Semantic "generations", Mapping (Map.fromList [(key, generation 0 (replicate 64 'a')) | key <- [2, 9]])), (S.Semantic "behavior", Mapping (Map.fromList [(2, Sequence [Atom (Bits32 0xbf800000)]), (9, Sequence [Atom (Bits32 0xbf000000)])])), (S.Semantic "reference_scores", Mapping (Map.fromList [(2, Sequence [Atom (Bits32 0xbfa00000)]), (9, Sequence [Atom (Bits32 0xbf400000)])])), (S.Semantic "rewards", Mapping (Map.fromList [(2, number 1), (9, number 0)])), (S.Semantic "groups", Sequence [selector [2, 9]]), (S.Semantic "order", Sequence [selector [9], selector [2]])]
   where
     image = record [("artifact", text "22f6619dc862f0f4c9bec5d1a1a6f11958b2299d02f18d1f04aa5e0e0b94d3d6"), ("profile", text (replicate 64 'f'))]
     learner = record [("policy", text (replicate 64 'a')), ("learner", text (replicate 64 'b')), ("tokenizer", text (replicate 64 'd')), ("base", text (replicate 64 'e')), ("assembly", text (replicate 64 'f')), ("optimizer", record [("learning_rate", number (1 / 500)), ("betas", Sequence [number (4 / 5), number (19 / 20)]), ("epsilon", number (1 / 10000000)), ("weight_decay", number (1 / 100))])]
     trajectory seed token = record [("prompt", text "Compute the answer."), ("seed", number seed), ("limit", Atom (Token 1)), ("temperature", number (4 / 5)), ("tokens", Sequence [Atom (Token 11), Atom (Token token)]), ("prompt_length", Atom (Token 1)), ("text", text "#### 12"), ("truncated", Atom (Boolean False))]
 
 expected :: J.Value
-expected = J.object ["specification" J..= ("grpo-token-mean/v1" :: String), "policy" J..= replicate 64 'a', "learner" J..= replicate 64 'b', "tokenizer" J..= replicate 64 'd', "base" J..= replicate 64 'e', "assembly" J..= replicate 64 'f', "behavior_model" J..= J.object ["base" J..= replicate 64 '0', "assembly" J..= replicate 64 '1'], "reference" J..= replicate 64 'c', "epsilon" J..= (0.2 :: Double), "penalty" J..= (0.04 :: Double), "delta" J..= (0.0001 :: Double), "optimizer" J..= optimizer, "order" J..= (["s0", "s1"] :: [String]), "steps" J..= [["s0", "s1" :: String]], "samples" J..= [sample "s0" (18, 13, 0xbf000000, 0), sample "s1" (17, 12, 0xbf800000, 1)]]
+expected = J.object ["specification" J..= ("grpo-token-mean/v1" :: String), "policy" J..= replicate 64 'a', "learner" J..= replicate 64 'b', "tokenizer" J..= replicate 64 'd', "base" J..= replicate 64 'e', "assembly" J..= replicate 64 'f', "behavior_model" J..= J.object ["base" J..= replicate 64 '0', "assembly" J..= replicate 64 '1'], "schedule" J..= J.object ["update" J..= (0 :: Int), "staleness" J..= (0 :: Int)], "reference" J..= replicate 64 'c', "epsilon" J..= (0.2 :: Double), "penalty" J..= (0.04 :: Double), "delta" J..= (0.0001 :: Double), "optimizer" J..= optimizer, "order" J..= (["s0", "s1"] :: [String]), "steps" J..= [["s0", "s1" :: String]], "samples" J..= [sample "s0" (18, 13, 0xbf000000, 0), sample "s1" (17, 12, 0xbf800000, 1)]]
   where
     optimizer = J.object ["learning_rate" J..= (0.002 :: Double), "betas" J..= ([0.8, 0.95] :: [Double]), "epsilon" J..= (0.0000001 :: Double), "weight_decay" J..= (0.01 :: Double)]
-    sample name (seed, token, word, reward) = J.object ["reference_bits" J..= [if word == 0xbf000000 then 0xbf400000 else 0xbfa00000 :: Integer], "sample" J..= (name :: String), "group" J..= ("g0" :: String), "prompt" J..= ("Compute the answer." :: String), "seed" J..= (seed :: Integer), "limit" J..= (1 :: Int), "temperature" J..= (0.8 :: Double), "tokens" J..= [11, token :: Int], "prompt_length" J..= (1 :: Int), "behavior_bits" J..= [word :: Integer], "text" J..= ("#### 12" :: String), "truncated" J..= False, "reward" J..= (reward :: Double), "advantage_bits" J..= (if reward == 0 then 0xbf7ff2e5 else 0x3f7ff2e5 :: Integer)]
+    sample name (seed, token, word, reward) = J.object ["reference_bits" J..= [if word == 0xbf000000 then 0xbf400000 else 0xbfa00000 :: Integer], "sample" J..= (name :: String), "group" J..= ("g0" :: String), "prompt" J..= ("Compute the answer." :: String), "seed" J..= (seed :: Integer), "limit" J..= (1 :: Int), "temperature" J..= (0.8 :: Double), "tokens" J..= [11, token :: Int], "prompt_length" J..= (1 :: Int), "version" J..= (0 :: Int), "behavior_policy" J..= replicate 64 'a', "behavior_bits" J..= [word :: Integer], "text" J..= ("#### 12" :: String), "truncated" J..= False, "reward" J..= (reward :: Double), "advantage_bits" J..= (if reward == 0 then 0xbf7ff2e5 else 0x3f7ff2e5 :: Integer)]
 
 emission :: E.World -> PropertyT IO E.Emission
 emission inputs = do
@@ -114,7 +117,7 @@ groups = do
     map (Map.lookup "group") entries === map (Just . J.String) ["g1", "g0", "g1", "g0"]
   where
     expand source (Mapping values)
-        | source `elem` map S.Semantic ["trajectories", "behavior", "reference_scores", "rewards"] = Mapping (Map.union values (Map.mapKeys (+ offset) values))
+        | source `elem` map S.Semantic ["trajectories", "generations", "behavior", "reference_scores", "rewards"] = Mapping (Map.union values (Map.mapKeys (+ offset) values))
     expand _ value = value
     offset = 10
 
@@ -184,3 +187,37 @@ steps = do
     forM_ [0, 3, 1 / 2] $ \count -> do
         compiled <- emission (declared count)
         assert (isLeft (W.lower compiled))
+
+versions :: PropertyT IO ()
+versions = do
+    let scheduled update staleness = Map.insert (S.Semantic "schedule") (record [("update", Atom (Token update)), ("staleness", Atom (Token staleness))])
+        generated assigned = Map.insert (S.Semantic "generations") (Mapping (Map.fromList assigned))
+        uniform version producer = generated [(key, generation version producer) | key <- [2, 9]]
+        unscored = Map.insert (S.Semantic "reference_scores") (Mapping (Map.fromList [(key, Sequence []) | key <- [2, 9]]))
+        reference = replicate 64 'c'
+        other = replicate 64 'e'
+    earlier <- lower (scheduled 1 1 (uniform 0 reference (unscored world))) >>= json @(Map.Map String J.Value)
+    Map.lookup "schedule" earlier === Just (J.object ["update" J..= (1 :: Int), "staleness" J..= (1 :: Int)])
+    entries <- evalMaybe (Map.lookup "samples" earlier) >>= json @[Map.Map String J.Value]
+    map (Map.lookup "version") entries === replicate 2 (Just (J.toJSON (0 :: Int)))
+    map (Map.lookup "behavior_policy") entries === replicate 2 (Just (J.toJSON reference))
+    map (Map.lookup "reference_bits") entries === replicate 2 (Just (J.toJSON ([] :: [Int])))
+    _ <- lower (scheduled 1 1 (uniform 0 other world))
+    _ <- lower (scheduled 3 1 (uniform 2 other world))
+    startup <- lower (scheduled 0 1 (uniform 0 (replicate 64 'a') world)) >>= json @(Map.Map String J.Value)
+    started <- evalMaybe (Map.lookup "samples" startup) >>= json @[Map.Map String J.Value]
+    map (Map.lookup "version") started === replicate 2 (Just (J.toJSON (0 :: Int)))
+    let refused =
+            [ scheduled 1 1 (uniform 0 reference world)
+            , scheduled 1 1 (uniform 0 other (unscored world))
+            , scheduled 2 1 (uniform 0 other world)
+            , scheduled 1 0 (uniform 0 other world)
+            , scheduled 0 0 (uniform 0 other world)
+            , scheduled 1 1 (generated [(2, generation 0 other), (9, generation 1 other)] world)
+            , scheduled 1 1 (generated [(2, generation 0 other)] world)
+            , scheduled 1 1 (generated [(2, generation 0 other), (9, generation 0 (replicate 64 'd'))] world)
+            , scheduled 0 1 (uniform 0 other world)
+            ]
+    forM_ refused $ \inputs -> do
+        command <- emission inputs
+        assert (isLeft (W.lower command))

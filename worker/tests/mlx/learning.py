@@ -112,9 +112,10 @@ def report(directory, result, logical, *, binding, input_state, reference):
                  "epsilon": SETTINGS.epsilon, "weight_decay": SETTINGS.weight_decay}
     request = {"specification": "grpo-token-mean/v1", "policy": input_state[0], "learner": input_state[1],
                "reference": reference, **IDENTITIES, "behavior_model": {name: IDENTITIES[name] for name in ("base", "assembly")},
-               "optimizer": optimizer,
+               "optimizer": optimizer, "schedule": {"update": 0, "staleness": 0},
                "samples": [observation(logical.trajectories[reward.sample],
-                                       SimpleNamespace(sample=reward.sample, group=reward.group, reward=reward.value,
+                                       SimpleNamespace(sample=reward.sample, group=reward.group, reward=reward.value, version=0,
+                                                       behavior_policy=input_state[0],
                                                        reference_bits=() if reference == input_state[0] else logical.exchange.samples[reward.sample][1],
                                                        advantage_bits=logical.exchange.samples[reward.sample][2]))
                            for reward in REWARDS],
