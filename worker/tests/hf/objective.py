@@ -11,8 +11,8 @@ from dataclasses import dataclass, replace
 
 import torch
 
-from worker.advantage import Reward, advantages
-from worker.scalar import Profile
+from worker.tests.advantage import Reward, advantages
+from worker.tests.scalar import Profile
 
 DTYPE = torch.float64
 EPSILON = 0.5

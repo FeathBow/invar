@@ -30,7 +30,7 @@ def arguments(*, parser=None):
 
 def run(options, *, source, loader, execute, permission):
     from worker.cohort import unique
-    from worker.hf.session import decode
+    from worker.session import decode
 
     invocation = json.loads(source.readline(), object_pairs_hook=unique)
     fields(invocation, 'binding program load')

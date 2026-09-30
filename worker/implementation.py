@@ -36,7 +36,8 @@ NEUTRAL = {
     "hf/tensors.py": "identity and equality checks",
     "hf/metrics.py": "time and memory measurement",
     "hf/infer.py": "request decoding; the request is echoed in the result and checked by the core",
-    "hf/session.py": "request decoding; the request is echoed in the result and checked by the core",
+    "session.py": "request decoding; the request is echoed in the result and checked by the core",
+    "hf/session.py": "process entry and argument parsing",
     "hf/resident.py": "learner protocol; the consumed request is checked by the core",
     "hf/initialize.py": "initial checkpoint; its effect is fixed by the checkpoint content digests",
     "hf/state.py": "state observation and attestation",
@@ -50,8 +51,9 @@ NEUTRAL = {
     "update.py": "update request decoding checked by the core",
     "cohort.py": "request field decoding checked by the core",
     "trajectory.py": "record types",
+    "roles.py": "probability role sources, recorded by content in the learning assembly description",
     "record.py": "probability records the core checks against the step exchange",
-    "scalar.py": "FP32 word conversion for probe values and optimizer settings",
+    "float32.py": "FP32 word conversion for probe values, behavior words and optimizer settings",
 }
 IRRELEVANT = {
     INFERENCE: {},

@@ -14,7 +14,7 @@ from worker.tests.mlx.rollout import model, tokenizer
 
 import mlx.core as mx
 
-from worker import scalar
+from worker.tests import scalar
 from worker.invocation import request as request_value
 from worker.mlx import model as mlx_model
 from worker.mlx import adapter as mlx_adapter

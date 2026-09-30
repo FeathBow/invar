@@ -8,7 +8,7 @@ import numpy as np
 from worker.mlx import checkpoint as mlx_checkpoint
 from worker.mlx.adapter import state as adapter, install
 from worker.mlx import tensors as mlx_tensors
-from worker import scalar
+from worker import float32
 
 KEY_SHAPE = (2,)
 KEY_WORD_BITS = 32
@@ -42,7 +42,7 @@ def validate(snapshot, parameters, *, identities, settings):
         value = state[name]
         if value.dtype != mx.float32 or value.shape != shape or not np.isfinite(np.asarray(value)).all():
             raise ValueError("Native AdamW tensor representation mismatch")
-    if state["learning_rate"].view(mx.uint32).item() != scalar.word(settings.learning_rate):
+    if state["learning_rate"].view(mx.uint32).item() != float32.word(settings.learning_rate):
         raise ValueError("Native optimizer learning rate differs from the requested FP32 value")
     random = snapshot["rng"]
     if len(random) != 1 or random[0].dtype != mx.uint32 or random[0].shape != KEY_SHAPE:

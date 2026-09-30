@@ -19,18 +19,19 @@ import mlx.core as mx
 import mlx.nn as nn
 import mlx.optimizers as optim
 
-from worker.advantage import Reward, advantages
+from worker.tests.advantage import Reward, advantages
 from worker.cohort import Optimizer
 from worker import core
 from worker.logical import Learner, Plan
 from worker.mlx import checkpoint as mlx_checkpoint
 from worker.mlx import codec as mlx_codec
 from worker.mlx import learning as mlx_learning
+from worker.tests.mlx import derivative
 from worker.mlx import probability as mlx_probability
 from worker.mlx import state as mlx_state
 from worker.mlx import tensors as mlx_tensors
 from worker import record as probability_record
-from worker import scalar
+from worker.tests import scalar
 from worker.tests.responder import Core
 from worker.trajectory import Request, Trajectory
 from worker.update import observation
@@ -146,7 +147,7 @@ class LearningTests(unittest.TestCase):
         live = learner()
         first = batch(live.model)
         reference = mlx_tensors.digest(mlx_learning.adapter(live.model))
-        result = mlx_learning.update(live, first, linearize=mlx_learning.linearize)
+        result = mlx_learning.update(live, first, linearize=derivative.linearize)
         quarter = scalar.word(scalar.rounded(scalar.number(first.exchange.samples["a"][2])) / 4)
         self.assertEqual(mlx_probability.words(result.gradients["reward/projection.lora_b"].reshape(-1)),
                          (quarter, scalar.word(-scalar.number(quarter))))
@@ -156,12 +157,12 @@ class LearningTests(unittest.TestCase):
         self.assertNotEqual(checkpoint["rng"][0].tolist(), mx.random.key(17).tolist())
         self.assertEqual(result.proximal, {name: values[0] for name, values in first.exchange.samples.items()})
         second = batch(live.model, reference=tuple(values[0] for values in first.exchange.samples.values()))
-        continued = mlx_learning.update(live, second, linearize=mlx_learning.linearize)
+        continued = mlx_learning.update(live, second, linearize=derivative.linearize)
         save(directory / "live", live)
         restored = learner()
         policy = mlx_tensors.policy(directory / "first/adapter.safetensors", saved[0])
         mlx_state.restore(restored, checkpoint, policy=policy, identities={"adapter": saved[0], **IDENTITIES}, settings=SETTINGS)
-        repeated = mlx_learning.update(restored, again(second), linearize=mlx_learning.linearize)
+        repeated = mlx_learning.update(restored, again(second), linearize=derivative.linearize)
         save(directory / "restored", restored)
         self.assertEqual(continued.summary, repeated.summary)
         self.assertTrue(mlx_tensors.equal(continued.gradients, repeated.gradients))
@@ -175,7 +176,7 @@ class LearningTests(unittest.TestCase):
         planned = replace(planned, steps=(("a",), ("b",)),
                           exchange=Core(planned.exchange.samples, (("a",), ("b",)), planned.exchange.profile))
         initial = mlx_tensors.digest(mlx_learning.adapter(live.model))
-        result = mlx_learning.update(live, planned, linearize=mlx_learning.linearize)
+        result = mlx_learning.update(live, planned, linearize=derivative.linearize)
         records = planned.exchange.records
         self.assertEqual([record[:2] for record in records], [("proximal", "b"), ("current", 0), ("applied", 0), ("current", 1), ("applied", 1)])
         self.assertEqual(records[1][4], initial)
@@ -192,7 +193,7 @@ class LearningTests(unittest.TestCase):
         released = []
 
         def linearize(model, trajectory, *, evaluate):
-            current, differentiate = mlx_learning.linearize(model, trajectory, evaluate=evaluate)
+            current, differentiate = derivative.linearize(model, trajectory, evaluate=evaluate)
             released.append(weakref.ref(differentiate))
             return current, differentiate
 

@@ -15,7 +15,7 @@ from dataclasses import replace
 import torch
 from peft import LoraConfig, get_peft_model
 
-from worker import scalar
+from worker.tests import scalar
 from worker.exchange import Exchange, observation
 from worker.hf.learning import parameters, update
 from worker.logical import Learner, Plan

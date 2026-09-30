@@ -5,6 +5,7 @@ import mlx.nn as nn
 
 from worker.mlx.numerics import inventory, qualified
 from worker.mlx.temperature import tempered
+from worker.roles import PROBABILITIES
 
 LINEAR = {"independent-native-rows/v8": nn.QuantizedLinear}
 
@@ -36,11 +37,7 @@ def description(profile):
                                 "schedule": "one complete logical trajectory per native projection",
                                 "roles": ["objective_vjp", "reward_vjp"],
                                 "lifetime": "owned numerical operation; inference classes restored before state observation"}}
-    return {"probabilities": {"behavior": "engine words of the request policy's own rollout",
-                              "reference": "engine forced-path scoring inside the rollout transaction",
-                              "proximal": "learner graph at the rollout temperature before the first optimizer step",
-                              "current": "learner graph at the rollout temperature at the weights of each optimizer step",
-                              "temperature": "rollout request"},
+    return {"probabilities": PROBABILITIES,
             **projection}
 
 
