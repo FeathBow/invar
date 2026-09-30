@@ -152,7 +152,7 @@ inferenceWorker config selected =
     engine = backend config
 
 learnerSettings :: Config -> Cursor -> L.Settings
-learnerSettings config (Cursor _ selected _) = (settings config) {L.policy = policy selected, L.learner = learner selected}
+learnerSettings config (Cursor index selected _) = (settings config) {L.policy = policy selected, L.learner = learner selected, L.schedule = L.synchronous index (policy selected)}
 
 execute :: Driver scope -> (Cursor, L.Plan scope) -> (forall value. IO value -> IO value) -> IO (Either Error (Generation scope))
 execute driver (cursor, planned) restore = do

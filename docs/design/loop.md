@@ -29,7 +29,7 @@ The reward is a checked semantic program with one sink, `score` / `exact-decimal
 
 ## Advantage
 
-`Invar.Learn.prepare` compiles the learning program over the batch. Its sources include the policy, learner, reference, algorithm coefficients, trajectories, behavior words, rewards, groups and logical order, and it emits one `update` / `grpo-token-mean/v1` command. Lowering that command into the learner's JSON request also computes each sample's expected advantage (`Invar.Learn.Advantage`) and writes it as `advantage_bits`, one FP32 word per sample.
+`Invar.Learn.prepare` compiles the learning program over the batch. Its sources include the policy, learner, reference, algorithm coefficients, the update's schedule, trajectories with the version and behavior policy that generated each one, behavior words, rewards, groups and logical order, and it emits one `update` / `grpo-token-mean/v1` command. Every sample must come from version max(0, u − d) of update u under the declared staleness d; the synchronous loop runs with d = 0, so each update learns from rollouts of the policy it starts from. Lowering that command into the learner's JSON request also computes each sample's expected advantage (`Invar.Learn.Advantage`) and writes it as `advantage_bits`, one FP32 word per sample.
 
 Within each group, the core sums the binary64 rewards exactly and divides by the group size, subtracts that mean from each reward, computes the population variance the same way, and divides each deviation by the standard deviation plus `delta`. Every operation rounds separately, any value that is not finite fails the request, and each result is rounded once to FP32. The worker reads these words as given.
 
