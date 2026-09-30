@@ -5,8 +5,9 @@ module Sessions (sessions) where
 import BatchCalls (exchange, prepared, quote)
 import Calls qualified as Fixture
 import Control.Concurrent (threadDelay)
-import Control.Monad (void)
+import Control.Monad (forM_, void)
 import Data.Aeson (Value)
+import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.List (sort)
 import Hedgehog
 import Invar.Cohort qualified as C
@@ -30,6 +31,7 @@ sessions =
         [ ("several sessions produce the batch of one session", once identical)
         , ("a failing or missing session fails the cohort", once failing)
         , ("cancelling the cohort stops every session", once cancelled)
+        , ("each request is reported when dispatched to a session and each result after its check", once observed)
         ]
   where
     once = withTests 1 . property
@@ -119,3 +121,30 @@ cancelled = do
     evalIO (threadDelay 3500000)
     launched <- evalIO (readFile (root </> "launched"))
     sort (lines launched) === ["started 0", "started 1"]
+
+data Report = Dispatched Natural Natural B.Binding | Checked Natural B.Binding [Natural]
+    deriving (Eq, Show)
+
+observed :: PropertyT IO ()
+observed = do
+    forM_ [1, 3] $ \count -> do
+        root <- workspace
+        chosen <- options root count
+        log' <- evalIO (newIORef [])
+        let push report = atomicModifyIORef' log' (\reports -> (reports ++ [report], ()))
+            observer = R.Observer (\slot requests -> mapM_ (\(index, binding) -> push (Dispatched slot index binding)) requests) (\index binding result -> push (Checked index binding (map fromIntegral (Result.behaviorBits result))))
+        batch <- evalIO (R.withDriver (\driver -> fmap project <$> R.runObserved driver observer chosen)) >>= evalEither
+        reports <- evalIO (readIORef log')
+        let dispatched = [(index, (slot, binding)) | Dispatched slot index binding <- reports]
+            checked = [(index, (binding, words32)) | Checked index binding words32 <- reports]
+        sort (map fst dispatched) === [0 .. members - 1]
+        sort (map fst checked) === [0 .. members - 1]
+        [sort [index | (index, (slot, _)) <- dispatched, slot == fromIntegral position] | position <- [0 .. count - 1]] === map sort (assignment count)
+        forM_ checked $ \(index, (binding, words32)) -> do
+            (slot, sent) <- evalMaybe (lookup index dispatched)
+            sent === binding
+            let position report = length (takeWhile (/= report) reports)
+            assert (position (Dispatched slot index sent) < position (Checked index binding words32))
+        [words32 | index <- [0 .. members - 1], Just (_, words32) <- [lookup index checked]] === batch
+  where
+    project result = [map fromIntegral (Result.behaviorBits (R.observation sample)) | sample <- R.samples result]

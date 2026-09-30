@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RoleAnnotations #-}
 
-module Invar.Learn.Worker (Mode (..), Worker (..), Call, Failure (..), Execution, prepare, input, run, verifyGradients, verifyProbabilities, verifyCheckpoint, report, loaded, plan, staged) where
+module Invar.Learn.Worker (Mode (..), Worker (..), Call, Hooks (..), Failure (..), Execution, prepare, hooked, input, run, verifyGradients, verifyProbabilities, verifyCheckpoint, report, loaded, plan, staged) where
 
 import Control.Exception (bracket, mask_)
 import Data.ByteString qualified as Bytes
@@ -22,12 +22,16 @@ run :: Worker -> Call scope -> IO (Either Failure (Execution scope))
 run worker call = bracket (newIORef Registry.empty) (`modifyIORef'` Registry.close) (execute worker call)
 
 execute :: Worker -> Call scope -> IORef Registry.Registry -> IO (Either Failure (Execution scope))
-execute worker call@(Call planned binding runtime _) registry = do
+execute worker call@(Call planned binding runtime _ hooks) registry = do
     slot <- newIORef Nothing
     let arguments = [script worker, "--cache=" ++ cache worker, "--checkpoint=" ++ checkpoint worker, "--reference=" ++ reference worker, "--output=" ++ output worker]
         command = Process.Command (executable worker) arguments [] (encodeUtf8 (Text.pack (input call)))
-        approve observed = fmap (permission call <$) (authorize (registry, slot) (binding, runtime) observed)
-    returned <- Process.conversation command approve (Just (answer slot))
+        approve observed = do
+            authorized <- authorize (registry, slot) (binding, runtime) observed
+            case authorized of
+                Left problem -> pure (Left problem)
+                Right () -> readIORef slot >>= maybe (pure (Left (P.Unexpected "Update was authorized without a permit"))) (fmap (permission call <$) . announce hooks)
+    returned <- Process.conversation command approve (Just (answer hooks slot))
     case returned of
         Right observed -> complete (planned, output worker) slot observed
         Left (Process.Exit status) -> pure (Left (WorkerExit status))
@@ -47,14 +51,18 @@ authorize (owner, slot) context observed = mask_ $ do
                 writeIORef slot (Just permit)
                 pure (Right ())
 
-answer :: IORef (Maybe P.Permit) -> Bytes.ByteString -> IO (Either P.Error Bytes.ByteString)
-answer slot observed = mask_ $ do
+answer :: Hooks -> IORef (Maybe P.Permit) -> Bytes.ByteString -> IO (Either P.Error Bytes.ByteString)
+answer hooks slot observed = mask_ $ do
     held <- readIORef slot
     case held of
         Nothing -> pure (Left (P.Unexpected "A learner step was reported before consumption was permitted"))
         Just permit -> case P.respond permit observed of
             Left problem -> pure (Left problem)
-            Right (advanced, reply) -> writeIORef slot (Just advanced) >> pure (Right reply)
+            Right (advanced, reply) -> do
+                permitted <- consult hooks advanced
+                case permitted of
+                    Left problem -> pure (Left problem)
+                    Right () -> writeIORef slot (Just advanced) >> pure (Right reply)
 
 complete :: (L.Plan scope, FilePath) -> IORef (Maybe P.Permit) -> Bytes.ByteString -> IO (Either Failure (Execution scope))
 complete (planned, directory) slot observed = do

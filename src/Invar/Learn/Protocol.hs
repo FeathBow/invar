@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Learn.Protocol (Result, Permit, Error (..), observe, authorize, authorizeResident, respond, replay, validateSummary, loadProgram, loadedFact, completion, request, checkedRequest, stream, adapter, learner, gradients, probabilities) where
+module Invar.Learn.Protocol (Result, Permit, Error (..), observe, authorize, authorizeResident, respond, exchanging, replay, validateSummary, loadProgram, loadedFact, completion, request, checkedRequest, stream, adapter, learner, gradients, probabilities) where
 
 import Control.Monad (foldM, unless, void)
 import Data.Aeson (Object, Value (..), eitherDecodeStrict, encode, object, withObject, (.:), (.=))
@@ -26,7 +26,7 @@ data Artifacts = Artifacts String String (String, String)
 data Result = Result V.Completion Request.Request Artifacts S.Stream
     deriving (Eq, Show)
 
-data Error = Malformed String | Unexpected String | Mismatch String | Lowering Wire.Error | Lifecycle V.Error | Loading Load.Error | Registry L.Error | Step S.Error
+data Error = Malformed String | Unexpected String | Mismatch String | Lowering Wire.Error | Lifecycle V.Error | Loading Load.Error | Registry L.Error | Step S.Error | Refused String
     deriving (Eq, Show)
 
 data Context = Context {bound :: V.Binding, numerical :: Value, loading :: Load.Plan, resident :: Bool}
@@ -62,6 +62,11 @@ respond (Permit context prefix accepted fact) output = do
     case advanced of
         Consumed _ _ _ _ _ (Just reply) -> Right (Permit context output advanced fact, Lazy.toStrict (encode (cotangents (bound context) reply)))
         _ -> Left (Unexpected "A reply was requested for a record that does not report a learner step")
+
+exchanging :: Permit -> Maybe (S.Stream, Maybe S.Reply)
+exchanging (Permit _ _ progress _) = case progress of
+    Consumed _ _ _ _ steps reply -> Just (steps, reply)
+    _ -> Nothing
 
 replay :: V.Binding -> Request.Request -> [Object] -> Either Error String
 replay expected actual records = do
