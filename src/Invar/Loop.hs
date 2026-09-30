@@ -1,6 +1,6 @@
 {-# LANGUAGE RoleAnnotations #-}
 
-module Invar.Loop (Backend (..), Config (..), Cycle (..), Checkpoint (..), Driver, Generation, Status (..), Error (..), withDriver, run, status, current, result, plan, receipt) where
+module Invar.Loop (Backend (..), Config (..), Cycle (..), Checkpoint (..), Driver, Generation, Status (..), Error (..), withDriver, run, status, current, result, plan, receipt, inferenceWorker, updateWorker, scoring, stagedName, bindTasks) where
 
 import Control.Concurrent.MVar (MVar, newMVar, withMVar)
 import Control.Exception (mask, onException)
@@ -90,13 +90,13 @@ withPolicy config description action
                     first Update
                         <$> Owner.withRunner
                             (learningMode (backend config))
-                            (updateWorker config (Cursor initialGeneration initial description, 0))
+                            (updateWorker config (initial, 0))
                             (drive collector)
                 )
   where
     initialGeneration = 0
     initial = Checkpoint (checkpoint config) (L.policy (settings config)) (L.learner (settings config))
-    shared = (inferenceWorker config initial, updateWorker config (Cursor initialGeneration initial description, 0), sessions (backend config))
+    shared = (inferenceWorker config initial, updateWorker config (initial, 0), sessions (backend config))
     drive collector runner = do
         gate <- newMVar ()
         position <- newIORef (Idle (Cursor initialGeneration initial description))
@@ -135,7 +135,11 @@ collect driver (cursor@(Cursor _ selected description), workload) = do
     prepare actual = do
         first Plan (mapM_ (L.materialization (settings config) . I.requested . C.plan) (tasks workload))
         unless (actual == description) (Left (Policy "Selected policy description changed after publication or initial selection"))
-        traverse bind (tasks workload)
+        bindTasks description (tasks workload)
+
+bindTasks :: Policy.Description -> [C.Task] -> Either Error [C.Task]
+bindTasks description = traverse bind
+  where
     bind task = do
         planned <- first (Policy . show) (I.bindPolicy description (C.plan task))
         pure task {C.plan = planned}
@@ -162,7 +166,8 @@ execute driver (cursor, planned) restore = do
         Left problem -> reset driver cursor >> pure (Left (Update problem))
         Right call -> do
             writeIORef (state driver) (Updating cursor binding)
-            let worker = updateWorker (configuration driver) (cursor, ordinal)
+            let Cursor _ selected _ = cursor
+                worker = updateWorker (configuration driver) (selected, ordinal)
             executed <- restore (Owner.run (updater driver) (Resident.Paths (W.checkpoint worker) (W.output worker)) call)
             case executed of
                 Left problem -> pure (Left (Update problem))
@@ -170,8 +175,8 @@ execute driver (cursor, planned) restore = do
   where
     oneUpdate = 1
 
-updateWorker :: Config -> (Cursor, Natural) -> W.Worker
-updateWorker config (Cursor _ selected _, ordinal) =
+updateWorker :: Config -> (Checkpoint, Natural) -> W.Worker
+updateWorker config (selected, ordinal) =
     W.Worker
         { W.executable = python (backend config)
         , W.script = learning (backend config)

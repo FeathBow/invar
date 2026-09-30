@@ -1,10 +1,10 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Infer.Wire (request, binding, bindingValue, invocationValue, envelopeValue, batchValue, batchFields) where
+module Invar.Infer.Wire (request, requestPairs, binding, bindingValue, invocationValue, envelopeValue, batchValue, batchFields) where
 
 import Data.Aeson (Object, Value (..), object, withObject, (.:), (.=))
 import Data.Aeson.KeyMap qualified as Fields
-import Data.Aeson.Types (Parser)
+import Data.Aeson.Types (Pair, Parser)
 import Data.ByteString (ByteString)
 import Data.Text.Encoding (decodeUtf8)
 import Invar.Infer qualified as I
@@ -43,9 +43,14 @@ batchFields (bound, program, loadProgram) requested =
         [ "binding" .= bindingValue bound
         , "program" .= decodeUtf8 program
         , "load" .= invocationValue bound loadProgram
-        , "adapter" .= I.artifact requested
-        , "tokenizer" .= I.tokenizer requested
-        , "base" .= I.base requested
-        , "assembly" .= I.assembly requested
-        , "request" .= object ["prompt" .= I.prompt requested, "tokens" .= I.tokens requested, "temperature" .= I.temperature requested, "seed" .= I.seed requested]
         ]
+        <> Fields.fromList (requestPairs requested)
+
+requestPairs :: I.Request -> [Pair]
+requestPairs requested =
+    [ "adapter" .= I.artifact requested
+    , "tokenizer" .= I.tokenizer requested
+    , "base" .= I.base requested
+    , "assembly" .= I.assembly requested
+    , "request" .= object ["prompt" .= I.prompt requested, "tokens" .= I.tokens requested, "temperature" .= I.temperature requested, "seed" .= I.seed requested]
+    ]

@@ -2,7 +2,7 @@
 
 module Training (run, usage, settings, settingsOptions) where
 
-import Data.Aeson (encode, object, (.=))
+import Data.Aeson (Value, eitherDecodeStrict, encode, object, (.=))
 import Data.ByteString qualified as Bytes
 import Data.ByteString.Lazy.Char8 qualified as Lazy
 import Dataset qualified
@@ -13,8 +13,10 @@ import Invar.Learn.Protocol qualified as Protocol
 import Invar.Learn.Worker qualified as Worker
 import Invar.Loop qualified as Loop
 import Invar.Rollout qualified as Rollout
+import Invar.Runtime qualified as Runtime
 import Invar.Spec.Invocation qualified as V
 import Invar.Store qualified as Store
+import Invar.Workload qualified as Workload
 import Options qualified as O
 import System.Console.GetOpt (OptDescr, usageInfo)
 import System.Exit (die)
@@ -26,7 +28,20 @@ run supplied = do
     config <- either die pure (configure fields)
     either (die . show) pure (Learn.validate (Loop.settings config))
     let selected = selection (Loop.settings config)
-    cycles <- Bytes.getContents >>= either die pure . Dataset.decode selected
+    encoded <- Bytes.getContents
+    cycles <- either die pure (Dataset.decode selected encoded)
+    case O.optional fields "staleness" of
+        Just _ -> do
+            lag <- either die pure (O.numeric fields "staleness")
+            workload <- either die pure (eitherDecodeStrict encoded)
+            let declaration = object ["entry" .= ("declaration" :: String), "arguments" .= supplied, "workload" .= (workload :: Value), "staleness" .= lag]
+                instantiate workloadCycle policy = Dataset.instantiate selected {Dataset.policy = policy} workloadCycle
+            outcome <- Runtime.run config lag declaration (map instantiate cycles) (map (fromIntegral . length . Workload.tasks) cycles)
+            either (die . show) pure outcome
+        Nothing -> synchronous config selected cycles
+
+synchronous :: Loop.Config -> Dataset.Identity -> [Dataset.Cycle] -> IO ()
+synchronous config selected cycles = do
     outcome <- Loop.withDriver config $ \driver -> advance driver (length (Loop.sessions (Loop.backend config))) selected cycles
     either (die . show) pure outcome
 
@@ -49,7 +64,7 @@ selection :: Learn.Settings -> Dataset.Identity
 selection chosen = Dataset.Identity {Dataset.policy = Learn.policy chosen, Dataset.tokenizer = Learn.tokenizer chosen, Dataset.base = Learn.behaviorBase chosen, Dataset.assembly = Learn.behaviorAssembly chosen}
 
 report :: Loop.Generation scope -> IO ()
-report generated = Lazy.putStrLn (encode (object ["phase" .= ("published" :: String), "checkpoint" .= Loop.directory selected, "policy" .= Loop.policy selected, "learner" .= Loop.learner selected, "publication" .= methodName (Store.method (Loop.receipt generated)), "binding" .= binding (V.completedBinding completed), "delivery" .= map binding arrivals]))
+report generated = Lazy.putStrLn (encode (object ["phase" .= ("published" :: String), "checkpoint" .= Loop.directory selected, "policy" .= Loop.policy selected, "learner" .= Loop.learner selected, "publication" .= Store.methodName (Store.method (Loop.receipt generated)), "binding" .= binding (V.completedBinding completed), "delivery" .= map binding arrivals]))
   where
     selected = Loop.current generated
     completed = Protocol.completion (Loop.result generated)
@@ -78,10 +93,6 @@ publication fields = do
         "reference" -> Right Store.LinkImmutable
         _ -> Left "Invalid publication method: expected rename or reference"
 
-methodName :: Store.Method -> String
-methodName Store.RenameExclusive = "rename"
-methodName Store.LinkImmutable = "reference"
-
 settings :: O.Fields -> Either String Learn.Settings
 settings fields = do
     optimizer <- Learn.Optimizer <$> number "rate" <*> number "beta1" <*> number "beta2" <*> number "optimizer-epsilon" <*> number "decay"
@@ -92,10 +103,10 @@ settings fields = do
     number = O.numeric fields
 
 usage :: String
-usage = usageInfo "Usage: invar train OPTIONS < tasks.json\nAll options except --devices, --inference-config, --inference-mode and --learning-mode are required. Input is a nonempty JSON array of declared cycles." options
+usage = usageInfo "Usage: invar train OPTIONS < tasks.json\nAll options except --devices, --inference-config, --inference-mode, --learning-mode, --steps and --staleness are required. Input is a nonempty JSON array of declared cycles." options
 
 options :: [OptDescr (String, String)]
-options = O.descriptions [("publication", "Checkpoint publication: rename or reference"), ("devices", "Optional comma-separated CUDA devices, one rollout worker process per device"), ("python", "Learning Python executable"), ("inference-python", "Inference Python executable"), ("inference", "Inference worker script"), ("inference-config", "Optional inference worker launch configuration"), ("inference-mode", "Inference execution: serial (default), batch, resident or shared"), ("learning", "Update worker script"), ("learning-mode", "Learning execution: process (default), resident or shared; shared requires both roles"), ("cache", "Pinned model cache"), ("output", "New output directory"), ("checkpoint", "Initial paired checkpoint directory"), ("reference", "Fixed reference adapter file")] ++ settingsOptions
+options = O.descriptions [("publication", "Checkpoint publication: rename or reference"), ("devices", "Optional comma-separated CUDA devices, one rollout worker process per device"), ("python", "Learning Python executable"), ("inference-python", "Inference Python executable"), ("inference", "Inference worker script"), ("inference-config", "Optional inference worker launch configuration"), ("inference-mode", "Inference execution: serial (default), batch, resident or shared"), ("learning", "Update worker script"), ("learning-mode", "Learning execution: process (default), resident or shared; shared requires both roles"), ("cache", "Pinned model cache"), ("output", "New output directory"), ("checkpoint", "Initial paired checkpoint directory"), ("reference", "Fixed reference adapter file"), ("staleness", "Optional staleness d: run rollout and learning concurrently, update u learning from rollouts of version max(0, u - d); requires separate inference and learning processes")] ++ settingsOptions
 
 settingsOptions :: [OptDescr (String, String)]
 settingsOptions = O.descriptions [("policy", "Consumed canonical policy tensor SHA-256"), ("tokenizer-digest", "Tokenizer operation SHA-256"), ("base-digest", "Learner frozen model tensor SHA-256"), ("assembly-digest", "Learner model assembly SHA-256"), ("behavior-base-digest", "Actual rollout frozen model SHA-256"), ("behavior-assembly-digest", "Actual rollout model assembly SHA-256"), ("learner", "Consumed learner file SHA-256"), ("reference-digest", "Canonical reference tensor SHA-256"), ("clip", "GRPO clipping coefficient"), ("penalty", "Reference penalty coefficient"), ("delta", "Advantage normalization epsilon"), ("steps", "Optional number of optimizer steps per update over consecutive mini-batches of the logical order (default 1)"), ("rate", "AdamW learning rate"), ("beta1", "AdamW first moment coefficient"), ("beta2", "AdamW second moment coefficient"), ("optimizer-epsilon", "AdamW epsilon"), ("decay", "AdamW weight decay")]
