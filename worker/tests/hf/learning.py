@@ -13,7 +13,7 @@ from contextlib import redirect_stdout
 from dataclasses import replace
 
 import torch
-from peft import LoraConfig, get_peft_model
+from peft import LoraConfig, get_peft_model, set_peft_model_state_dict
 
 from worker.tests import scalar
 from worker.exchange import Exchange, observation
@@ -56,13 +56,15 @@ def trajectory(name, probability=math.log(0.5)):
                       behavior=torch.tensor([probability], dtype=torch.float32), text="reference", truncated=False)
 
 
-def batch(steps=(LOGICAL_ORDER,), advantages=ADVANTAGES, probability=math.log(0.5), reference=None, penalty=0, exchange=None):
+def batch(steps=(LOGICAL_ORDER,), advantages=ADVANTAGES, probability=math.log(0.5), reference=None, penalty=0, exchange=None,
+          reference_source="engine", scored=None):
     trajectories = {name: trajectory(name, probability) for name in LOGICAL_ORDER}
     samples = {name: (tuple(words(item.behavior)), () if reference is None else (scalar.word(reference),), scalar.word(value))
                for (name, item), value in zip(trajectories.items(), advantages, strict=True)}
-    core = Core(samples, steps, scalar.Profile(epsilon=0.2, penalty=penalty))
+    core = Core(samples, steps, scalar.Profile(epsilon=0.2, penalty=penalty), reference_source=reference_source)
     return Plan(trajectories=trajectories, steps=steps, nonzero=sum(value != 0 for value in advantages),
-                exchange=core if exchange is None else exchange)
+                exchange=core if exchange is None else exchange, reference_source=reference_source,
+                reference={} if scored is None else scored)
 
 
 def run(plan):
@@ -112,6 +114,30 @@ class LearningTests(unittest.TestCase):
         self.assertEqual([record[4] for record in later], [applied[0][3]] * 2)
         self.assertNotEqual([record[3] for record in later], [graph["b"], graph["c"]])
         self.assertEqual(result.proximal, graph)
+
+    def test_learner_scored_reference_words_come_from_the_reference_adapter(self):
+        learner = make_learner()
+        scored = {name: (torch.full_like(value, 0.5) if "lora_B" in name else value.clone())
+                  for name, value in adapter_state(learner.model).items()}
+        logical = batch(scored=scored, reference_source="learner")
+        result = update(learner, logical)
+        records = logical.exchange.records
+        reported = {record[1]: record[2] for record in records if record[0] == "reference"}
+        self.assertEqual(set(reported), set(LOGICAL_ORDER))
+        self.assertEqual(result.reference, reported)
+        expected = make_learner()
+        set_peft_model_state_dict(expected.model, scored)
+        policy = make_learner()
+        with torch.no_grad():
+            self.assertEqual(reported, {name: words(evaluate(expected.model, item)) for name, item in logical.trajectories.items()})
+            policy_words = {name: words(evaluate(policy.model, item)) for name, item in logical.trajectories.items()}
+        self.assertNotEqual(reported, policy_words)
+        first = {record[2]: record[3] for record in records if record[0] == "current" and record[1] == 0}
+        self.assertEqual(first, policy_words)
+
+    def test_learner_reference_source_requires_the_frozen_adapter(self):
+        with self.assertRaises(ValueError):
+            update(make_learner(), batch(reference_source="learner"))
 
     def test_consumed_digests_are_the_cotangent_tensors_given_to_the_vjp(self):
         applied = []
