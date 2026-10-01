@@ -21,7 +21,7 @@ def request():
                 "tokens": [11, 13], "prompt_length": 1, "version": 0, "behavior_policy": "a" * 64, "behavior_bits": [0xBF000000], "reference_bits": [0xBF400000],
                 "text": "#### 438", "truncated": False, "reward": 0.0, "advantage_bits": 0xBF7FF2E5}]
     return {"specification": SPECIFICATION, "policy": "a" * 64, "learner": "b" * 64,
-            "reference": "c" * 64, "tokenizer": "d" * 64, "base": "e" * 64, "assembly": "f" * 64,
+            "reference": "c" * 64, "reference_source": "engine", "tokenizer": "d" * 64, "base": "e" * 64, "assembly": "f" * 64,
             "behavior_model": {"base": "0" * 64, "assembly": "1" * 64},
             "schedule": {"update": 0, "staleness": 0}, "samples": samples, "order": ["a", "b"], "steps": [["a", "b"]],
             "epsilon": 0.2, "penalty": 0.04, "delta": 1e-4,

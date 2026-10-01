@@ -111,7 +111,7 @@ def report(directory, result, logical, *, binding, input_state, reference):
     optimizer = {"learning_rate": SETTINGS.learning_rate, "betas": SETTINGS.betas,
                  "epsilon": SETTINGS.epsilon, "weight_decay": SETTINGS.weight_decay}
     request = {"specification": "grpo-token-mean/v1", "policy": input_state[0], "learner": input_state[1],
-               "reference": reference, **IDENTITIES, "behavior_model": {name: IDENTITIES[name] for name in ("base", "assembly")},
+               "reference": reference, "reference_source": "engine", **IDENTITIES, "behavior_model": {name: IDENTITIES[name] for name in ("base", "assembly")},
                "optimizer": optimizer, "schedule": {"update": 0, "staleness": 0},
                "samples": [observation(logical.trajectories[reward.sample],
                                        SimpleNamespace(sample=reward.sample, group=reward.group, reward=reward.value, version=0,
