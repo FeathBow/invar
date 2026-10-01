@@ -208,6 +208,12 @@ class LearningTests(unittest.TestCase):
         mlx_learning.update(live, replace(planned, steps=steps, exchange=core), linearize=linearize)
         self.assertFalse(core.proximal_alive)
 
+    def test_learner_reference_source_is_rejected(self):
+        live = learner()
+        planned = replace(batch(live.model), reference_source="learner")
+        with self.assertRaises(ValueError):
+            mlx_learning.update(live, planned, linearize=derivative.linearize)
+
     def compare(self, directory, results, logical, *, input_state, reference):
         arguments = ["compare", "states", "--codec-mode", "stdio", "--policy", directory / "first/adapter.safetensors"]
         for side, name, result, call in zip(("left", "right"), ("live", "restored"), results, (7, 8), strict=True):

@@ -20,7 +20,7 @@ steps =
         [ ("one full step reuses each first observation as proximal and answers with the core's cotangents", once full)
         , ("later steps keep proximal fixed and chain the learner state", once staged)
         , ("samples outside the first step need proximal before the first update", once outside)
-        , ("learner-scored reference words are required for every sample and drive the objective", once learnerReference)
+        , ("learner-scored reference words arrive before the step that consumes them and drive the objective", once learnerReference)
         , ("reports out of order, from another state or with other cotangents are refused", once refusals)
         , ("the cotangent digest is SHA-256 over little-endian FP32 words", once vector)
         , ("a stream starts only from a valid plan, and its identity names the plan", once plans)
@@ -94,23 +94,29 @@ learnerReference :: PropertyT IO ()
 learnerReference = do
     let mine = [word (-1.25), word (-1.4)]
         nowA = [word (-0.9), word (-0.6)]
+        laterB = [word (-1.4)]
     begun <- evalEither (S.begin exchange profile "p0" [first', second'] [["a"], ["b"]] S.FromLearner)
     S.current begun (Current 0 "a" nowA (S.observationOf nowA) "p0") === Left (S.MissingReference "a")
     S.reference begun "a" [word (-1)] === Left (S.LengthMismatch "a")
     withA <- evalEither (S.reference begun "a" mine)
     S.reference withA "a" mine === Left (S.DuplicateReference "a")
-    both <- evalEither (S.reference withA "b" [word (-1.5)])
-    (answered, reply) <- evalEither (S.current both (Current 0 "a" nowA (S.observationOf nowA) "p0"))
+    withProximal <- evalEither (S.proximal withA "b" [word (-1.7)])
+    (answered, reply) <- evalEither (S.current withProximal (Current 0 "a" nowA (S.observationOf nowA) "p0"))
     outputs <- scoredWith mine nowA nowA first' 2
     objective reply === map O.gradient outputs
     S.referencesOf answered Map.! "a" === mine
-    S.reference answered "b" [word (-1.5)] === Left (S.LateReference "b")
-    S.referencesOf answered === Map.fromList [("a", mine), ("b", [word (-1.5)])]
+    later <- evalEither (S.reference answered "b" laterB)
+    (stepped, _) <- evalEither (S.applied later (Applied 0 "p0" "p1" [S.digest reply]))
+    (_, scoped) <- evalEither (S.current stepped (Current 1 "b" [word (-1.6)] (S.observationOf [word (-1.6)]) "p1"))
+    outputsB <- scoredWith laterB [word (-1.6)] [word (-1.7)] second' 1
+    objective scoped === map O.gradient outputsB
+    S.referencesOf stepped Map.! "b" === laterB
 
 outside :: PropertyT IO ()
 outside = do
     begun <- evalEither (S.begin exchange profile "p0" [first', second'] [["a"], ["b"]] S.FromEngine)
     let nowA = [word (-0.9), word (-0.6)]
+    S.reference begun "a" [word (-1.5)] === Left (S.UnexpectedReference "a")
     S.proximal begun "a" nowA === Left (S.DuplicateProximal "a")
     S.proximal begun "b" [word (-1), word (-1)] === Left (S.LengthMismatch "b")
     (answered, reply) <- evalEither (S.current begun (Current 0 "a" nowA (S.observationOf nowA) "p0"))
@@ -154,6 +160,8 @@ plans = do
     two <- evalEither (S.begin exchange profile "p0" [first', second'] [["a"], ["b"]] S.FromEngine)
     other <- evalEither (S.begin exchange profile "p0" [first', second' {S.advantageWord = word 1}] [["a", "b"]] S.FromEngine)
     same <- evalEither (S.begin (V.Binding (V.CallId 9) (V.AttemptId 9) (V.Instance 9)) profile "p0" [first', second'] [["a", "b"]] S.FromEngine)
+    learner <- evalEither (S.begin exchange profile "p0" [first', second'] [["a", "b"]] S.FromLearner)
     assert (S.identity one /= S.identity two)
     assert (S.identity one /= S.identity other)
+    assert (S.identity one /= S.identity learner)
     S.identity same === S.identity one

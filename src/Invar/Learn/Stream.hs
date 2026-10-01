@@ -43,7 +43,7 @@ data Error
     | LateProximal Text
     | MissingProximal Text
     | DuplicateReference Text
-    | LateReference Text
+    | UnexpectedReference Text
     | MissingReference Text
     | Incomplete Natural
     | ConsumedMismatch Natural
@@ -82,12 +82,14 @@ begin bound chosen initial declared steps source = do
     when (any (\entry -> not (null (referenceWords entry)) && length (referenceWords entry) /= length (behaviorWords entry)) declared) (Left (InvalidPlan "Reference words must cover every response token"))
     when (null steps || any null steps) (Left (InvalidPlan "Optimizer steps must be nonempty"))
     unless (Set.fromList (concat steps) == Map.keysSet named) (Left (InvalidPlan "Optimizer steps must use every sample and no other"))
-    pure (Stream bound (planIdentity chosen initial declared steps) chosen named steps 0 [] initial Map.empty [] [] source Map.empty)
+    pure (Stream bound (planIdentity chosen initial declared steps source) chosen named steps 0 [] initial Map.empty [] [] source Map.empty)
 
-planIdentity :: Objective.Profile -> String -> [Sample] -> [[Text]] -> String
-planIdentity chosen initial declared steps = Artifact.hex (SHA256.hash (Lazy.toStrict (Builder.toLazyByteString encoded)))
+planIdentity :: Objective.Profile -> String -> [Sample] -> [[Text]] -> ReferenceSource -> String
+planIdentity chosen initial declared steps source = Artifact.hex (SHA256.hash (Lazy.toStrict (Builder.toLazyByteString encoded)))
   where
-    encoded = Builder.word64LE (castDoubleToWord64 (Objective.epsilon chosen)) <> Builder.word64LE (castDoubleToWord64 (Objective.penalty chosen)) <> text (Text.pack initial) <> counted (map entry declared) <> counted (map (counted . map text) steps)
+    encoded = Builder.char7 (sourceTag source) <> Builder.word64LE (castDoubleToWord64 (Objective.epsilon chosen)) <> Builder.word64LE (castDoubleToWord64 (Objective.penalty chosen)) <> text (Text.pack initial) <> counted (map entry declared) <> counted (map (counted . map text) steps)
+    sourceTag FromEngine = 'e'
+    sourceTag FromLearner = 'l'
     entry value = text (name value) <> counted (map Builder.word32LE (behaviorWords value)) <> counted (map Builder.word32LE (referenceWords value)) <> Builder.word32LE (advantageWord value)
     text value = let bytes = Text.encodeUtf8 value in Builder.word64LE (fromIntegral (Bytes.length bytes)) <> Builder.byteString bytes
     counted values = Builder.word64LE (fromIntegral (length values)) <> mconcat values
@@ -103,8 +105,8 @@ proximal stream named values = do
 
 reference :: Stream -> Text -> [Word32] -> Either Error Stream
 reference stream named values = do
+    when (referenceSource stream == FromEngine) (Left (UnexpectedReference named))
     entry <- lookupSample stream named
-    when (position stream > 0 || not (null (answered stream))) (Left (LateReference named))
     when (Map.member named (references stream)) (Left (DuplicateReference named))
     unless (length values == length (behaviorWords entry)) (Left (LengthMismatch named))
     pure stream {references = Map.insert named values (references stream)}

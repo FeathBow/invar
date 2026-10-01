@@ -99,11 +99,6 @@ def update(learner, plan):
 
 
 def reference_words(learner, plan):
-    """Score every sampled token under the frozen reference adapter, on this learner.
-
-    The objective's reference words come from the engine unless the update declares the
-    learner as their source. Scoring them here keeps the KL term inside one implementation.
-    """
     if plan.reference_source != "learner":
         return {}
     if not plan.reference:
