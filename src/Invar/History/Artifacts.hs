@@ -46,7 +46,7 @@ successor (decoder, schema) (index, generation) published = do
     probabilities <- Observation.probability report (path </> "probabilities.json")
     either invalid pure (reported generation probabilities)
     mismatch <- either invalid pure (Mismatch.summarize [(Probability.behavior sample, Probability.proximal sample) | sample <- probabilities])
-    compared <- case [(Probability.engineReference sample, learned) | sample <- probabilities, Just learned <- [Probability.reference sample]] of
+    compared <- case [(engine, learned) | sample <- probabilities, let engine = Probability.engineReference sample, not (null engine), Just learned <- [Probability.reference sample]] of
         [] -> pure Nothing
         pairs -> Just <$> either invalid pure (Mismatch.summarize pairs)
     let diagnostics = ["reference_engine" .= Mismatch.describe value | Just value <- [compared]]
