@@ -2,7 +2,6 @@ module Invar.Loop.Owner (validate, withShared) where
 
 import Control.Monad (unless, void)
 import Data.Bifunctor (first)
-import Data.ByteString.Char8 qualified as Bytes
 import Invar.Learn.Worker qualified as Learn
 import Invar.Learn.Worker.Owner qualified as Learner
 import Invar.Learn.Worker.Resident qualified as Update
@@ -27,7 +26,7 @@ withShared configuration@(inference, learning, overlays) action = case validate 
   where
     owner = Boundary.Owner Boundary.Shared 0
     arguments = [Infer.script inference, "--cache=" ++ Infer.cache inference, "--reference=" ++ Learn.reference learning, "--session=0", "--shared"] ++ maybe [] (\path -> ["--config=" ++ path]) (Infer.configuration inference)
-    launch = Process.Launch (Infer.executable inference) arguments (concat overlays) Bytes.putStrLn
+    launch = Process.Launch (Infer.executable inference) arguments (concat overlays) Process.live
     closing process = Transport.Handshake (Boundary.close owner) $ \encoded -> do
         count <- Transport.groups process
         pure (first Learn.ProtocolFailure (void (Boundary.closed owner count encoded)))

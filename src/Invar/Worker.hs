@@ -3,7 +3,6 @@ module Invar.Worker (Worker (..), Batch.Reference (..), Failure (..), Execution,
 import Control.Exception (bracket, mask_)
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
-import Data.ByteString.Char8 qualified as Bytes
 import Data.Functor (void)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Text qualified as Text
@@ -15,7 +14,6 @@ import Invar.Process qualified as Process
 import Invar.Spec.Invocation qualified as V
 import Invar.Spec.Load qualified as L
 import System.Exit (ExitCode)
-import System.IO (hFlush, stdout)
 
 data Worker = Worker
     { executable :: FilePath
@@ -53,7 +51,7 @@ run worker call = withRegistry worker $ \registry -> do
         Left problem -> pure (Left problem)
 
 runBatch :: Worker -> [I.Call] -> IO (Either Failure [Execution])
-runBatch worker = runSession worker Nothing (\line -> Bytes.hPutStrLn stdout line >> hFlush stdout)
+runBatch worker = runSession worker Nothing Process.live
 
 runSession :: Worker -> Maybe Batch.Reference -> (ByteString -> IO ()) -> [I.Call] -> IO (Either Failure [Execution])
 runSession worker reference echo calls = withRegistry worker $ \registry -> do

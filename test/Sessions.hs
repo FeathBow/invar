@@ -4,11 +4,13 @@ module Sessions (sessions) where
 
 import BatchCalls (exchange, prepared, quote)
 import Calls qualified as Fixture
-import Control.Concurrent (threadDelay)
+import Control.Concurrent (forkIO, threadDelay)
+import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Monad (forM_, void)
 import Data.Aeson (Value)
 import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.List (sort)
+import Data.Maybe (isNothing)
 import Hedgehog
 import Invar.Cohort qualified as C
 import Invar.Infer qualified as I
@@ -31,6 +33,7 @@ sessions =
         [ ("several sessions produce the batch of one session", once identical)
         , ("a failing or missing session fails the cohort", once failing)
         , ("cancelling the cohort stops every session", once cancelled)
+        , ("cancelling the cohort after one session returned stops the others", once returned)
         , ("each request is reported when dispatched to a session and each result after its check", once observed)
         ]
   where
@@ -119,6 +122,22 @@ cancelled = do
     outcome <- evalIO (timeout 1000000 (R.withDriver (\driver -> void <$> R.run driver slow)))
     outcome === Nothing
     evalIO (threadDelay 3500000)
+    launched <- evalIO (readFile (root </> "launched"))
+    sort (lines launched) === ["started 0", "started 1"]
+
+returned :: PropertyT IO ()
+returned = do
+    root <- workspace
+    split <- options root 2
+    let path = root </> "uneven.sh"
+        record = " >> " ++ quote (root </> "launched")
+    evalIO (writeFile path (unlines ["printf '%s\\n' \"started $INVAR_TEST_SESSION\"" ++ record, "test \"$INVAR_TEST_SESSION\" = 0 && exit 0", "sleep 3", "printf '%s\\n' \"late $INVAR_TEST_SESSION\"" ++ record, "exit 0"]))
+    let uneven = split {R.worker = W.Worker "/bin/sh" path root "unused" [] Nothing}
+    finished <- evalIO newEmptyMVar
+    _ <- evalIO (forkIO (timeout 1000000 (R.withDriver (\driver -> void <$> R.run driver uneven)) >>= putMVar finished . isNothing))
+    outcome <- evalIO (timeout 10000000 (takeMVar finished))
+    outcome === Just True
+    evalIO (threadDelay 3000000)
     launched <- evalIO (readFile (root </> "launched"))
     sort (lines launched) === ["started 0", "started 1"]
 

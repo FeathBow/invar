@@ -21,6 +21,7 @@ import Hedgehog (checkSequential)
 import Inference (inference)
 import InferenceObservations (inferenceObservations)
 import Invocations (invocations)
+import Journals (journals)
 import LearnerCalls (learnerCalls)
 import Learning (learning)
 import Literals (literals)
@@ -66,5 +67,5 @@ import Workloads (workloads)
 
 main :: IO ()
 main = do
-    outcomes <- traverse checkSequential [fixtures, properties, arguments, values, dependencies, evaluation, artifacts, construction, collections, records, literals, invocations, evidence, loads, store, checkpoints, inference, results, calls, batchCalls, groupedCalls, batchedProtocol, residentCalls, residentDrivers, residentObservations, rewards, cohorts, rollouts, sessions, learning, advantages, objectives, events, steps, mismatches, updates, learnerCalls, loops, schedules, policies, probabilities, workloads, reports, quality, observations, inferenceObservations, numerical, scores, scoreProbes, numericalScores, numericalProbes, uses, useEvidence, useAdmission, useBernstein, usePlan, usePrepare, useExecution, useGeneric, statistics]
+    outcomes <- traverse checkSequential [fixtures, properties, arguments, values, dependencies, evaluation, artifacts, construction, collections, records, literals, invocations, evidence, loads, store, checkpoints, inference, results, calls, batchCalls, groupedCalls, batchedProtocol, residentCalls, residentDrivers, residentObservations, rewards, cohorts, rollouts, sessions, learning, advantages, objectives, events, journals, steps, mismatches, updates, learnerCalls, loops, schedules, policies, probabilities, workloads, reports, quality, observations, inferenceObservations, numerical, scores, scoreProbes, numericalScores, numericalProbes, uses, useEvidence, useAdmission, useBernstein, usePlan, usePrepare, useExecution, useGeneric, statistics]
     unless (and outcomes) exitFailure
