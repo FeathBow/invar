@@ -320,12 +320,12 @@ stepRecords identity actual adapter = do
         chosen = if scoredByLearner then S.FromLearner else S.FromEngine
     begun <- Bifunctor.first show (S.begin binding profile policy samples plan chosen)
     let outside = [sample | sample <- samples, S.name sample `notElem` concat (take 1 plan)]
-        references = [object ["stage" .= String "reference", "binding" .= identity, "sample" .= S.name sample, "words" .= S.referenceWords sample] | sample <- samples, scoredByLearner]
+        references = [object ["stage" .= String "reference", "binding" .= identity, "sample" .= S.name sample, "words" .= S.referenceWords sample] | scoredByLearner, sample <- samples]
         proximals = [object ["stage" .= String "proximal", "binding" .= identity, "sample" .= S.name sample, "words" .= S.behaviorWords sample] | sample <- outside]
         states = policy : [show index | index <- [1 .. length plan - 1]] ++ [final]
         named = Map.fromList [(S.name sample, sample) | sample <- samples]
     withProximal <- foldl (\acc sample -> acc >>= \current -> Bifunctor.first show (S.proximal current (S.name sample) (S.behaviorWords sample))) (Right begun) outside
-    withReferences <- foldl (\acc sample -> acc >>= \current -> Bifunctor.first show (S.reference current (S.name sample) (S.referenceWords sample))) (Right withProximal) [sample | sample <- samples, scoredByLearner]
+    withReferences <- foldl (\acc sample -> acc >>= \current -> Bifunctor.first show (S.reference current (S.name sample) (S.referenceWords sample))) (Right withProximal) [sample | scoredByLearner, sample <- samples]
     (_, records) <- foldl (step named) (Right (withReferences, [])) (zip3 [0 :: Int ..] plan (zip states (drop 1 states)))
     pure (references ++ proximals ++ records)
   where
