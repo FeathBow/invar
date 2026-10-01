@@ -117,8 +117,14 @@ class LearningTests(unittest.TestCase):
 
     def test_learner_scored_reference_words_come_from_the_reference_adapter(self):
         learner = make_learner()
-        scored = {name: (torch.full_like(value, 0.5) if "lora_B" in name else value.clone())
-                  for name, value in adapter_state(learner.model).items()}
+        scored = {}
+        for name, value in adapter_state(learner.model).items():
+            if "lora_B" in name:
+                replacement = torch.zeros_like(value)
+                replacement.view(-1)[0] = 0.5
+                scored[name] = replacement
+            else:
+                scored[name] = value.clone()
         logical = batch(scored=scored, reference_source="learner")
         result = update(learner, logical)
         records = logical.exchange.records
