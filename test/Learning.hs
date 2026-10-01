@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Learning (learning, world) where
+module Learning (learning, world, learnerWorld) where
 
 import Control.Monad (forM_)
 import Data.Aeson qualified as J
@@ -45,6 +45,9 @@ world = Map.fromList [(S.Semantic "policy", image), (S.Semantic "learner", learn
     image = record [("artifact", text "22f6619dc862f0f4c9bec5d1a1a6f11958b2299d02f18d1f04aa5e0e0b94d3d6"), ("profile", text (replicate 64 'f'))]
     learner = record [("policy", text (replicate 64 'a')), ("learner", text (replicate 64 'b')), ("tokenizer", text (replicate 64 'd')), ("base", text (replicate 64 'e')), ("assembly", text (replicate 64 'f')), ("optimizer", record [("learning_rate", number (1 / 500)), ("betas", Sequence [number (4 / 5), number (19 / 20)]), ("epsilon", number (1 / 10000000)), ("weight_decay", number (1 / 100))])]
     trajectory seed token = record [("prompt", text "Compute the answer."), ("seed", number seed), ("limit", Atom (Token 1)), ("temperature", number (4 / 5)), ("tokens", Sequence [Atom (Token 11), Atom (Token token)]), ("prompt_length", Atom (Token 1)), ("text", text "#### 12"), ("truncated", Atom (Boolean False))]
+
+learnerWorld :: E.World
+learnerWorld = Map.insert (S.Semantic "reference_source") (text "learner") world
 
 expected :: J.Value
 expected = J.object ["specification" J..= ("grpo-token-mean/v1" :: String), "policy" J..= replicate 64 'a', "learner" J..= replicate 64 'b', "tokenizer" J..= replicate 64 'd', "base" J..= replicate 64 'e', "assembly" J..= replicate 64 'f', "behavior_model" J..= J.object ["base" J..= replicate 64 '0', "assembly" J..= replicate 64 '1'], "schedule" J..= J.object ["update" J..= (0 :: Int), "staleness" J..= (0 :: Int)], "reference" J..= replicate 64 'c', "reference_source" J..= ("engine" :: String), "epsilon" J..= (0.2 :: Double), "penalty" J..= (0.04 :: Double), "delta" J..= (0.0001 :: Double), "optimizer" J..= optimizer, "order" J..= (["s0", "s1"] :: [String]), "steps" J..= [["s0", "s1" :: String]], "samples" J..= [sample "s0" (18, 13, 0xbf000000, 0), sample "s1" (17, 12, 0xbf800000, 1)]]
