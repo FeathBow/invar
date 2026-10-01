@@ -112,7 +112,7 @@ diagnostics :: Generation -> [Value]
 diagnostics (Generation _ _ _ values _ _) = [Object fields | Frame _ fields <- values]
 
 stepOutputs :: Generation -> [ByteString]
-stepOutputs (Generation _ _ _ values _ _) = [encoded | Frame encoded fields <- values, Fields.lookup "stage" fields `elem` map (Just . String) ["proximal", "current"]]
+stepOutputs (Generation _ _ _ values _ _) = [encoded | Frame encoded fields <- values, Fields.lookup "stage" fields `elem` map (Just . String) ["proximal", "reference", "current"]]
 
 profiles :: Generation -> [Profile.Observation]
 profiles (Generation _ _ _ _ _ values) = values

@@ -59,6 +59,7 @@ reported generation probabilities = mapM_ check (Trace.stepOutputs generation)
         (stage, name, words32, index) <- Json.decode encoded >>= parseEither (withObject "learner step record" (\fields -> (,,,) <$> fields .: "stage" <*> fields .: "sample" <*> fields .: "words" <*> fields .:? "step"))
         observed <- maybe (Left "Unmatched learner step record") Right (Map.lookup (name :: Text) expected)
         let recorded = case (stage :: Text, index) of
+                ("reference", _) -> Probability.reference observed
                 ("current", Just position) -> lookup position (Probability.currents observed)
                 _ -> Just (Probability.proximal observed)
         unless (recorded == Just words32) (Left "Logged learner step words differ from the probability artifact")
