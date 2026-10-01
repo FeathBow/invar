@@ -46,7 +46,11 @@ successor (decoder, schema) (index, generation) published = do
     probabilities <- Observation.probability report (path </> "probabilities.json")
     either invalid pure (reported generation probabilities)
     mismatch <- either invalid pure (Mismatch.summarize [(Probability.behavior sample, Probability.proximal sample) | sample <- probabilities])
-    pure (object ["publication" .= Publication.describe published, "state" .= observed, "gradients" .= gradients, "probabilities" .= map Probability.sampleObject probabilities, "learner_engine" .= Mismatch.describe mismatch], state', gradient)
+    compared <- case [(Probability.engineReference sample, learned) | sample <- probabilities, Just learned <- [Probability.reference sample]] of
+        [] -> pure Nothing
+        pairs -> Just <$> either invalid pure (Mismatch.summarize pairs)
+    let diagnostics = ["reference_engine" .= Mismatch.describe value | Just value <- [compared]]
+    pure (object (["publication" .= Publication.describe published, "state" .= observed, "gradients" .= gradients, "probabilities" .= map Probability.sampleObject probabilities, "learner_engine" .= Mismatch.describe mismatch] ++ diagnostics), state', gradient)
 
 stateSummary :: Checkpoint.Checked -> [Integer] -> IO Value
 stateSummary checked steps = pure (object ("steps" .= steps : Checkpoint.rngSummary checked))

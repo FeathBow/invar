@@ -33,7 +33,7 @@ validate expected encoded = do
         unless (Map.fromList [(sampleName entry, reported) | entry <- observed, Just reported <- [reference entry]] == S.referencesOf streamed) (Left "Probability artifact reference words differ from the reported steps")
     unless (sortOn (\(position, name, _) -> (position, name)) [(position, sampleName entry, words32) | entry <- observed, (position, words32) <- currents entry] == sortOn (\(position, name, _) -> (position, name)) (S.currents streamed)) (Left "Probability artifact current words differ from the reported steps")
 
-data Sample = Sample {sampleObject :: Object, sampleName :: Text, behavior :: [Word32], proximal :: [Word32], reference :: Maybe [Word32], currents :: [(Natural, [Word32])]}
+data Sample = Sample {sampleObject :: Object, sampleName :: Text, behavior :: [Word32], proximal :: [Word32], reference :: Maybe [Word32], engineReference :: [Word32], currents :: [(Natural, [Word32])]}
 
 observe :: (Value, Request.Request) -> ByteString -> Either String [Sample]
 observe (intended, consumed) encoded = Json.decode encoded >>= parseEither (withObject "probability observation" (document (intended, consumed)))
@@ -56,7 +56,7 @@ samples observed request = do
     plan <- request .: "steps" :: Parser [[Text]]
     source <- request .: "reference_source" :: Parser Text
     delivered <- request .: "samples" :: Parser [Object]
-    originals <- Map.fromList <$> traverse (\item -> (,) <$> item .: "sample" <*> item .: "behavior_bits") delivered
+    originals <- Map.fromList <$> traverse (\item -> (,) <$> item .: "sample" <*> ((,) <$> item .: "behavior_bits" <*> item .: "reference_bits")) delivered
     names <- traverse (.: "sample") observed
     unless (names == order) (fail "Probability samples differ from logical order")
     let learnerSource = source == ("learner" :: Text)
@@ -64,10 +64,10 @@ samples observed request = do
         first = case plan of
             batch : _ -> batch
             [] -> []
-    traverse (\(name, item) -> maybe (fail "Unknown probability sample") (\consumedWords -> sample learnerSource (participation name, name `elem` first) consumedWords item) (Map.lookup name originals)) (zip names observed)
+    traverse (\(name, item) -> maybe (fail "Unknown probability sample") (\(consumedWords, engineWords) -> sample learnerSource (participation name, name `elem` first) consumedWords engineWords item) (Map.lookup name originals)) (zip names observed)
 
-sample :: Bool -> ([Natural], Bool) -> [Word32] -> Object -> Parser Sample
-sample learnerSource (participation, inFirst) behaviorWords fields = do
+sample :: Bool -> ([Natural], Bool) -> [Word32] -> [Word32] -> Object -> Parser Sample
+sample learnerSource (participation, inFirst) behaviorWords engineWords fields = do
     exact (["sample", "dtype", "proximal", "steps"] ++ ["reference" | learnerSource]) fields
     name <- fields .: "sample"
     dtype <- fields .: "dtype"
@@ -80,7 +80,7 @@ sample learnerSource (participation, inFirst) behaviorWords fields = do
     case observed of
         (0, currentWords) : _ | inFirst -> unless (currentWords == proximalWords) (fail "Proximal words differ from the first step's observation")
         _ -> pure ()
-    pure (Sample fields name behaviorWords proximalWords referenceWords observed)
+    pure (Sample fields name behaviorWords proximalWords referenceWords engineWords observed)
   where
     entry item = do
         exact ["step", "current"] item
