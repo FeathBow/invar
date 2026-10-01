@@ -9,13 +9,14 @@ import Data.Aeson.KeyMap qualified as Map
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as Bytes
 import Data.ByteString.Lazy qualified as Lazy
+import Data.Maybe (isJust)
 import Data.Word (Word32)
 import Hedgehog
 import Invar.Infer qualified as I
 import Invar.Infer.Result qualified as R
 
 results :: Group
-results = Group "Inference report correspondence" [("matching reports preserve actual token observations", once matching), ("all checked request fields bind the result", once bindings), ("malformed token observations cannot complete", once shapes), ("missing repeated and reordered reports are rejected", once protocol)]
+results = Group "Inference report correspondence" [("matching reports preserve actual token observations", once matching), ("all checked request fields bind the result", once bindings), ("malformed token observations cannot complete", once shapes), ("missing repeated and reordered reports are rejected", once protocol), ("stored results restore the checked observation with its reference scores", once stored)]
   where
     once = withTests 1 . property
 
@@ -90,6 +91,31 @@ protocol = do
         case R.observe plan encoded of
             Left (R.Malformed _) -> success
             unexpected -> annotateShow unexpected >> failure
+
+stored :: PropertyT IO ()
+stored = do
+    plan <- planned
+    let scored = change ("reference", object ["adapter" .= replicate 64 'b', "bits" .= [0xbf000000, 0xbe800000 :: Word32]]) result
+        signed = change ("behavior_bits", toJSON [0x80000000, 0xbe800000 :: Word32]) (change ("behavior", toJSON [Number 0, Number (-0.25)]) result)
+    forM_ [result, scored, signed] $ \reported -> do
+        observed <- evalEither (R.observe plan (wire [load, reported]))
+        restored <- evalEither (R.restore (I.requested plan) (R.record observed))
+        restored === observed
+        R.behaviorBits restored === R.behaviorBits observed
+        R.referenceScores restored === R.referenceScores observed
+    observed <- evalEither (R.observe plan (wire [load, scored]))
+    assert (isJust (R.referenceScores observed))
+    let saved = R.record observed
+    mismatch (R.restore (I.requested plan) {I.seed = 18} saved)
+    mismatch (R.restore (I.requested plan) (change ("reference", object ["adapter" .= replicate 64 'b', "bits" .= [0xbf000000 :: Word32]]) saved))
+    forM_ [without "reference" saved, change ("behavior", toJSON [Number (-0.5), Number (-0.25)]) saved] $ \changed ->
+        case R.restore (I.requested plan) changed of
+            Left (R.Malformed _) -> success
+            unexpected -> annotateShow unexpected >> failure
+
+without :: Key -> Value -> Value
+without key (Object fields) = Object (Map.delete key fields)
+without _ _ = error "Report fixture must be an object"
 
 mismatch :: Either R.Error R.Result -> PropertyT IO ()
 mismatch outcome = case outcome of

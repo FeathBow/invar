@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Process (Command (..), Launch (..), Exchange (..), Failure (..), run, conversation, batch) where
+module Invar.Process (Command (..), Launch (..), Exchange (..), Failure (..), run, conversation, batch, live) where
 
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as Bytes
@@ -36,7 +36,7 @@ conversation command approve replying = withLaunch launch $ \handles -> do
     launch = Launch (executable command) (arguments command) (environment command) live
 
 live :: ByteString -> IO ()
-live line = Bytes.hPutStrLn stdout line >> hFlush stdout
+live line = Bytes.hPut stdout (Bytes.snoc line '\n') >> hFlush stdout
 
 consume :: (Session problem, Maybe (ByteString -> IO (Either problem ByteString))) -> [ByteString] -> Bool -> IO (Either (Failure problem) ByteString)
 consume context@(session, _) collected granted = do

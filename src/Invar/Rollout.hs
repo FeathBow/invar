@@ -3,7 +3,7 @@
 module Invar.Rollout (Driver, Mode (..), Options (..), Observer (..), Batch, Sample, Error (..), withDriver, withConfiguredDriver, run, runObserved, silent, samples, delivered, name, group, observation, reward, scored, completion, loaded) where
 
 import Control.Concurrent (forkIOWithUnmask, killThread)
-import Control.Concurrent.MVar (newEmptyMVar, newMVar, putMVar, takeMVar, withMVar)
+import Control.Concurrent.MVar (newEmptyMVar, newMVar, putMVar, readMVar, withMVar)
 import Control.Exception (SomeException, finally, mask, onException, throwIO, try, uninterruptibleMask_)
 import Data.Bifunctor (first)
 import Data.ByteString.Char8 qualified as Bytes
@@ -13,6 +13,7 @@ import Invar.Cohort qualified as C
 import Invar.Infer.Batch qualified as Batch
 import Invar.Infer.Invocation qualified as I
 import Invar.Infer.Result qualified as R
+import Invar.Process qualified as Process
 import Invar.Reward qualified as Reward
 import Invar.Rollout.Internal (Driver (..), reserve)
 import Invar.Rollout.Observation qualified as Observed
@@ -22,7 +23,6 @@ import Invar.Spec.Invocation qualified as V
 import Invar.Spec.Load qualified as Load
 import Invar.Worker qualified as W
 import Numeric.Natural (Natural)
-import System.IO (hFlush, stdout)
 
 data Mode = Serial | Batched | Resident | Shared deriving (Eq, Show)
 
@@ -50,7 +50,7 @@ withDriver action = do
 withConfiguredDriver :: Mode -> (W.Worker, [[(String, String)]]) -> (forall scope. Driver scope -> IO value) -> IO (Either Error value)
 withConfiguredDriver Resident configuration@(_, overlays) action
     | null overlays = pure (Left (Dispatch "At least one session is required"))
-    | otherwise = first Execution <$> Resident.withPool configuration echo (\pool -> withDriver (\(Driver lock counter _) -> action (Driver lock counter (Just pool))))
+    | otherwise = first Execution <$> Resident.withPool configuration Process.live (\pool -> withDriver (\(Driver lock counter _) -> action (Driver lock counter (Just pool))))
 withConfiguredDriver Shared _ _ = pure (Left (Dispatch "Shared inference requires a joint inference and learning owner"))
 withConfiguredDriver _ _ action = Right <$> withDriver action
 
@@ -89,12 +89,12 @@ execute driver@(Driver _ _ pool) observer options (base, selected) = case prepar
     dispatch _ [] = pure (Left (Dispatch "At least one session is required"))
     dispatch calls [single] = do
         dispatched observer 0 [(index, I.binding call) | ((index, _), call) <- zip selected calls]
-        returned <- single echo calls
+        returned <- single Process.live calls
         report (finishSession selected returned)
     dispatch calls workers = do
         let assigned = partition (length workers) (zip selected calls)
         outcomes <- concurrently [session slot launch members | (slot, launch, members) <- zip3 [0 ..] workers assigned]
-        mapM_ (mapM_ echo . fst) outcomes
+        mapM_ (mapM_ Process.live . fst) outcomes
         pure $ do
             completed <- traverse snd outcomes
             pure (sortOn (\(index, _, _) -> index) (concat completed))
@@ -126,9 +126,6 @@ runners (Driver _ _ pool) options = case (mode options, pool) of
   where
     finite (launch, overlay) emit calls = fmap (map Observed.Terminated) <$> launch ((worker options) {W.environment = overlay}) (reference options) emit calls
 
-echo :: Bytes.ByteString -> IO ()
-echo line = Bytes.hPutStrLn stdout line >> hFlush stdout
-
 prepareCall :: Natural -> (Natural, C.Member scope) -> Either Error I.Call
 prepareCall base (index, member) =
     let identity = base + index
@@ -152,7 +149,7 @@ partition count values = [[value | (position, value) <- zip [0 :: Int ..] values
 concurrently :: [IO value] -> IO [value]
 concurrently actions = mask $ \restore -> do
     launched <- traverse launch actions
-    outcomes <- restore (traverse (takeMVar . snd) launched) `onException` recall launched
+    outcomes <- restore (traverse (readMVar . snd) launched) `onException` recall launched
     traverse (either throwIO pure) outcomes
   where
     launch action = do
@@ -161,7 +158,7 @@ concurrently actions = mask $ \restore -> do
         pure (thread, box)
     attempt :: IO value -> IO (Either SomeException value)
     attempt = try
-    recall launched = uninterruptibleMask_ (mapM_ (killThread . fst) launched >> mapM_ (takeMVar . snd) launched)
+    recall launched = uninterruptibleMask_ (mapM_ (killThread . fst) launched >> mapM_ (readMVar . snd) launched)
 
 finish :: C.Definition -> C.Cohort cohort -> [(Natural, C.Observation cohort, Observed.Observation)] -> Either Error (Batch scope)
 finish definition cohort completed = do

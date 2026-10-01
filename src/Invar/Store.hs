@@ -6,10 +6,13 @@ module Invar.Store (
     location,
     Method (..),
     method,
+    methodName,
     Phase (..),
     Failure (..),
     publish,
     publishCheckpoint,
+    synchronizeFile,
+    synchronizeDirectory,
 ) where
 
 import Control.Exception (Exception, IOException, bracket, mask_, throwIO)
@@ -35,6 +38,10 @@ data Location = Location
 
 data Method = RenameExclusive | LinkImmutable
     deriving (Eq, Show)
+
+methodName :: Method -> String
+methodName RenameExclusive = "rename"
+methodName LinkImmutable = "reference"
 
 data Receipt = Receipt Method Location
     deriving (Eq, Show)
