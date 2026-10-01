@@ -1,5 +1,5 @@
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Generic, TypeVar
 
 from worker.exchange import Exchange
@@ -23,6 +23,8 @@ class Plan(Generic[Tensor]):
     steps: tuple[tuple[str, ...], ...]
     nonzero: int
     exchange: Exchange
+    reference_source: str = "engine"
+    reference: dict[str, Tensor] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -31,8 +33,10 @@ class Update(Generic[Tensor]):
     gradients: dict[str, Tensor]
     proximal: dict[str, tuple[int, ...]]
     currents: tuple[tuple[int, str, tuple[int, ...]], ...]
+    reference: dict[str, tuple[int, ...]] = field(default_factory=dict)
 
 
-def plan(request, trajectories, exchange):
+def plan(request, trajectories, exchange, reference=None):
     return Plan(trajectories={item.request.sample: item for item in trajectories}, steps=request.steps,
-                nonzero=sum(item.advantage_bits & 0x7FFFFFFF != 0 for item in request.samples), exchange=exchange)
+                nonzero=sum(item.advantage_bits & 0x7FFFFFFF != 0 for item in request.samples), exchange=exchange,
+                reference_source=request.reference_source, reference={} if reference is None else reference)

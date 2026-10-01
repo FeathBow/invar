@@ -1,6 +1,6 @@
 {-# LANGUAGE RoleAnnotations #-}
 
-module Invar.Learn (Optimizer (..), Schedule (..), Settings (..), Plan, Error (..), synchronous, validate, materialization, prepare, observedInput, input, program, emission, rollout, invocation) where
+module Invar.Learn (Optimizer (..), Schedule (..), ReferenceSource (..), Settings (..), Plan, Error (..), synchronous, validate, materialization, prepare, observedInput, input, program, emission, rollout, invocation) where
 
 import Control.Monad (unless)
 import Data.Aeson (encode)
@@ -16,6 +16,7 @@ import Invar.Infer qualified as I
 import Invar.Infer.Output qualified as Output
 import Invar.Infer.Result qualified as Result
 import Invar.Learn.Program qualified as P
+import Invar.Learn.Stream (ReferenceSource (..))
 import Invar.Learn.Wire qualified as Wire
 import Invar.Materialization qualified as Materialization
 import Invar.Rollout qualified as R
@@ -51,6 +52,7 @@ data Settings = Settings
     , steps :: Natural
     , optimizer :: Optimizer
     , schedule :: Schedule
+    , referenceSource :: ReferenceSource
     }
     deriving (Eq, Show)
 
@@ -121,7 +123,7 @@ materialization settings requested = do
     unless (behaviorBase settings == I.base requested && behaviorAssembly settings == I.assembly requested) (Left MaterializationMismatch)
 
 world :: Settings -> [InputSample] -> E.World
-world settings samples = Map.fromList [(Semantic "policy", Load.imageValue image), (Semantic "learner", learnerValue settings), (Semantic "reference", text (reference settings)), (Semantic "algorithm", algorithm), (Semantic "trajectories", keyed (trajectory . sampleResult)), (Semantic "behavior_model", behaviorModel), (Semantic "schedule", record [("update", Atom (Token (update chosenSchedule))), ("staleness", Atom (Token (staleness chosenSchedule)))]), (Semantic "generations", keyed (const generation)), (Semantic "behavior", keyed (Sequence . map (Atom . Bits32) . Result.behaviorBits . sampleResult)), (Semantic "reference_scores", keyed (Sequence . map (Atom . Bits32) . maybe [] Output.scores . Result.referenceScores . sampleResult)), (Semantic "rewards", keyed (Atom . Number . sampleReward)), (Semantic "groups", groupValues indexed), (Semantic "order", Sequence [Mapping (Map.singleton index marker) | (index, _) <- indexed])]
+world settings samples = Map.fromList [(Semantic "policy", Load.imageValue image), (Semantic "learner", learnerValue settings), (Semantic "reference", text (reference settings)), (Semantic "reference_source", text (sourceName (referenceSource settings))), (Semantic "algorithm", algorithm), (Semantic "trajectories", keyed (trajectory . sampleResult)), (Semantic "behavior_model", behaviorModel), (Semantic "schedule", record [("update", Atom (Token (update chosenSchedule))), ("staleness", Atom (Token (staleness chosenSchedule)))]), (Semantic "generations", keyed (const generation)), (Semantic "behavior", keyed (Sequence . map (Atom . Bits32) . Result.behaviorBits . sampleResult)), (Semantic "reference_scores", keyed (Sequence . map (Atom . Bits32) . maybe [] Output.scores . Result.referenceScores . sampleResult)), (Semantic "rewards", keyed (Atom . Number . sampleReward)), (Semantic "groups", groupValues indexed), (Semantic "order", Sequence [Mapping (Map.singleton index marker) | (index, _) <- indexed])]
   where
     image = Materialization.learning (policy settings, learner settings, tokenizer settings, base settings, assembly settings, reference settings)
     behaviorModel = record [("base", text (behaviorBase settings)), ("assembly", text (behaviorAssembly settings))]
@@ -130,6 +132,8 @@ world settings samples = Map.fromList [(Semantic "policy", Load.imageValue image
     indexed = zip [0 ..] samples
     keyed project = Mapping (Map.fromList [(index, project sample) | (index, sample) <- indexed])
     algorithm = record [("epsilon", number (clip settings)), ("penalty", number (penalty settings)), ("delta", number (delta settings)), ("steps", Atom (Number (fromIntegral (steps settings))))]
+    sourceName FromEngine = "engine"
+    sourceName FromLearner = "learner"
 
 learnerValue :: Settings -> Value Natural
 learnerValue settings = record [("policy", text (policy settings)), ("learner", text (learner settings)), ("tokenizer", text (tokenizer settings)), ("base", text (base settings)), ("assembly", text (assembly settings)), ("optimizer", parameters)]

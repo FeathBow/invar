@@ -35,7 +35,7 @@ setup root = do
     let worker = R.worker chosen
         backend = Loop.Backend "unused learning executable" (W.executable worker) (W.script worker) Nothing R.Serial "unused update script" Learner.Process (W.cache worker) [[]]
         optimizer = L.Optimizer 0.002 0.8 0.95 0.0000001 0.01
-        learning = L.Settings {L.policy = C.policy (R.definition chosen), L.learner = replicate 64 'b', L.reference = C.policy (R.definition chosen), L.tokenizer = replicate 64 'c', L.base = replicate 64 '0', L.assembly = replicate 64 '1', L.behaviorBase = replicate 64 'e', L.behaviorAssembly = replicate 64 'f', L.clip = 0.2, L.penalty = 0.04, L.delta = 0.0001, L.steps = 1, L.optimizer = optimizer, L.schedule = L.synchronous 0 (C.policy (R.definition chosen))}
+        learning = L.Settings {L.policy = C.policy (R.definition chosen), L.learner = replicate 64 'b', L.reference = C.policy (R.definition chosen), L.tokenizer = replicate 64 'c', L.base = replicate 64 '0', L.assembly = replicate 64 '1', L.behaviorBase = replicate 64 'e', L.behaviorAssembly = replicate 64 'f', L.clip = 0.2, L.penalty = 0.04, L.delta = 0.0001, L.steps = 1, L.optimizer = optimizer, L.schedule = L.synchronous 0 (C.policy (R.definition chosen)), L.referenceSource = L.FromEngine}
     initialDescription <- evalEither (Policy.describe ("protocol-fixture", "fixture-revision") (L.policy learning, L.tokenizer learning, L.behaviorBase learning, L.behaviorAssembly learning))
     evalIO $ do
         createDirectory (root </> "input")

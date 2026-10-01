@@ -45,7 +45,7 @@ validateWith selected report events = case reverse events of
     _ -> Left "Incomplete learner execution trace"
   where
     staging fields = Fields.lookup "stage" fields `elem` map (Just . String) ["checkpoint", "artifacts"]
-    stepping fields = Fields.lookup "stage" fields `elem` map (Just . String) ["proximal", "current", "applied"]
+    stepping fields = Fields.lookup "stage" fields `elem` map (Just . String) ["proximal", "reference", "current", "applied"]
 
 readiness :: Value -> [Object] -> Either String (Object, Object)
 readiness _ events = case events of

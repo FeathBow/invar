@@ -46,5 +46,6 @@ def consumed(request, *, trajectories, loaded):
     samples = [observation(item, values[item.request.sample]) for item in trajectories]
     return {"specification": request.specification, **loaded,
             "behavior_model": asdict(request.behavior_model), "schedule": asdict(request.schedule), "samples": samples,
+            "reference_source": request.reference_source,
             "order": list(request.order), "steps": [list(batch) for batch in request.steps],
             "epsilon": request.epsilon, "penalty": request.penalty, "delta": request.delta}

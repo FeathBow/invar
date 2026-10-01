@@ -26,7 +26,7 @@ logical (Request _ ordered) = ordered
 
 parse :: Value -> Parser Request
 parse = withObject "numerical update request" $ \fields -> do
-    Json.fields ["specification", "policy", "learner", "reference", "tokenizer", "base", "assembly", "behavior_model", "schedule", "samples", "order", "steps", "epsilon", "penalty", "delta", "optimizer"] fields
+    Json.fields ["specification", "policy", "learner", "reference", "reference_source", "tokenizer", "base", "assembly", "behavior_model", "schedule", "samples", "order", "steps", "epsilon", "penalty", "delta", "optimizer"] fields
     specification <- fields .: "specification"
     unless (specification == ("grpo-token-mean/v1" :: Text)) (fail "Unsupported update specification")
     mapM_ ((.:) fields >=> Json.identity) ["policy", "learner", "reference", "tokenizer", "base", "assembly"]

@@ -40,7 +40,7 @@ fixture :: [Value] -> Value
 fixture = fixtureWith (\_ _ word -> word)
 
 fixtureWith :: (Text.Text -> Text.Text -> Word32 -> Word32) -> [Value] -> Value
-fixtureWith role events = object ["format" .= String "invar-probabilities-v4", "invocation" .= invocation, "request" .= request, "samples" .= map sample ordered]
+fixtureWith role events = object ["format" .= String "invar-probabilities-v5", "invocation" .= invocation, "request" .= request, "samples" .= map sample ordered]
   where
     consumed = events !! 1
     invocation = object ["binding" .= field "binding" consumed, "program" .= field "program" consumed]
@@ -124,7 +124,7 @@ ambiguous :: PropertyT IO ()
 ambiguous = do
     configured@(_, events) <- matched
     let encoded = Lazy.toStrict (encode (fixture events))
-    reject configured ("{\"format\":\"invar-probabilities-v4\"," <> Bytes.drop 1 encoded)
+    reject configured ("{\"format\":\"invar-probabilities-v5\"," <> Bytes.drop 1 encoded)
     reject configured (encoded <> " null")
     reject configured (replaceBytes "\"dtype\":\"F32\"" "\"dtype\":\"F32\",\"dtype\":\"F32\"" encoded)
 

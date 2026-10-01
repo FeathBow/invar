@@ -39,6 +39,7 @@ lower command@(E.Emission "update" "grpo-token-mean/v1" payload) = do
     behavior <- field "behavior_model" payload >>= modelValue
     schedule <- field "schedule" payload >>= scheduleValue
     reference <- field "reference" payload >>= text
+    source <- field "reference_source" payload >>= text
     optimizer <- field "optimizer" learner >>= optimizerValue
     epsilon <- field "epsilon" algorithm >>= number
     penalty <- field "penalty" algorithm >>= number
@@ -49,7 +50,7 @@ lower command@(E.Emission "update" "grpo-token-mean/v1" payload) = do
     expected <- first Numerical (Advantage.calculate delta supplied)
     entries <- traverse (sample samples expected) ordered
     unless (count > 0 && count <= toInteger (length entries)) (Left (Shape "Optimizer steps must be between one and the number of samples"))
-    let encoded = object ["specification" .= ("grpo-token-mean/v1" :: String), "policy" .= policy, "learner" .= checkpoint, "tokenizer" .= tokenizer, "base" .= base, "assembly" .= assembly, "behavior_model" .= behavior, "schedule" .= schedule, "reference" .= reference, "optimizer" .= optimizer, "epsilon" .= epsilon, "penalty" .= penalty, "delta" .= delta, "steps" .= batches count (map label [0 .. length entries - 1]), "samples" .= entries, "order" .= map label [0 .. length entries - 1]]
+    let encoded = object ["specification" .= ("grpo-token-mean/v1" :: String), "policy" .= policy, "learner" .= checkpoint, "tokenizer" .= tokenizer, "base" .= base, "assembly" .= assembly, "behavior_model" .= behavior, "schedule" .= schedule, "reference" .= reference, "reference_source" .= source, "optimizer" .= optimizer, "epsilon" .= epsilon, "penalty" .= penalty, "delta" .= delta, "steps" .= batches count (map label [0 .. length entries - 1]), "samples" .= entries, "order" .= map label [0 .. length entries - 1]]
     Request.value <$> first Shape (parseEither Request.parse encoded)
 lower _ = Left (Shape "Expected the GRPO update emission")
 

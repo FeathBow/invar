@@ -121,12 +121,12 @@ def run(call, options, *, loader, measure, permission, evaluate, receive):
 
     options.output.mkdir(exist_ok=False)
     model, tokenizer, identity = loader(options, call.request)
-    optimizer, _, loaded = restore_inputs(model, call.request, options, tokenizer=tokenizer)
+    optimizer, reference, loaded = restore_inputs(model, call.request, options, tokenizer=tokenizer)
     trajectories, actual = consume(call, loaded=loaded, identity=identity, emit=report)
     permission(call.invocation)
     learner = Learner(model=model, optimizer=optimizer, evaluate=evaluate)
     exchange = Exchange(binding=call.invocation.binding(), emit=report, receive=receive)
-    report("result", execute(learner, call, options.output, plan=plan(call.request, trajectories, exchange),
+    report("result", execute(learner, call, options.output, plan=plan(call.request, trajectories, exchange, reference),
                              actual=actual, tokenizer=tokenizer, measure=measure))
 
 

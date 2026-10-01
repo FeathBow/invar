@@ -316,7 +316,7 @@ stepped output
 stepRecords :: Value -> Value -> Value -> Either String [Value]
 stepRecords identity actual adapter = do
     (profile, policy, samples, plan, final) <- parseEither parser (object ["request" .= actual, "adapter" .= adapter])
-    begun <- Bifunctor.first show (S.begin binding profile policy samples plan)
+    begun <- Bifunctor.first show (S.begin binding profile policy samples plan S.FromEngine)
     let outside = [sample | sample <- samples, S.name sample `notElem` concat (take 1 plan)]
         proximals = [object ["stage" .= String "proximal", "binding" .= identity, "sample" .= S.name sample, "words" .= S.behaviorWords sample] | sample <- outside]
         states = policy : [show index | index <- [1 .. length plan - 1]] ++ [final]
