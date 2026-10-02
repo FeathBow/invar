@@ -24,7 +24,7 @@ class ProbabilityTests(unittest.TestCase):
         logical = batch(steps=(("c",), ("a", "b"), ("c",)))
         result = update(make_learner(), logical)
         path = Path(tempfile.mkdtemp(prefix="invar-probabilities-")) / "probabilities.json"
-        digest = save(path, LOGICAL_ORDER, result, invocation={"program": "p"}, request={"order": list(LOGICAL_ORDER)})
+        digest = save(path, LOGICAL_ORDER, result, invocation={"program": "p"}, request={"order": list(LOGICAL_ORDER), "reference_source": "engine"})
         document = json.loads(path.read_bytes())
         self.assertEqual(set(document), {"format", "invocation", "request", "samples"})
         self.assertEqual(document["format"], FORMAT)
@@ -41,7 +41,7 @@ class ProbabilityTests(unittest.TestCase):
             self.assertEqual(item["proximal"], first[0] if first else proximal[name])
         self.assertEqual([entry["step"] for entry in document["samples"][2]["steps"]], [0, 2])
         with self.assertRaises(FileExistsError):
-            save(path, LOGICAL_ORDER, result, invocation={}, request={})
+            save(path, LOGICAL_ORDER, result, invocation={}, request={"reference_source": "engine"})
         self.assertEqual(len(digest), 64)
 
     def test_words_preserve_signed_zero_and_do_not_alias_tensors(self):

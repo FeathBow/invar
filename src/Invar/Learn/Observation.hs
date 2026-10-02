@@ -50,7 +50,7 @@ probabilities left right = do
     pure (object ["comparison" .= ("learner log probabilities before and during the update" :: Text), "equal" .= null differences, "left_binding" .= leftBinding, "right_binding" .= rightBinding, "samples" .= length initial, "differences" .= differences])
   where
     binding = either invalid pure . Report.bindingValue :: Report.Report -> IO Value
-    fields old new = [Key.toText role | role <- ["proximal", "steps"], Fields.lookup role old /= Fields.lookup role new]
+    fields old new = [Key.toText role | role <- ["proximal", "reference", "steps"], Fields.lookup role old /= Fields.lookup role new]
     difference (old, new) = do
         name <- either invalid pure (parseEither (.: "sample") old) :: IO Text
         pure (object ["sample" .= name, "fields" .= fields old new])

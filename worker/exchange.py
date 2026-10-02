@@ -28,6 +28,9 @@ class Exchange:
     def proximal(self, *, sample, words):
         self.emit("proximal", {"binding": self.binding, "sample": sample, "words": list(words)})
 
+    def reference(self, *, sample, words):
+        self.emit("reference", {"binding": self.binding, "sample": sample, "words": list(words)})
+
     def current(self, *, step, sample, words, state):
         reported = {"binding": self.binding, "step": step, "sample": sample,
                     "observation": observation(words), "state": state}

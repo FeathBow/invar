@@ -62,6 +62,7 @@ def update(learner, plan):
         for name in later:
             proximal[name] = words(response(learner, plan.trajectories[name]))
             exchange.proximal(sample=name, words=proximal[name])
+    reference = reference_words(learner, plan)
     trainable = parameters(model)
     currents, norms, recorded = [], None, None
     for step, batch in enumerate(plan.steps):
@@ -94,4 +95,25 @@ def update(learner, plan):
     summary = {"gradient_norm": norms[0], "reward_gradient_norm": norms[1],
                "active_tokens": sum(value.behavior.numel() for value in plan.trajectories.values()),
                "before": before, "after": state, "nonzero_advantages": plan.nonzero}
-    return Update(summary=summary, gradients=recorded, proximal=proximal, currents=tuple(currents))
+    return Update(summary=summary, gradients=recorded, proximal=proximal, currents=tuple(currents), reference=reference)
+
+
+def reference_words(learner, plan):
+    if plan.reference_source != "learner":
+        return {}
+    if not plan.reference:
+        raise ValueError("Learner-scored reference words require the frozen reference adapter")
+    from peft import set_peft_model_state_dict
+
+    model, exchange = learner.model, plan.exchange
+    policy = {name: value.detach().clone() for name, value in adapter_state(model).items()}
+    scored = {}
+    with torch.no_grad():
+        set_peft_model_state_dict(model, plan.reference)
+        for name, trajectory in plan.trajectories.items():
+            scored[name] = words(response(learner, trajectory))
+            exchange.reference(sample=name, words=scored[name])
+        set_peft_model_state_dict(model, policy)
+    if digest(adapter_state(model)) != digest(policy):
+        raise RuntimeError("Restoring the policy adapter after reference scoring changed it")
+    return scored

@@ -111,7 +111,7 @@ def report(directory, result, logical, *, binding, input_state, reference):
     optimizer = {"learning_rate": SETTINGS.learning_rate, "betas": SETTINGS.betas,
                  "epsilon": SETTINGS.epsilon, "weight_decay": SETTINGS.weight_decay}
     request = {"specification": "grpo-token-mean/v1", "policy": input_state[0], "learner": input_state[1],
-               "reference": reference, **IDENTITIES, "behavior_model": {name: IDENTITIES[name] for name in ("base", "assembly")},
+               "reference": reference, "reference_source": "engine", **IDENTITIES, "behavior_model": {name: IDENTITIES[name] for name in ("base", "assembly")},
                "optimizer": optimizer, "schedule": {"update": 0, "staleness": 0},
                "samples": [observation(logical.trajectories[reward.sample],
                                        SimpleNamespace(sample=reward.sample, group=reward.group, reward=reward.value, version=0,
@@ -207,6 +207,12 @@ class LearningTests(unittest.TestCase):
         core = Checked(planned.exchange.samples, steps, planned.exchange.profile)
         mlx_learning.update(live, replace(planned, steps=steps, exchange=core), linearize=linearize)
         self.assertFalse(core.proximal_alive)
+
+    def test_learner_reference_source_is_rejected(self):
+        live = learner()
+        planned = replace(batch(live.model), reference_source="learner")
+        with self.assertRaises(ValueError):
+            mlx_learning.update(live, planned, linearize=derivative.linearize)
 
     def compare(self, directory, results, logical, *, input_state, reference):
         arguments = ["compare", "states", "--codec-mode", "stdio", "--policy", directory / "first/adapter.safetensors"]

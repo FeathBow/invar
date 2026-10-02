@@ -79,7 +79,7 @@ def execute(runtime, call, output, *, loaded, measure, permission, emit, receive
     permission(call.invocation)
     verify(runtime, call.request)
     exchange = Exchange(binding=call.invocation.binding(), emit=emit, receive=receive)
-    result = update(learner, call, output, plan=plan(call.request, trajectories, exchange), actual=actual,
+    result = update(learner, call, output, plan=plan(call.request, trajectories, exchange, runtime.reference), actual=actual,
                     tokenizer=runtime.tokenizer, measure=measure)
     saved = learner_state.attest(learner, runtime.tokenizer, checkpoint=output,
                                  policy=result["adapter"], expected=result["learner"])

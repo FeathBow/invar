@@ -39,6 +39,8 @@ def response(model, trajectory, *, evaluate, linearize):
 
 
 def update(learner, plan, *, linearize):
+    if plan.reference_source != "engine":
+        raise ValueError("The MLX learner does not score reference words; declare the engine as the reference source")
     model, optimizer, exchange = learner.model, learner.optimizer, plan.exchange
     check_optimizer(optimizer)
     before = state = mlx_tensors.digest(adapter(model))

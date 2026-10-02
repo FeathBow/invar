@@ -22,7 +22,7 @@ import Invar.Spec.Evaluate qualified as E
 import Invar.Spec.Invocation qualified as V
 import Invar.Spec.Program qualified as Source
 import Invar.Spec.Value qualified as Value
-import Learning (world)
+import Learning (learnerWorld, world)
 import Store (workspace)
 import System.FilePath ((</>))
 import System.IO.Error (isDoesNotExistError, tryIOError)
@@ -32,7 +32,7 @@ import Updates (alter, change, field, observe, setup, setupFor, wire)
 type UpdatesContext = (V.Binding, V.Runtime)
 
 probabilities :: Group
-probabilities = Group "Bound learner observations" [("probability artifact identity is mandatory", once required), ("complete file binds every learner observation to the consumed input", once valid), ("matching hashes cannot hide invalid observations", once malformed), ("duplicate JSON keys and trailing bytes are rejected", once ambiguous), ("changed missing and symbolic files are rejected", once files), ("proximal is the first observation and the file repeats the reported steps", once engine), ("a later step current must repeat the reported step", once laterStep)]
+probabilities = Group "Bound learner observations" [("probability artifact identity is mandatory", once required), ("complete file binds every learner observation to the consumed input", once valid), ("matching hashes cannot hide invalid observations", once malformed), ("duplicate JSON keys and trailing bytes are rejected", once ambiguous), ("changed missing and symbolic files are rejected", once files), ("proximal is the first observation and the file repeats the reported steps", once engine), ("a later step current must repeat the reported step", once laterStep), ("a learner-scored reference repeats the reported words and nothing else", once learnerScored)]
   where
     once = withTests 1 . property
 
@@ -40,7 +40,7 @@ fixture :: [Value] -> Value
 fixture = fixtureWith (\_ _ word -> word)
 
 fixtureWith :: (Text.Text -> Text.Text -> Word32 -> Word32) -> [Value] -> Value
-fixtureWith role events = object ["format" .= String "invar-probabilities-v4", "invocation" .= invocation, "request" .= request, "samples" .= map sample ordered]
+fixtureWith role events = object ["format" .= String "invar-probabilities-v5", "invocation" .= invocation, "request" .= request, "samples" .= map sample ordered]
   where
     consumed = events !! 1
     invocation = object ["binding" .= field "binding" consumed, "program" .= field "program" consumed]
@@ -52,7 +52,8 @@ fixtureWith role events = object ["format" .= String "invar-probabilities-v4", "
     behaviors item = decoded (field "behavior_bits" item) :: [Word32]
     current item = map (role "current" (named item)) (behaviors item)
     proximal item = map (role "proximal" (named item)) (behaviors item)
-    sample item = object ["sample" .= field "sample" item, "dtype" .= String "F32", "proximal" .= proximal item, "steps" .= [object ["step" .= position, "current" .= current item] | (position, batch) <- zip [0 :: Int ..] plan, named item `elem` batch]]
+    sample item = object (["sample" .= field "sample" item, "dtype" .= String "F32", "proximal" .= proximal item] ++ scored item ++ ["steps" .= [object ["step" .= position, "current" .= current item] | (position, batch) <- zip [0 :: Int ..] plan, named item `elem` batch]])
+    scored item = ["reference" .= (decoded (field "reference_bits" item) :: [Word32]) | field "reference_source" request == String "learner"]
 
 decoded :: (FromJSON value) => Value -> value
 decoded value = case fromJSON value of
@@ -89,6 +90,16 @@ valid = do
     result <- observed root configured (Lazy.toStrict (encode (fixture events)))
     evalIO (Worker.verifyProbabilities root result) >>= (=== Right ())
 
+learnerScored :: PropertyT IO ()
+learnerScored = do
+    configured <- setupFor learnerWorld
+    root <- workspace
+    result <- observed root configured (Lazy.toStrict (encode (fixture (snd configured))))
+    evalIO (Worker.verifyProbabilities root result) >>= (=== Right ())
+    (firstSample, remaining) <- evalMaybe (uncons (array (field "samples" (fixture (snd configured)))))
+    let rewritten = change "samples" (toJSON (change "reference" (toJSON [Number 0]) firstSample : remaining)) (fixture (snd configured))
+    reject configured (Lazy.toStrict (encode rewritten))
+
 malformed :: PropertyT IO ()
 malformed = do
     configured@(_, events) <- matched
@@ -124,7 +135,7 @@ ambiguous :: PropertyT IO ()
 ambiguous = do
     configured@(_, events) <- matched
     let encoded = Lazy.toStrict (encode (fixture events))
-    reject configured ("{\"format\":\"invar-probabilities-v4\"," <> Bytes.drop 1 encoded)
+    reject configured ("{\"format\":\"invar-probabilities-v5\"," <> Bytes.drop 1 encoded)
     reject configured (encoded <> " null")
     reject configured (replaceBytes "\"dtype\":\"F32\"" "\"dtype\":\"F32\",\"dtype\":\"F32\"" encoded)
 

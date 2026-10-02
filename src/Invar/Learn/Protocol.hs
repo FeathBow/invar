@@ -111,7 +111,7 @@ advance context progress encoded = do
         "loaded_learner" -> loaded context progress value
         "consumed" -> consumed context progress value
         "result" -> finished context (progress, value) encoded
-        _ | stage `elem` ["proximal", "current", "applied"] -> stepping context progress stage value
+        _ | stage `elem` ["proximal", "reference", "current", "applied"] -> stepping context progress stage value
         "activation" | resident context, Awaiting {} <- progress -> Right progress
         _ -> diagnostic stage progress
 
@@ -260,8 +260,13 @@ declaredSteps binding actual = parse (withObject "checked update request" plan) 
         declared <- traverse entry entries
         steps <- fields .: "steps"
         policy <- fields .: "policy"
+        source <- fields .: "reference_source" :: Parser String
+        selected <- case source of
+            "engine" -> pure S.FromEngine
+            "learner" -> pure S.FromLearner
+            _ -> fail "Unknown reference source"
         profile <- Objective.Profile <$> fields .: "epsilon" <*> fields .: "penalty"
-        pure (S.begin binding profile policy declared steps)
+        pure (S.begin binding profile policy declared steps selected)
     entry = withObject "update sample" $ \fields -> S.Sample <$> fields .: "sample" <*> fields .: "behavior_bits" <*> fields .: "reference_bits" <*> fields .: "advantage_bits"
 
 stepping :: Context -> Progress -> String -> Object -> Either Error Progress
@@ -275,6 +280,7 @@ record expected stage steps value = matching expected value >> stepRecord stage 
 
 stepRecord :: String -> S.Stream -> Object -> Either Error (S.Stream, Maybe S.Reply)
 stepRecord "proximal" steps value = (,Nothing) <$> (step' =<< S.proximal steps <$> parse (.: "sample") value <*> parse (.: "words") value)
+stepRecord "reference" steps value = (,Nothing) <$> (step' =<< S.reference steps <$> parse (.: "sample") value <*> parse (.: "words") value)
 stepRecord "current" steps value = do
     report <- parse (\fields -> S.Current <$> fields .: "step" <*> fields .: "sample" <*> fields .: "words" <*> fields .: "observation" <*> fields .: "state") value
     fmap Just <$> step' (S.current steps report)

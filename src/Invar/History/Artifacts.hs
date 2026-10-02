@@ -46,7 +46,11 @@ successor (decoder, schema) (index, generation) published = do
     probabilities <- Observation.probability report (path </> "probabilities.json")
     either invalid pure (reported generation probabilities)
     mismatch <- either invalid pure (Mismatch.summarize [(Probability.behavior sample, Probability.proximal sample) | sample <- probabilities])
-    pure (object ["publication" .= Publication.describe published, "state" .= observed, "gradients" .= gradients, "probabilities" .= map Probability.sampleObject probabilities, "learner_engine" .= Mismatch.describe mismatch], state', gradient)
+    compared <- case [(Probability.engineReference sample, learned) | sample <- probabilities, Just learned <- [Probability.reference sample]] of
+        [] -> pure Nothing
+        pairs -> Just <$> either invalid pure (Mismatch.summarize pairs)
+    let diagnostics = ["reference_engine" .= Mismatch.describe value | Just value <- [compared]]
+    pure (object (["publication" .= Publication.describe published, "state" .= observed, "gradients" .= gradients, "probabilities" .= map Probability.sampleObject probabilities, "learner_engine" .= Mismatch.describe mismatch] ++ diagnostics), state', gradient)
 
 stateSummary :: Checkpoint.Checked -> [Integer] -> IO Value
 stateSummary checked steps = pure (object ("steps" .= steps : Checkpoint.rngSummary checked))
@@ -59,6 +63,7 @@ reported generation probabilities = mapM_ check (Trace.stepOutputs generation)
         (stage, name, words32, index) <- Json.decode encoded >>= parseEither (withObject "learner step record" (\fields -> (,,,) <$> fields .: "stage" <*> fields .: "sample" <*> fields .: "words" <*> fields .:? "step"))
         observed <- maybe (Left "Unmatched learner step record") Right (Map.lookup (name :: Text) expected)
         let recorded = case (stage :: Text, index) of
+                ("reference", _) -> Probability.reference observed
                 ("current", Just position) -> lookup position (Probability.currents observed)
                 _ -> Just (Probability.proximal observed)
         unless (recorded == Just words32) (Left "Logged learner step words differ from the probability artifact")

@@ -1,4 +1,4 @@
-module Invar.Learn.Stream (Sample (..), Current (..), Applied (..), Reply (..), Stream, Error (..), begin, proximal, current, applied, complete, digest, observationOf, proximals, currents, identity, exchange, opening, completions) where
+module Invar.Learn.Stream (Sample (..), Current (..), Applied (..), Reply (..), ReferenceSource (..), Stream, Error (..), begin, proximal, reference, current, applied, complete, digest, observationOf, proximals, referencesOf, sourceOf, currents, identity, exchange, opening, completions) where
 
 import Control.Monad (unless, when)
 import Crypto.Hash.SHA256 qualified as SHA256
@@ -42,6 +42,9 @@ data Error
     | DuplicateProximal Text
     | LateProximal Text
     | MissingProximal Text
+    | DuplicateReference Text
+    | UnexpectedReference Text
+    | MissingReference Text
     | Incomplete Natural
     | ConsumedMismatch Natural
     | ObservationMismatch Text
@@ -49,6 +52,9 @@ data Error
     | Unfinished
     | Scalar Objective.Error
     | InvalidPlan String
+    deriving (Eq, Show)
+
+data ReferenceSource = FromEngine | FromLearner
     deriving (Eq, Show)
 
 data Stream = Stream
@@ -63,23 +69,27 @@ data Stream = Stream
     , fixed :: Map Text [Word32]
     , observed :: [(Natural, Text, [Word32])]
     , closed :: [Completion]
+    , referenceSource :: ReferenceSource
+    , references :: Map Text [Word32]
     }
     deriving (Eq, Show)
 
-begin :: V.Binding -> Objective.Profile -> String -> [Sample] -> [[Text]] -> Either Error Stream
-begin bound chosen initial declared steps = do
+begin :: V.Binding -> Objective.Profile -> String -> [Sample] -> [[Text]] -> ReferenceSource -> Either Error Stream
+begin bound chosen initial declared steps source = do
     let named = Map.fromList [(name entry, entry) | entry <- declared]
     when (null declared || Map.size named /= length declared) (Left (InvalidPlan "Samples must be nonempty and distinct"))
     when (any (null . behaviorWords) declared) (Left (InvalidPlan "Every sample needs at least one response token"))
     when (any (\entry -> not (null (referenceWords entry)) && length (referenceWords entry) /= length (behaviorWords entry)) declared) (Left (InvalidPlan "Reference words must cover every response token"))
     when (null steps || any null steps) (Left (InvalidPlan "Optimizer steps must be nonempty"))
     unless (Set.fromList (concat steps) == Map.keysSet named) (Left (InvalidPlan "Optimizer steps must use every sample and no other"))
-    pure (Stream bound (planIdentity chosen initial declared steps) chosen named steps 0 [] initial Map.empty [] [])
+    pure (Stream bound (planIdentity chosen initial declared steps source) chosen named steps 0 [] initial Map.empty [] [] source Map.empty)
 
-planIdentity :: Objective.Profile -> String -> [Sample] -> [[Text]] -> String
-planIdentity chosen initial declared steps = Artifact.hex (SHA256.hash (Lazy.toStrict (Builder.toLazyByteString encoded)))
+planIdentity :: Objective.Profile -> String -> [Sample] -> [[Text]] -> ReferenceSource -> String
+planIdentity chosen initial declared steps source = Artifact.hex (SHA256.hash (Lazy.toStrict (Builder.toLazyByteString encoded)))
   where
-    encoded = Builder.word64LE (castDoubleToWord64 (Objective.epsilon chosen)) <> Builder.word64LE (castDoubleToWord64 (Objective.penalty chosen)) <> text (Text.pack initial) <> counted (map entry declared) <> counted (map (counted . map text) steps)
+    encoded = Builder.char7 (sourceTag source) <> Builder.word64LE (castDoubleToWord64 (Objective.epsilon chosen)) <> Builder.word64LE (castDoubleToWord64 (Objective.penalty chosen)) <> text (Text.pack initial) <> counted (map entry declared) <> counted (map (counted . map text) steps)
+    sourceTag FromEngine = 'e'
+    sourceTag FromLearner = 'l'
     entry value = text (name value) <> counted (map Builder.word32LE (behaviorWords value)) <> counted (map Builder.word32LE (referenceWords value)) <> Builder.word32LE (advantageWord value)
     text value = let bytes = Text.encodeUtf8 value in Builder.word64LE (fromIntegral (Bytes.length bytes)) <> Builder.byteString bytes
     counted values = Builder.word64LE (fromIntegral (length values)) <> mconcat values
@@ -92,6 +102,14 @@ proximal stream named values = do
     when (Map.member named (fixed stream)) (Left (DuplicateProximal named))
     unless (length values == length (behaviorWords entry)) (Left (LengthMismatch named))
     pure stream {fixed = Map.insert named values (fixed stream)}
+
+reference :: Stream -> Text -> [Word32] -> Either Error Stream
+reference stream named values = do
+    when (referenceSource stream == FromEngine) (Left (UnexpectedReference named))
+    entry <- lookupSample stream named
+    when (Map.member named (references stream)) (Left (DuplicateReference named))
+    unless (length values == length (behaviorWords entry)) (Left (LengthMismatch named))
+    pure stream {references = Map.insert named values (references stream)}
 
 current :: Stream -> Current -> Either Error (Stream, Reply)
 current stream report = do
@@ -107,8 +125,10 @@ current stream report = do
     unless (observation report == observationOf (words32 report)) (Left (ObservationMismatch (sample report)))
     let recorded = if position stream == 0 then Map.insert (sample report) (words32 report) (fixed stream) else fixed stream
     frozen <- maybe (Left (MissingProximal (sample report))) Right (Map.lookup (sample report) recorded)
-    let references = if null (referenceWords entry) then behaviorWords entry else referenceWords entry
-        inputs = [Objective.Inputs {Objective.current = now, Objective.proximal = old, Objective.behavior = seen, Objective.fixed = ref, Objective.advantage = advantageWord entry} | (now, old, seen, ref) <- zip4 (words32 report) frozen (behaviorWords entry) references]
+    chosen <- case referenceSource stream of
+        FromEngine -> pure (if null (referenceWords entry) then behaviorWords entry else referenceWords entry)
+        FromLearner -> maybe (Left (MissingReference (sample report))) Right (Map.lookup (sample report) (references stream))
+    let inputs = [Objective.Inputs {Objective.current = now, Objective.proximal = old, Objective.behavior = seen, Objective.fixed = ref, Objective.advantage = advantageWord entry} | (now, old, seen, ref) <- zip4 (words32 report) frozen (behaviorWords entry) chosen]
     outputs <- either (Left . Scalar) Right (Objective.calculate (profile stream) (fromIntegral (denominator stream batch)) inputs)
     let reply = Reply (position stream) (sample report) (observation report) (state report) (map Objective.gradient outputs) (map Objective.rewardGradient outputs)
     pure
@@ -161,6 +181,12 @@ completions = closed
 
 proximals :: Stream -> Map Text [Word32]
 proximals = fixed
+
+referencesOf :: Stream -> Map Text [Word32]
+referencesOf = references
+
+sourceOf :: Stream -> ReferenceSource
+sourceOf = referenceSource
 
 currents :: Stream -> [(Natural, Text, [Word32])]
 currents = observed

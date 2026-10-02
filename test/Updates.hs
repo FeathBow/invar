@@ -315,15 +315,19 @@ stepped output
 
 stepRecords :: Value -> Value -> Value -> Either String [Value]
 stepRecords identity actual adapter = do
-    (profile, policy, samples, plan, final) <- parseEither parser (object ["request" .= actual, "adapter" .= adapter])
-    begun <- Bifunctor.first show (S.begin binding profile policy samples plan)
+    (profile, policy, samples, plan, final, source) <- parseEither parser (object ["request" .= actual, "adapter" .= adapter])
+    let scoredByLearner = source == ("learner" :: Text.Text)
+        chosen = if scoredByLearner then S.FromLearner else S.FromEngine
+    begun <- Bifunctor.first show (S.begin binding profile policy samples plan chosen)
     let outside = [sample | sample <- samples, S.name sample `notElem` concat (take 1 plan)]
+        references = [object ["stage" .= String "reference", "binding" .= identity, "sample" .= S.name sample, "words" .= S.referenceWords sample] | scoredByLearner, sample <- samples]
         proximals = [object ["stage" .= String "proximal", "binding" .= identity, "sample" .= S.name sample, "words" .= S.behaviorWords sample] | sample <- outside]
         states = policy : [show index | index <- [1 .. length plan - 1]] ++ [final]
         named = Map.fromList [(S.name sample, sample) | sample <- samples]
     withProximal <- foldl (\acc sample -> acc >>= \current -> Bifunctor.first show (S.proximal current (S.name sample) (S.behaviorWords sample))) (Right begun) outside
-    (_, records) <- foldl (step named) (Right (withProximal, [])) (zip3 [0 :: Int ..] plan (zip states (drop 1 states)))
-    pure (proximals ++ records)
+    withReferences <- foldl (\acc sample -> acc >>= \current -> Bifunctor.first show (S.reference current (S.name sample) (S.referenceWords sample))) (Right withProximal) [sample | scoredByLearner, sample <- samples]
+    (_, records) <- foldl (step named) (Right (withReferences, [])) (zip3 [0 :: Int ..] plan (zip states (drop 1 states)))
+    pure (references ++ proximals ++ records)
   where
     parser = withObject "stepped update" $ \fields -> do
         request <- fields .: "request"
@@ -335,11 +339,12 @@ stepRecords identity actual adapter = do
                 samples <- traverse (withObject "update sample" (\sample -> S.Sample <$> sample .: "sample" <*> sample .: "behavior_bits" <*> sample .: "reference_bits" <*> sample .: "advantage_bits")) entries
                 plan <- input .: "steps"
                 policy <- input .: "policy"
+                source <- input .: "reference_source"
                 profile <- Objective.Profile <$> input .: "epsilon" <*> input .: "penalty"
-                pure (profile, policy, samples, plan, final)
+                pure (profile, policy, samples, plan, final, source)
             )
             request ::
-            Parser (Objective.Profile, String, [S.Sample], [[Text.Text]], String)
+            Parser (Objective.Profile, String, [S.Sample], [[Text.Text]], String, Text.Text)
     step named accumulated (index, batch, (before, after)) = do
         (current, records) <- accumulated
         (answered, currents, digests) <- foldl (sampleStep named (index, before)) (Right (current, [], [])) batch

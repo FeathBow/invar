@@ -59,6 +59,7 @@ class Cohort:
     policy: str
     learner: str
     reference: str
+    reference_source: str
     tokenizer: str
     base: str
     assembly: str
@@ -216,9 +217,11 @@ def optimizer_steps(value, names):
 
 
 def decode(value):
-    value = fields(value, "specification policy learner reference tokenizer base assembly behavior_model schedule samples order steps epsilon penalty delta optimizer")
+    value = fields(value, "specification policy learner reference reference_source tokenizer base assembly behavior_model schedule samples order steps epsilon penalty delta optimizer")
     if value["specification"] != SPECIFICATION:
         raise ValueError("Unsupported update specification")
+    if value["reference_source"] not in ("engine", "learner"):
+        raise ValueError("Expected the reference words to come from the engine or the learner")
     if not isinstance(value["samples"], list):
         raise ValueError("Expected an explicit cohort sequence")
     samples = tuple(sample(item) for item in value["samples"])
@@ -237,6 +240,7 @@ def decode(value):
         raise ValueError("Invalid GRPO coefficient configuration")
     return Cohort(specification=SPECIFICATION, policy=identity(value["policy"]),
                   learner=identity(value["learner"]), reference=identity(value["reference"]),
+                  reference_source=value["reference_source"],
                   tokenizer=identity(value["tokenizer"]),
                   base=identity(value["base"]), assembly=identity(value["assembly"]),
                   behavior_model=behavior_model(value["behavior_model"]), schedule=planned,

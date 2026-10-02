@@ -20,6 +20,7 @@ steps =
         [ ("one full step reuses each first observation as proximal and answers with the core's cotangents", once full)
         , ("later steps keep proximal fixed and chain the learner state", once staged)
         , ("samples outside the first step need proximal before the first update", once outside)
+        , ("learner-scored reference words arrive before the step that consumes them and drive the objective", once learnerReference)
         , ("reports out of order, from another state or with other cotangents are refused", once refusals)
         , ("the cotangent digest is SHA-256 over little-endian FP32 words", once vector)
         , ("a stream starts only from a valid plan, and its identity names the plan", once plans)
@@ -49,7 +50,7 @@ expected now old entry total = evalEither (O.calculate profile total [O.Inputs c
 
 full :: PropertyT IO ()
 full = do
-    begun <- evalEither (S.begin exchange profile "p0" [first', second'] [["a", "b"]])
+    begun <- evalEither (S.begin exchange profile "p0" [first', second'] [["a", "b"]] S.FromEngine)
     let nowA = [word (-0.9), word (-0.6)]
         nowB = [word (-1.8)]
     (afterA, replyA) <- evalEither (S.current begun (Current 0 "a" nowA (S.observationOf nowA) "p0"))
@@ -67,7 +68,7 @@ full = do
 
 staged :: PropertyT IO ()
 staged = do
-    begun <- evalEither (S.begin exchange profile "p0" [first', second'] [["a", "b"], ["a"]])
+    begun <- evalEither (S.begin exchange profile "p0" [first', second'] [["a", "b"], ["a"]] S.FromEngine)
     let firstA = [word (-0.9), word (-0.6)]
         laterA = [word (-0.7), word (-0.8)]
     (one, replyA) <- evalEither (S.current begun (Current 0 "a" firstA (S.observationOf firstA) "p0"))
@@ -83,10 +84,39 @@ staged = do
     S.complete finished === Right "p2"
     S.complete three === Left S.Unfinished
 
+scoredWith :: [Word32] -> [Word32] -> [Word32] -> Sample -> Int -> PropertyT IO [O.Output]
+scoredWith references now old entry total = evalEither (O.calculate profile total [O.Inputs c p b r (advantageWord entry) | (c, p, b, r) <- zip4 now old (behaviorWords entry) references])
+  where
+    zip4 (a : as) (b : bs) (c : cs) (d : ds) = (a, b, c, d) : zip4 as bs cs ds
+    zip4 _ _ _ _ = []
+
+learnerReference :: PropertyT IO ()
+learnerReference = do
+    let mine = [word (-1.25), word (-1.4)]
+        nowA = [word (-0.9), word (-0.6)]
+        laterB = [word (-1.4)]
+    begun <- evalEither (S.begin exchange profile "p0" [first', second'] [["a"], ["b"]] S.FromLearner)
+    S.current begun (Current 0 "a" nowA (S.observationOf nowA) "p0") === Left (S.MissingReference "a")
+    S.reference begun "a" [word (-1)] === Left (S.LengthMismatch "a")
+    withA <- evalEither (S.reference begun "a" mine)
+    S.reference withA "a" mine === Left (S.DuplicateReference "a")
+    withProximal <- evalEither (S.proximal withA "b" [word (-1.7)])
+    (answered, reply) <- evalEither (S.current withProximal (Current 0 "a" nowA (S.observationOf nowA) "p0"))
+    outputs <- scoredWith mine nowA nowA first' 2
+    objective reply === map O.gradient outputs
+    S.referencesOf answered Map.! "a" === mine
+    later <- evalEither (S.reference answered "b" laterB)
+    (stepped, _) <- evalEither (S.applied later (Applied 0 "p0" "p1" [S.digest reply]))
+    (_, scoped) <- evalEither (S.current stepped (Current 1 "b" [word (-1.6)] (S.observationOf [word (-1.6)]) "p1"))
+    outputsB <- scoredWith laterB [word (-1.6)] [word (-1.7)] second' 1
+    objective scoped === map O.gradient outputsB
+    S.referencesOf stepped Map.! "b" === laterB
+
 outside :: PropertyT IO ()
 outside = do
-    begun <- evalEither (S.begin exchange profile "p0" [first', second'] [["a"], ["b"]])
+    begun <- evalEither (S.begin exchange profile "p0" [first', second'] [["a"], ["b"]] S.FromEngine)
     let nowA = [word (-0.9), word (-0.6)]
+    S.reference begun "a" [word (-1.5)] === Left (S.UnexpectedReference "a")
     S.proximal begun "a" nowA === Left (S.DuplicateProximal "a")
     S.proximal begun "b" [word (-1), word (-1)] === Left (S.LengthMismatch "b")
     (answered, reply) <- evalEither (S.current begun (Current 0 "a" nowA (S.observationOf nowA) "p0"))
@@ -102,7 +132,7 @@ outside = do
 
 refusals :: PropertyT IO ()
 refusals = do
-    begun <- evalEither (S.begin exchange profile "p0" [first', second'] [["a", "b"]])
+    begun <- evalEither (S.begin exchange profile "p0" [first', second'] [["a", "b"]] S.FromEngine)
     let nowA = [word (-0.9), word (-0.6)]
     S.current begun (Current 0 "b" [word (-1)] (S.observationOf [word (-1)]) "p0") === Left (S.OutOfOrder 0 "b")
     S.current begun (Current 1 "a" nowA (S.observationOf nowA) "p0") === Left (S.OutOfOrder 1 "a")
@@ -123,13 +153,15 @@ vector = S.digest (Reply 0 "a" "o" "s" [word 1, word (-0.5)] [word 0]) === "d3fd
 plans :: PropertyT IO ()
 plans = do
     let invalid = [([], [["a"]]), ([first', first'], [["a"]]), ([first' {S.behaviorWords = []}], [["a"]]), ([first' {S.referenceWords = [word (-1)]}], [["a"]]), ([first'], []), ([first'], [["a"], []]), ([first'], [["a", "b"]]), ([first', second'], [["a"]])]
-    forM_ invalid $ \(declared, steps') -> case S.begin exchange profile "p0" declared steps' of
+    forM_ invalid $ \(declared, steps') -> case S.begin exchange profile "p0" declared steps' S.FromEngine of
         Left (S.InvalidPlan _) -> success
         unexpected -> annotateShow (declared, steps', fmap S.identity unexpected) >> failure
-    one <- evalEither (S.begin exchange profile "p0" [first', second'] [["a", "b"]])
-    two <- evalEither (S.begin exchange profile "p0" [first', second'] [["a"], ["b"]])
-    other <- evalEither (S.begin exchange profile "p0" [first', second' {S.advantageWord = word 1}] [["a", "b"]])
-    same <- evalEither (S.begin (V.Binding (V.CallId 9) (V.AttemptId 9) (V.Instance 9)) profile "p0" [first', second'] [["a", "b"]])
+    one <- evalEither (S.begin exchange profile "p0" [first', second'] [["a", "b"]] S.FromEngine)
+    two <- evalEither (S.begin exchange profile "p0" [first', second'] [["a"], ["b"]] S.FromEngine)
+    other <- evalEither (S.begin exchange profile "p0" [first', second' {S.advantageWord = word 1}] [["a", "b"]] S.FromEngine)
+    same <- evalEither (S.begin (V.Binding (V.CallId 9) (V.AttemptId 9) (V.Instance 9)) profile "p0" [first', second'] [["a", "b"]] S.FromEngine)
+    learner <- evalEither (S.begin exchange profile "p0" [first', second'] [["a", "b"]] S.FromLearner)
     assert (S.identity one /= S.identity two)
     assert (S.identity one /= S.identity other)
+    assert (S.identity one /= S.identity learner)
     S.identity same === S.identity one

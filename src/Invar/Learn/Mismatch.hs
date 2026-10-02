@@ -23,7 +23,7 @@ summarize samples = do
     pairs <- concat <$> traverse paired samples
     if null pairs then Left "A learner and engine comparison requires at least one token" else pure (fromPairs pairs)
   where
-    paired (behavior, proximal) = if length behavior == length proximal then Right (zip behavior proximal) else Left "Behavior and proximal token counts differ"
+    paired (engine, learner) = if length engine == length learner then Right (zip engine learner) else Left "Compared token counts differ"
 
 fromPairs :: [(Word32, Word32)] -> Summary
 fromPairs pairs =
@@ -37,7 +37,7 @@ fromPairs pairs =
         }
   where
     count = length pairs
-    gaps = [exact proximal - exact behavior | (behavior, proximal) <- pairs]
+    gaps = [exact learner - exact engine | (engine, learner) <- pairs]
     sizes = sort (map abs gaps)
     rank :: Rational -> Rational
     rank level = sizes !! (ceiling (level * fromIntegral count) - 1)
