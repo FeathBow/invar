@@ -13,6 +13,7 @@ import Invar.Learn.Worker qualified as Learner
 import Invar.Loop qualified as Loop
 import Invar.Policy qualified as Policy
 import Invar.Rollout qualified as R
+import Invar.Runtime qualified as Runtime
 import Invar.Schedule qualified as S
 import Invar.Store qualified as Store
 import Invar.Worker qualified as W
@@ -25,7 +26,7 @@ import System.IO.Error (isAlreadyExistsError, isDoesNotExistError, tryIOError)
 import System.Posix.Files (createSymbolicLink)
 
 loops :: Group
-loops = Group "Owning loop preparation" [("invalid learning settings cannot claim an output namespace", once settings), ("invalid cohorts do not advance the committed generation", once declarations), ("a different tokenizer cannot launch a rollout", once tokenizer), ("an undeclared behavior model cannot launch a rollout", once materialization), ("a selected policy description cannot change before a rollout", once description), ("declared behavior and learner models retain separate identities", once representations), ("inference launch retains its executable configuration and checkpoint", once configured), ("failed rollout keeps the checkpoint but reserves fresh identities", once failed), ("launch exceptions release preparation without reusing identities", once interrupted), ("an existing namespace cannot be opened as a fresh loop", once namespace)]
+loops = Group "Owning loop preparation" [("invalid learning settings cannot claim an output namespace", once settings), ("invalid cohorts do not advance the committed generation", once declarations), ("a different tokenizer cannot launch a rollout", once tokenizer), ("an undeclared behavior model cannot launch a rollout", once materialization), ("an initial description that differs from the declared materialization is refused before either loop starts", once initial), ("a selected policy description cannot change before a rollout", once description), ("declared behavior and learner models retain separate identities", once representations), ("inference launch retains its executable configuration and checkpoint", once configured), ("failed rollout keeps the checkpoint but reserves fresh identities", once failed), ("launch exceptions release preparation without reusing identities", once interrupted), ("an existing namespace cannot be opened as a fresh loop", once namespace)]
   where
     once = withTests 1 . property
 
@@ -95,6 +96,22 @@ materialization = forM_ [\request -> request {I.base = replicate 64 '0'}, \reque
     outcomes === Right (Left (Loop.Plan L.MaterializationMismatch), ready config)
     evalIO (doesPathExist (root </> "calls")) >>= (=== False)
     evalIO (listDirectory (Loop.root config)) >>= (=== [])
+
+initial :: PropertyT IO ()
+initial = do
+    root <- workspace
+    (config, _) <- setup root
+    let changed = config {Loop.settings = (Loop.settings config) {L.behaviorBase = replicate 64 'd'}}
+        problem = "Initial policy description differs from the declared inference materialization"
+    synchronous <- evalIO (Loop.withDriver changed (const (pure ())))
+    case synchronous of
+        Left (Loop.Policy refused) -> refused === problem
+        unexpected -> annotateShow unexpected >> failure
+    concurrent <- evalIO (Runtime.run (Runtime.Run changed 0 [] []) [])
+    case concurrent of
+        Left (Runtime.Declaration refused) -> refused === problem
+        unexpected -> annotateShow unexpected >> failure
+    evalIO (doesPathExist (Loop.root config)) >>= (=== False)
 
 changeTasks :: (I.Request -> I.Request) -> Loop.Cycle -> PropertyT IO Loop.Cycle
 changeTasks change workload = do

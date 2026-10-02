@@ -2,9 +2,14 @@
 
 module Training (run, usage, settings, settingsOptions) where
 
-import Data.Aeson (Value, eitherDecodeStrict, encode, object, (.=))
+import Control.Monad (when)
+import Data.Aeson (Object, Value, eitherDecodeStrict, encode, object, (.:), (.=))
+import Data.Aeson.Types (parseEither)
+import Data.Bifunctor (first)
 import Data.ByteString qualified as Bytes
 import Data.ByteString.Lazy.Char8 qualified as Lazy
+import Data.Map.Strict qualified as Map
+import Data.Maybe (isJust, isNothing)
 import Dataset qualified
 import GHC.Clock (getMonotonicTime)
 import InferenceInput qualified
@@ -25,20 +30,39 @@ run :: [String] -> IO ()
 run ["--help"] = putStrLn usage
 run supplied = do
     fields <- either die pure (O.parse options supplied)
-    config <- either die pure (configure fields)
-    either (die . show) pure (Learn.validate (Loop.settings config))
-    let selected = selection (Loop.settings config)
-    encoded <- Bytes.getContents
-    cycles <- either die pure (Dataset.decode selected encoded)
-    case O.optional fields "staleness" of
-        Just _ -> do
-            lag <- either die pure (O.numeric fields "staleness")
+    case (O.optional fields "resume", O.optional fields "staleness") of
+        (Just directory, _)
+            | Map.size fields == 1 -> Runtime.resume directory declared >>= either (die . show) pure
+            | otherwise -> die "--resume takes no other option; the run declaration supplies them"
+        (Nothing, Just _) -> do
+            encoded <- Bytes.getContents
+            selected <- either die pure (concurrent fields encoded)
             workload <- either die pure (eitherDecodeStrict encoded)
-            let declaration = object ["entry" .= ("declaration" :: String), "arguments" .= supplied, "workload" .= (workload :: Value), "staleness" .= lag]
-                instantiate workloadCycle policy = Dataset.instantiate selected {Dataset.policy = policy} workloadCycle
-            outcome <- Runtime.run config lag declaration (map instantiate cycles) (map (fromIntegral . length . Workload.tasks) cycles)
-            either (die . show) pure outcome
-        Nothing -> synchronous config selected cycles
+            Runtime.run selected ["arguments" .= supplied, "workload" .= (workload :: Value)] >>= either (die . show) pure
+        (Nothing, Nothing) -> do
+            config <- either die pure (configure fields)
+            either (die . show) pure (Learn.validate (Loop.settings config))
+            let selected = selection (Loop.settings config)
+            encoded <- Bytes.getContents
+            cycles <- either die pure (Dataset.decode selected encoded)
+            synchronous config selected cycles
+
+declared :: Object -> Either String Runtime.Run
+declared declaration = do
+    (supplied, workload) <- parseEither (\fields -> (,) <$> fields .: "arguments" <*> fields .: "workload") declaration
+    fields <- O.parse options supplied
+    when (isJust (O.optional fields "resume") || isNothing (O.optional fields "staleness")) (Left "The run declaration does not declare a concurrent run")
+    concurrent fields (Lazy.toStrict (encode (workload :: Value)))
+
+concurrent :: O.Fields -> Bytes.ByteString -> Either String Runtime.Run
+concurrent fields encoded = do
+    config <- configure fields
+    first show (Learn.validate (Loop.settings config))
+    lag <- O.numeric fields "staleness"
+    let selected = selection (Loop.settings config)
+        instantiate workloadCycle policy = Dataset.instantiate selected {Dataset.policy = policy} workloadCycle
+    cycles <- Dataset.decode selected encoded
+    pure (Runtime.Run config lag (map instantiate cycles) (map (fromIntegral . length . Workload.tasks) cycles))
 
 synchronous :: Loop.Config -> Dataset.Identity -> [Dataset.Cycle] -> IO ()
 synchronous config selected cycles = do
@@ -110,10 +134,10 @@ referenceSource fields = case O.optional fields "reference-source" of
     Just _ -> Left "Invalid reference source: expected engine or learner"
 
 usage :: String
-usage = usageInfo "Usage: invar train OPTIONS < tasks.json\nAll options except --devices, --inference-config, --inference-mode, --learning-mode, --steps, --staleness and --reference-source are required. Input is a nonempty JSON array of declared cycles." options
+usage = usageInfo "Usage: invar train OPTIONS < tasks.json\nAll options except --devices, --inference-config, --inference-mode, --learning-mode, --steps, --staleness and --reference-source are required. Input is a nonempty JSON array of declared cycles.\nUsage: invar train --resume DIRECTORY\nResume a run declared with --staleness from the journal in its output directory, which supplies every other option and the workload." options
 
 options :: [OptDescr (String, String)]
-options = O.descriptions [("publication", "Checkpoint publication: rename or reference"), ("devices", "Optional comma-separated CUDA devices, one rollout worker process per device"), ("python", "Learning Python executable"), ("inference-python", "Inference Python executable"), ("inference", "Inference worker script"), ("inference-config", "Optional inference worker launch configuration"), ("inference-mode", "Inference execution: serial (default), batch, resident or shared"), ("learning", "Update worker script"), ("learning-mode", "Learning execution: process (default), resident or shared; shared requires both roles"), ("cache", "Pinned model cache"), ("output", "New output directory"), ("checkpoint", "Initial paired checkpoint directory"), ("reference", "Fixed reference adapter file"), ("staleness", "Optional staleness d: run rollout and learning concurrently, update u learning from rollouts of version max(0, u - d); requires separate inference and learning processes")] ++ settingsOptions
+options = O.descriptions [("publication", "Checkpoint publication: rename or reference"), ("devices", "Optional comma-separated CUDA devices, one rollout worker process per device"), ("python", "Learning Python executable"), ("inference-python", "Inference Python executable"), ("inference", "Inference worker script"), ("inference-config", "Optional inference worker launch configuration"), ("inference-mode", "Inference execution: serial (default), batch, resident or shared"), ("learning", "Update worker script"), ("learning-mode", "Learning execution: process (default), resident or shared; shared requires both roles"), ("cache", "Pinned model cache"), ("output", "New output directory"), ("checkpoint", "Initial paired checkpoint directory"), ("reference", "Fixed reference adapter file"), ("staleness", "Optional staleness d: run rollout and learning concurrently, update u learning from rollouts of version max(0, u - d); requires separate inference and learning processes"), ("resume", "Output directory of an interrupted run declared with --staleness; it takes no other option")] ++ settingsOptions
 
 settingsOptions :: [OptDescr (String, String)]
 settingsOptions = O.descriptions [("policy", "Consumed canonical policy tensor SHA-256"), ("tokenizer-digest", "Tokenizer operation SHA-256"), ("base-digest", "Learner frozen model tensor SHA-256"), ("assembly-digest", "Learner model assembly SHA-256"), ("behavior-base-digest", "Actual rollout frozen model SHA-256"), ("behavior-assembly-digest", "Actual rollout model assembly SHA-256"), ("learner", "Consumed learner file SHA-256"), ("reference-digest", "Canonical reference tensor SHA-256"), ("clip", "GRPO clipping coefficient"), ("penalty", "Reference penalty coefficient"), ("delta", "Advantage normalization epsilon"), ("steps", "Optional number of optimizer steps per update over consecutive mini-batches of the logical order (default 1)"), ("rate", "AdamW learning rate"), ("beta1", "AdamW first moment coefficient"), ("beta2", "AdamW second moment coefficient"), ("optimizer-epsilon", "AdamW epsilon"), ("decay", "AdamW weight decay"), ("reference-source", "Source of the objective's reference words: engine (default) or learner")]
