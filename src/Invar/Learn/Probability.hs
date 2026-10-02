@@ -67,7 +67,7 @@ samples observed request = do
     traverse (\(name, item) -> maybe (fail "Unknown probability sample") (\(consumedWords, engineWords) -> sample learnerSource (participation name, name `elem` first) consumedWords engineWords item) (Map.lookup name originals)) (zip names observed)
 
 sample :: Bool -> ([Natural], Bool) -> [Word32] -> [Word32] -> Object -> Parser Sample
-sample learnerSource (participation, inFirst) behaviorWords engineWords fields = do
+sample learnerSource (participation, inFirst) behaviorWords scores fields = do
     exact (["sample", "dtype", "proximal", "steps"] ++ ["reference" | learnerSource]) fields
     name <- fields .: "sample"
     dtype <- fields .: "dtype"
@@ -80,7 +80,7 @@ sample learnerSource (participation, inFirst) behaviorWords engineWords fields =
     case observed of
         (0, currentWords) : _ | inFirst -> unless (currentWords == proximalWords) (fail "Proximal words differ from the first step's observation")
         _ -> pure ()
-    pure (Sample fields name behaviorWords proximalWords referenceWords engineWords observed)
+    pure (Sample fields name behaviorWords proximalWords referenceWords (if null scores then behaviorWords else scores) observed)
   where
     entry item = do
         exact ["step", "current"] item
