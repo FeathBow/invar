@@ -10,11 +10,13 @@ import Data.ByteString qualified as Bytes
 import Data.ByteString.Lazy.Char8 qualified as Lazy
 import Data.Map.Strict qualified as Map
 import Data.Maybe (isJust, isNothing)
+import Data.Text qualified as Text
 import Dataset qualified
 import GHC.Clock (getMonotonicTime)
 import InferenceInput qualified
 import Invar.Learn qualified as Learn
 import Invar.Learn.Protocol qualified as Protocol
+import Invar.Learn.Stream qualified as Stream
 import Invar.Learn.Worker qualified as Worker
 import Invar.Loop qualified as Loop
 import Invar.Rollout qualified as Rollout
@@ -129,9 +131,7 @@ settings fields = do
 referenceSource :: O.Fields -> Either String Learn.ReferenceSource
 referenceSource fields = case O.optional fields "reference-source" of
     Nothing -> Right Learn.FromEngine
-    Just "engine" -> Right Learn.FromEngine
-    Just "learner" -> Right Learn.FromLearner
-    Just _ -> Left "Invalid reference source: expected engine or learner"
+    Just named -> maybe (Left "Invalid reference source: expected engine or learner") Right (Stream.readSource (Text.pack named))
 
 usage :: String
 usage = usageInfo "Usage: invar train OPTIONS < tasks.json\nAll options except --devices, --inference-config, --inference-mode, --learning-mode, --steps, --staleness and --reference-source are required. Input is a nonempty JSON array of declared cycles.\nUsage: invar train --resume DIRECTORY\nResume a run declared with --staleness from the journal in its output directory, which supplies every other option and the workload." options

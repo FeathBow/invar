@@ -41,6 +41,9 @@ first', second' :: Sample
 first' = Sample "a" [word (-1), word (-0.5)] [] (word 1)
 second' = Sample "b" [word (-2)] [word (-1.5)] (word (-1))
 
+planned :: S.Plan
+planned = S.Plan profile "p0" [first', second'] [["a", "b"]] S.FromEngine
+
 expected :: [Word32] -> [Word32] -> Sample -> Int -> PropertyT IO [O.Output]
 expected now old entry total = evalEither (O.calculate profile total [O.Inputs c p b r (advantageWord entry) | (c, p, b, r) <- zip4 now old (behaviorWords entry) references])
   where
@@ -50,7 +53,7 @@ expected now old entry total = evalEither (O.calculate profile total [O.Inputs c
 
 full :: PropertyT IO ()
 full = do
-    begun <- evalEither (S.begin exchange profile "p0" [first', second'] [["a", "b"]] S.FromEngine)
+    begun <- evalEither (S.begin exchange planned)
     let nowA = [word (-0.9), word (-0.6)]
         nowB = [word (-1.8)]
     (afterA, replyA) <- evalEither (S.current begun (Current 0 "a" nowA (S.observationOf nowA) "p0"))
@@ -68,7 +71,7 @@ full = do
 
 staged :: PropertyT IO ()
 staged = do
-    begun <- evalEither (S.begin exchange profile "p0" [first', second'] [["a", "b"], ["a"]] S.FromEngine)
+    begun <- evalEither (S.begin exchange (planned {S.batches = [["a", "b"], ["a"]]}))
     let firstA = [word (-0.9), word (-0.6)]
         laterA = [word (-0.7), word (-0.8)]
     (one, replyA) <- evalEither (S.current begun (Current 0 "a" firstA (S.observationOf firstA) "p0"))
@@ -95,7 +98,7 @@ learnerReference = do
     let mine = [word (-1.25), word (-1.4)]
         nowA = [word (-0.9), word (-0.6)]
         laterB = [word (-1.4)]
-    begun <- evalEither (S.begin exchange profile "p0" [first', second'] [["a"], ["b"]] S.FromLearner)
+    begun <- evalEither (S.begin exchange (planned {S.batches = [["a"], ["b"]], S.source = S.FromLearner}))
     S.current begun (Current 0 "a" nowA (S.observationOf nowA) "p0") === Left (S.MissingReference "a")
     S.reference begun "a" [word (-1)] === Left (S.LengthMismatch "a")
     withA <- evalEither (S.reference begun "a" mine)
@@ -114,7 +117,7 @@ learnerReference = do
 
 outside :: PropertyT IO ()
 outside = do
-    begun <- evalEither (S.begin exchange profile "p0" [first', second'] [["a"], ["b"]] S.FromEngine)
+    begun <- evalEither (S.begin exchange (planned {S.batches = [["a"], ["b"]]}))
     let nowA = [word (-0.9), word (-0.6)]
     S.reference begun "a" [word (-1.5)] === Left (S.UnexpectedReference "a")
     S.proximal begun "a" nowA === Left (S.DuplicateProximal "a")
@@ -132,7 +135,7 @@ outside = do
 
 refusals :: PropertyT IO ()
 refusals = do
-    begun <- evalEither (S.begin exchange profile "p0" [first', second'] [["a", "b"]] S.FromEngine)
+    begun <- evalEither (S.begin exchange planned)
     let nowA = [word (-0.9), word (-0.6)]
     S.current begun (Current 0 "b" [word (-1)] (S.observationOf [word (-1)]) "p0") === Left (S.OutOfOrder 0 "b")
     S.current begun (Current 1 "a" nowA (S.observationOf nowA) "p0") === Left (S.OutOfOrder 1 "a")
@@ -153,14 +156,14 @@ vector = S.digest (Reply 0 "a" "o" "s" [word 1, word (-0.5)] [word 0]) === "d3fd
 plans :: PropertyT IO ()
 plans = do
     let invalid = [([], [["a"]]), ([first', first'], [["a"]]), ([first' {S.behaviorWords = []}], [["a"]]), ([first' {S.referenceWords = [word (-1)]}], [["a"]]), ([first'], []), ([first'], [["a"], []]), ([first'], [["a", "b"]]), ([first', second'], [["a"]])]
-    forM_ invalid $ \(declared, steps') -> case S.begin exchange profile "p0" declared steps' S.FromEngine of
+    forM_ invalid $ \(declared, steps') -> case S.begin exchange (planned {S.members = declared, S.batches = steps'}) of
         Left (S.InvalidPlan _) -> success
         unexpected -> annotateShow (declared, steps', fmap S.identity unexpected) >> failure
-    one <- evalEither (S.begin exchange profile "p0" [first', second'] [["a", "b"]] S.FromEngine)
-    two <- evalEither (S.begin exchange profile "p0" [first', second'] [["a"], ["b"]] S.FromEngine)
-    other <- evalEither (S.begin exchange profile "p0" [first', second' {S.advantageWord = word 1}] [["a", "b"]] S.FromEngine)
-    same <- evalEither (S.begin (V.Binding (V.CallId 9) (V.AttemptId 9) (V.Instance 9)) profile "p0" [first', second'] [["a", "b"]] S.FromEngine)
-    learner <- evalEither (S.begin exchange profile "p0" [first', second'] [["a", "b"]] S.FromLearner)
+    one <- evalEither (S.begin exchange planned)
+    two <- evalEither (S.begin exchange (planned {S.batches = [["a"], ["b"]]}))
+    other <- evalEither (S.begin exchange (planned {S.members = [first', second' {S.advantageWord = word 1}]}))
+    same <- evalEither (S.begin (V.Binding (V.CallId 9) (V.AttemptId 9) (V.Instance 9)) planned)
+    learner <- evalEither (S.begin exchange (planned {S.source = S.FromLearner}))
     assert (S.identity one /= S.identity two)
     assert (S.identity one /= S.identity other)
     assert (S.identity one /= S.identity learner)

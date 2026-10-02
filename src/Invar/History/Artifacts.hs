@@ -3,7 +3,7 @@
 module Invar.History.Artifacts (initial, successor) where
 
 import Control.Monad (unless)
-import Data.Aeson (Value, object, withObject, (.:), (.:?), (.=))
+import Data.Aeson (Value, object, withObject, (.=))
 import Data.Aeson.Types (parseEither)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
@@ -21,6 +21,8 @@ import Invar.Learn.Mismatch qualified as Mismatch
 import Invar.Learn.Observation qualified as Observation
 import Invar.Learn.Probability qualified as Probability
 import Invar.Learn.State qualified as State
+import Invar.Learn.Step qualified as Step
+import Invar.Learn.Stream qualified as S
 import Numeric.Natural (Natural)
 import System.FilePath ((</>))
 import System.Posix.Files qualified as Posix
@@ -60,13 +62,15 @@ reported generation probabilities = mapM_ check (Trace.stepOutputs generation)
   where
     expected = Map.fromList [(Probability.sampleName sample, sample) | sample <- probabilities]
     check encoded = do
-        (stage, name, words32, index) <- Json.decode encoded >>= parseEither (withObject "learner step record" (\fields -> (,,,) <$> fields .: "stage" <*> fields .: "sample" <*> fields .: "words" <*> fields .:? "step"))
-        observed <- maybe (Left "Unmatched learner step record") Right (Map.lookup (name :: Text) expected)
-        let recorded = case (stage :: Text, index) of
-                ("reference", _) -> Probability.reference observed
-                ("current", Just position) -> lookup position (Probability.currents observed)
-                _ -> Just (Probability.proximal observed)
-        unless (recorded == Just words32) (Left "Logged learner step words differ from the probability artifact")
+        decoded <- Json.decode encoded >>= parseEither (withObject "learner step record" Step.decode)
+        case decoded of
+            Just (Step.Proximal name words32) -> matches name words32 (Just . Probability.proximal)
+            Just (Step.Reference name words32) -> matches name words32 Probability.reference
+            Just (Step.Current report) -> matches (S.sample report) (S.words32 report) (lookup (S.step report) . Probability.currents)
+            _ -> Left "A logged learner record does not report step words"
+    matches name words32 role = do
+        observed <- maybe (Left "Unmatched learner step record") Right (Map.lookup name expected)
+        unless (role observed == Just words32) (Left "Logged learner step words differ from the probability artifact")
 
 invalid :: String -> IO value
 invalid = ioError . userError

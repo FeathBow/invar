@@ -8,6 +8,7 @@ import Data.Aeson.KeyMap qualified as Fields
 import Data.ByteString (ByteString)
 import Invar.Infer.Framing (stageName)
 import Invar.Infer.Framing qualified as Frame
+import Invar.Learn.Request qualified as Request
 import Invar.Learn.Trace qualified as Trace
 import Invar.Measurement.Duration qualified as Duration
 
@@ -21,7 +22,7 @@ readiness initial request encoded = do
     mapM_ timing (filter (\record -> stageName record `elem` map (Just . String) ["load", "activation"]) prefix)
     void (Trace.readiness request (map Frame.fields pending))
 
-completion :: Value -> ByteString -> Either String ()
+completion :: Request.Request -> ByteString -> Either String ()
 completion request encoded = do
     records <- Frame.decode encoded
     case dropWhile ((/= Just (String "reward_update")) . stageName) (dropWhile ((/= Just (String "consumed")) . stageName) records) of

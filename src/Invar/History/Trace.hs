@@ -21,6 +21,7 @@ import Invar.Infer.Wire qualified as Wire
 import Invar.Json qualified as Json
 import Invar.Learn qualified as Learn
 import Invar.Learn.Report qualified as Report
+import Invar.Learn.Step qualified as Step
 import Invar.Resident.Observation qualified as Resident
 import Invar.Spec.Invocation qualified as V
 import Invar.Workload qualified as Workload
@@ -66,7 +67,7 @@ advance run (current, offset, accepted, state, remaining) (index, workload) = do
     parseEither (publish (run, index, offset) (workload, observed)) published
     policy <- Report.artifact "adapter" (Cohort.update observed)
     learner <- Report.artifact "learner" (Cohort.update observed)
-    let diagnostic = [observedFrame | observedFrame@(Frame _ fields) <- body, Fields.lookup "stage" fields `elem` map (Just . String) ["loading", "profile", "load", "activation", "released", "loaded_learner", "inference", "proximal", "reference", "current", "applied", "reward_update", "artifacts", "checkpoint"]]
+    let diagnostic = [observedFrame | observedFrame@(Frame _ fields) <- body, Fields.lookup "stage" fields `elem` map (Just . String) (["loading", "profile", "load", "activation", "released", "loaded_learner", "inference"] ++ Step.stages ++ ["reward_update", "artifacts", "checkpoint"])]
     pure (current {Learn.policy, Learn.learner, Learn.schedule = Learn.synchronous (index + 1) policy}, call + 1, Generation observed published finished diagnostic groups modelProfiles : accepted, next, rest)
 
 phase :: Text -> Frame -> Bool
@@ -112,7 +113,7 @@ diagnostics :: Generation -> [Value]
 diagnostics (Generation _ _ _ values _ _) = [Object fields | Frame _ fields <- values]
 
 stepOutputs :: Generation -> [ByteString]
-stepOutputs (Generation _ _ _ values _ _) = [encoded | Frame encoded fields <- values, Fields.lookup "stage" fields `elem` map (Just . String) ["proximal", "reference", "current"]]
+stepOutputs (Generation _ _ _ values _ _) = [encoded | Frame encoded fields <- values, Fields.lookup "stage" fields `elem` map (Just . String) Step.reports]
 
 profiles :: Generation -> [Profile.Observation]
 profiles (Generation _ _ _ _ _ values) = values

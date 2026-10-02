@@ -40,7 +40,24 @@ require :: (Show problem) => Either problem value -> IO value
 require = either (ioError . userError . show) pure
 
 configured :: L.Settings
-configured = L.Settings (Infer.artifact Calls.request) (replicate 64 'b') (Infer.artifact Calls.request) (Infer.tokenizer Calls.request) (replicate 64 '0') (replicate 64 '1') (Infer.base Calls.request) (Infer.assembly Calls.request) 0.2 0.04 0.0001 1 (L.Optimizer 0.002 0.8 0.95 0.0000001 0.01) (L.synchronous 0 (Infer.artifact Calls.request)) L.FromEngine
+configured =
+    L.Settings
+        { L.policy = Infer.artifact Calls.request
+        , L.learner = replicate 64 'b'
+        , L.reference = Infer.artifact Calls.request
+        , L.tokenizer = Infer.tokenizer Calls.request
+        , L.base = replicate 64 '0'
+        , L.assembly = replicate 64 '1'
+        , L.behaviorBase = Infer.base Calls.request
+        , L.behaviorAssembly = Infer.assembly Calls.request
+        , L.clip = 0.2
+        , L.penalty = 0.04
+        , L.delta = 0.0001
+        , L.steps = 1
+        , L.optimizer = L.Optimizer 0.002 0.8 0.95 0.0000001 0.01
+        , L.schedule = L.synchronous 0 (Infer.artifact Calls.request)
+        , L.referenceSource = L.FromEngine
+        }
 
 withPlan :: FilePath -> (forall scope. L.Plan scope -> IO value) -> PropertyT IO value
 withPlan = withAdjusted id

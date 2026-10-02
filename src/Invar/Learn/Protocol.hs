@@ -8,17 +8,17 @@ import Data.Aeson.Types (Parser, parseEither)
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as Bytes
 import Data.ByteString.Lazy qualified as Lazy
+import Data.Text qualified as Text
 import Data.Text.Encoding (encodeUtf8)
 import Invar.Digest qualified as Digest
 import Invar.Infer.Wire qualified as Binding
-import Invar.Learn.Objective qualified as Objective
 import Invar.Learn.Request qualified as Request
+import Invar.Learn.Step qualified as Step
 import Invar.Learn.Stream qualified as S
 import Invar.Learn.Wire qualified as Wire
 import Invar.Load qualified as Load
 import Invar.Spec.Invocation qualified as V
 import Invar.Spec.Load qualified as L
-import Numeric.Natural (Natural)
 
 data Artifacts = Artifacts String String (String, String)
     deriving (Eq, Show)
@@ -74,9 +74,7 @@ replay expected actual records = do
     finished' <- foldM follow begun records
     step' (S.complete finished')
   where
-    follow current value = do
-        name <- parse (.: "stage") value
-        fst <$> record expected name current value
+    follow current value = fst <$> record expected current value
 
 cotangents :: V.Binding -> S.Reply -> Value
 cotangents binding reply = object ["stage" .= ("cotangents" :: String), "binding" .= Binding.bindingValue binding, "step" .= S.replyStep reply, "sample" .= S.replySample reply, "observation" .= S.replyObservation reply, "state" .= S.replyState reply, "objective" .= S.objective reply, "reward" .= S.reward reply]
@@ -111,7 +109,7 @@ advance context progress encoded = do
         "loaded_learner" -> loaded context progress value
         "consumed" -> consumed context progress value
         "result" -> finished context (progress, value) encoded
-        _ | stage `elem` ["proximal", "reference", "current", "applied"] -> stepping context progress stage value
+        _ | Text.pack stage `elem` Step.stages -> stepping context progress value
         "activation" | resident context, Awaiting {} <- progress -> Right progress
         _ -> diagnostic stage progress
 
@@ -155,7 +153,7 @@ finished :: Context -> (Progress, Object) -> ByteString -> Either Error Progress
 finished context (Consumed runtime _ _ actual steps _, value) encoded = do
     binding <- matching (bound context) value
     _ <- matchingRequest (Request.value actual) value
-    artifacts@(Artifacts policy _ _) <- summary (Request.value actual) value
+    artifacts@(Artifacts policy _ _) <- summary actual value
     ended <- step' (S.complete steps)
     unless (ended == policy) (Left (Mismatch "The last applied step does not end at the staged adapter"))
     final <- lifecycle (V.finish binding encoded runtime)
@@ -165,7 +163,7 @@ finished context (Consumed runtime _ _ actual steps _, value) encoded = do
         Nothing -> Left (Unexpected "Bound update did not produce a completion")
 finished _ _ _ = Left (Unexpected "Update result arrived without consumption")
 
-summary :: Value -> Object -> Either Error Artifacts
+summary :: Request.Request -> Object -> Either Error Artifacts
 summary actual value = do
     policy <- parse (.: "adapter") value
     checkpoint <- parse (.: "learner") value
@@ -176,20 +174,20 @@ summary actual value = do
     storage <- parse (.: "storage") value
     unless (identity policy && identity checkpoint && storage == ("staged; not published" :: String)) (Left (Mismatch "Invalid staged checkpoint identity or storage status"))
     update <- parse (.: "update") value
-    previous <- parse (withObject "update input" (\entry -> entry .: "policy" :: Parser String)) actual
+    let previous = S.origin (Request.exchange actual)
     before <- parse (.: "before") update
     after <- parse (.: "after") update
     unless (before == previous && after == policy) (Left (Mismatch "Update and materialized adapter identities disagree"))
     validateStats actual update
     pure (Artifacts policy checkpoint (observation, probability))
 
-validateSummary :: Value -> Object -> Either Error ()
+validateSummary :: Request.Request -> Object -> Either Error ()
 validateSummary actual value = void (summary actual value)
 
-validateStats :: Value -> Object -> Either Error ()
+validateStats :: Request.Request -> Object -> Either Error ()
 validateStats actual value = do
-    samples <- parse (withObject "update input" (\entry -> entry .: "samples" :: Parser [Object])) actual
-    counts <- traverse (parse (\sample -> length <$> (sample .: "behavior_bits" :: Parser [Natural]))) samples
+    let samples = S.members (Request.exchange actual)
+        counts = map (length . S.behaviorWords) samples
     tokens <- parse (.: "active_tokens") value
     nonzero <- parse (.: "nonzero_advantages") value
     gradient <- parse (.: "gradient_norm") value
@@ -253,41 +251,21 @@ probabilities :: Result -> String
 probabilities (Result _ _ (Artifacts _ _ (_, observation)) _) = observation
 
 declaredSteps :: V.Binding -> Request.Request -> Either Error S.Stream
-declaredSteps binding actual = parse (withObject "checked update request" plan) (Request.value actual) >>= step'
-  where
-    plan fields = do
-        entries <- fields .: "samples"
-        declared <- traverse entry entries
-        steps <- fields .: "steps"
-        policy <- fields .: "policy"
-        source <- fields .: "reference_source" :: Parser String
-        selected <- case source of
-            "engine" -> pure S.FromEngine
-            "learner" -> pure S.FromLearner
-            _ -> fail "Unknown reference source"
-        profile <- Objective.Profile <$> fields .: "epsilon" <*> fields .: "penalty"
-        pure (S.begin binding profile policy declared steps selected)
-    entry = withObject "update sample" $ \fields -> S.Sample <$> fields .: "sample" <*> fields .: "behavior_bits" <*> fields .: "reference_bits" <*> fields .: "advantage_bits"
+declaredSteps binding actual = step' (S.begin binding (Request.exchange actual))
 
-stepping :: Context -> Progress -> String -> Object -> Either Error Progress
-stepping context (Consumed runtime registry fact actual steps _) stage value = do
-    (updated, reply) <- record (bound context) stage steps value
+stepping :: Context -> Progress -> Object -> Either Error Progress
+stepping context (Consumed runtime registry fact actual steps _) value = do
+    (updated, reply) <- record (bound context) steps value
     pure (Consumed runtime registry fact actual updated reply)
-stepping _ _ _ _ = Left (Unexpected "A learner step was reported before consumption")
+stepping _ _ _ = Left (Unexpected "A learner step was reported before consumption")
 
-record :: V.Binding -> String -> S.Stream -> Object -> Either Error (S.Stream, Maybe S.Reply)
-record expected stage steps value = matching expected value >> stepRecord stage steps value
-
-stepRecord :: String -> S.Stream -> Object -> Either Error (S.Stream, Maybe S.Reply)
-stepRecord "proximal" steps value = (,Nothing) <$> (step' =<< S.proximal steps <$> parse (.: "sample") value <*> parse (.: "words") value)
-stepRecord "reference" steps value = (,Nothing) <$> (step' =<< S.reference steps <$> parse (.: "sample") value <*> parse (.: "words") value)
-stepRecord "current" steps value = do
-    report <- parse (\fields -> S.Current <$> fields .: "step" <*> fields .: "sample" <*> fields .: "words" <*> fields .: "observation" <*> fields .: "state") value
-    fmap Just <$> step' (S.current steps report)
-stepRecord "applied" steps value = do
-    report <- S.Applied <$> parse (.: "step") value <*> parse (.: "before") value <*> parse (.: "after") value <*> parse (.: "consumed") value
-    (,Nothing) . fst <$> step' (S.applied steps report)
-stepRecord name _ _ = Left (Unexpected ("Unexpected learner step record: " ++ name))
+record :: V.Binding -> S.Stream -> Object -> Either Error (S.Stream, Maybe S.Reply)
+record expected steps value = do
+    _ <- matching expected value
+    decoded <- parse Step.decode value
+    case decoded of
+        Just recorded -> step' (Step.apply steps recorded)
+        Nothing -> Left (Unexpected "A learner step record has no step stage")
 
 step' :: Either S.Error value -> Either Error value
 step' = either (Left . Step) Right

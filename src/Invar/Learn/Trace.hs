@@ -14,6 +14,8 @@ import Invar.Json qualified as Json
 import Invar.Learn qualified as Learn
 import Invar.Learn.Protocol qualified as Protocol
 import Invar.Learn.Report qualified as Report
+import Invar.Learn.Request qualified as Request
+import Invar.Learn.Step qualified as Step
 import Invar.Load qualified as Load
 import Invar.Materialization qualified as Materialization
 import Invar.Spec.Load qualified as Image
@@ -22,11 +24,7 @@ validate :: Learn.Settings -> Report.Report -> [Object] -> Either String ()
 validate settings = validateWith (Materialization.learning (Learn.policy settings, Learn.learner settings, Learn.tokenizer settings, Learn.base settings, Learn.assembly settings, Learn.reference settings))
 
 validateObserved :: Report.Report -> [Object] -> Either String ()
-validateObserved report events = do
-    selected <- parseEither (withObject "observed update materialization" materialization) (Report.request report)
-    validateWith selected report events
-  where
-    materialization input = Materialization.learning <$> ((,,,,,) <$> input .: "policy" <*> input .: "learner" <*> input .: "tokenizer" <*> input .: "base" <*> input .: "assembly" <*> input .: "reference")
+validateObserved report = validateWith (Request.materialization (Report.checkedRequest report)) report
 
 validateWith :: Image.Image -> Report.Report -> [Object] -> Either String ()
 validateWith selected report events = case reverse events of
@@ -40,12 +38,12 @@ validateWith selected report events = case reverse events of
         bindings selected report pair
         stage "reward_update" updated
         mapM_ (\fields -> when (Fields.member "phase" fields) (Left "Unexpected learner observation stage")) staged
-        completion (Report.request report) result
+        completion (Report.checkedRequest report) result
         unless (Object result == Report.result report) (Left "Update trace result differs from the admitted report")
     _ -> Left "Incomplete learner execution trace"
   where
     staging fields = Fields.lookup "stage" fields `elem` map (Just . String) ["checkpoint", "artifacts"]
-    stepping fields = Fields.lookup "stage" fields `elem` map (Just . String) ["proximal", "reference", "current", "applied"]
+    stepping fields = Fields.lookup "stage" fields `elem` map (Just . String) Step.stages
 
 readiness :: Value -> [Object] -> Either String (Object, Object)
 readiness _ events = case events of
@@ -58,7 +56,7 @@ readiness _ events = case events of
         pure (loaded, consumed)
     _ -> Left "Expected one learner load followed by one update consumption"
 
-completion :: Value -> Object -> Either String ()
+completion :: Request.Request -> Object -> Either String ()
 completion request result = do
     stage "result" result
     parseEither (Json.fields ["stage", "binding", "request", "update", "gradients", "probabilities", "adapter", "learner", "storage"]) result

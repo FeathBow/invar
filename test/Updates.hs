@@ -318,7 +318,7 @@ stepRecords identity actual adapter = do
     (profile, policy, samples, plan, final, source) <- parseEither parser (object ["request" .= actual, "adapter" .= adapter])
     let scoredByLearner = source == ("learner" :: Text.Text)
         chosen = if scoredByLearner then S.FromLearner else S.FromEngine
-    begun <- Bifunctor.first show (S.begin binding profile policy samples plan chosen)
+    begun <- Bifunctor.first show (S.begin binding (S.Plan profile policy samples plan chosen))
     let outside = [sample | sample <- samples, S.name sample `notElem` concat (take 1 plan)]
         references = [object ["stage" .= String "reference", "binding" .= identity, "sample" .= S.name sample, "words" .= S.referenceWords sample] | scoredByLearner, sample <- samples]
         proximals = [object ["stage" .= String "proximal", "binding" .= identity, "sample" .= S.name sample, "words" .= S.behaviorWords sample] | sample <- outside]

@@ -88,7 +88,7 @@ learner validate current report records = do
         value : _ -> pure value
         [] -> Left "Missing resident learner consumption"
     Learner.readiness (count current == 0) (Report.request report) (Frame.encode (leading ++ ready ++ [consumed]))
-    Learner.completion (Report.request report) raw
+    Learner.completion (Report.checkedRequest report) raw
     validate report (map Frame.fields execution)
     case execution of
         loaded : _ -> complete current (leading, execution, rest) ([Frame.fields loaded], [Frame.fields consumed])

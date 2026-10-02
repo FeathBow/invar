@@ -115,7 +115,7 @@ exchangeOf (Update update) (Attempt attempt) = V.Binding (V.CallId update) (V.At
 
 exchange :: V.Binding -> Word32 -> [String] -> (String, [Completion])
 exchange caller advantage states = either (error . show) id $ do
-    begun <- S.begin caller (O.Profile 0.2 0) (headOf states) [S.Sample "x" [word] [] advantage] (replicate (length states - 1) ["x"]) S.FromEngine
+    begun <- S.begin caller (S.Plan (O.Profile 0.2 0) (headOf states) [S.Sample "x" [word] [] advantage] (replicate (length states - 1) ["x"]) S.FromEngine)
     closed <- go begun (zip3 [0 ..] states (drop 1 states))
     pure (S.identity begun, closed)
   where
