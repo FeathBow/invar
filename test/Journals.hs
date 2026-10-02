@@ -2,6 +2,8 @@
 
 module Journals (journals) where
 
+import Control.Exception (ErrorCall (..), try)
+import Control.Monad (forM_)
 import Data.Aeson (Value (..), object, (.=))
 import Data.Aeson.KeyMap qualified as Fields
 import Data.ByteString qualified as Bytes
@@ -9,7 +11,9 @@ import Data.ByteString.Char8 qualified as Char
 import Data.Either (isLeft)
 import Hedgehog
 import Invar.Journal qualified as Journal
+import Invar.Runtime qualified as Runtime
 import Store (workspace)
+import System.Directory (createDirectory, getCurrentDirectory)
 import System.FilePath ((</>))
 import System.IO.Error (isAlreadyExistsError, tryIOError)
 
@@ -19,6 +23,8 @@ journals =
         "Durable run journal"
         [ ("a journal starts with its declaration, is created once, keeps appended entries in order and refuses entries once closed", withTests 1 (property ordered))
         , ("a stored file holds exactly its contents and is never replaced", withTests 1 (property stored))
+        , ("a resumed journal drops an unterminated final line before appending and needs a complete declaration", withTests 1 (property resumed))
+        , ("resuming a run keeps the caller's working directory when it refuses or fails", withTests 1 (property directories))
         , ("only an unterminated final line is dropped; any other malformed line is refused", withTests 1 (property damaged))
         ]
 
@@ -56,6 +62,42 @@ stored = do
         Left problem -> assert (isAlreadyExistsError problem)
         Right () -> annotate "a stored file was replaced" >> failure
     evalIO (Bytes.readFile path) >>= (=== contents)
+
+resumed :: PropertyT IO ()
+resumed = do
+    root <- workspace
+    let path = root </> "journal.jsonl"
+        declaration = object ["entry" .= ("declaration" :: String)]
+    evalIO (Journal.with path declaration (\journal -> Journal.append journal (entry 0)))
+    evalIO (Bytes.appendFile path "{\"entry\":\"ev")
+    seen <- evalIO (Journal.resume path (\recorded journal -> Journal.append journal (entry 1) >> pure recorded))
+    map Object seen === [declaration, entry 0]
+    after <- evalIO (Bytes.readFile path) >>= evalEither . Journal.entries
+    map Object after === [declaration, entry 0, entry 1]
+    forM_ ["", "{\"entry\":\"decl"] $ \contents -> do
+        let partial = root </> "partial.jsonl"
+        evalIO (Bytes.writeFile partial contents)
+        refused <- evalIO (tryIOError (Journal.resume partial (\_ _ -> pure ())))
+        assert (isLeft refused)
+
+directories :: PropertyT IO ()
+directories = do
+    root <- workspace
+    started <- workspace
+    let output = root </> "run"
+    evalIO (createDirectory output)
+    evalIO (Journal.with (output </> "journal.jsonl") (object ["entry" .= ("declaration" :: String), "directory" .= started]) (const (pure ())))
+    caller <- evalIO getCurrentDirectory
+    refused <- evalIO (Runtime.resume output (const (Left "refused")))
+    case refused of
+        Left (Runtime.Declaration "refused") -> success
+        _ -> annotate "the declaration was not refused" >> failure
+    evalIO getCurrentDirectory >>= (=== caller)
+    failed <- evalIO (try (Runtime.resume output (const (error "interpretation failed"))))
+    case failed of
+        Left (ErrorCall _) -> success
+        Right _ -> annotate "the failing interpretation returned" >> failure
+    evalIO getCurrentDirectory >>= (=== caller)
 
 damaged :: PropertyT IO ()
 damaged = do

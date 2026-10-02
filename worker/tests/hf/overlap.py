@@ -34,8 +34,8 @@ def workload(cycles):
     return json.dumps([{"tasks": tasks, "order": [0, 1], "delivery": [1, 0]} for _ in range(cycles)])
 
 
-def execute(command, output, *, stdin=None):
-    completed = subprocess.run(list(map(str, command)), input=stdin, capture_output=True, text=True, timeout=CHILD_SECONDS)
+def execute(command, output, *, stdin=None, cwd=None):
+    completed = subprocess.run(list(map(str, command)), input=stdin, capture_output=True, text=True, timeout=CHILD_SECONDS, cwd=cwd)
     output.write_text(completed.stdout)
     output.with_suffix(".stderr").write_text(completed.stderr)
     if completed.returncode != 0:
@@ -43,29 +43,34 @@ def execute(command, output, *, stdin=None):
     return [json.loads(line) for line in completed.stdout.splitlines()]
 
 
+def prepared(prefix):
+    root = Path(tempfile.mkdtemp(prefix=prefix))
+    initial = root / "initial"
+    observed, = execute([sys.executable, "-B", ENTRY, "--cache", root, "--output", initial], root / "initial.jsonl")
+    inference = observed["inference"]
+    inputs = {"digest": observed["policy"], "tokenizer-digest": observed["tokenizer"],
+              "base-digest": inference["base"], "assembly-digest": inference["assembly"],
+              "prompt": PROMPT, "tokens": 4, "temperature": 0.8, "seed": SEEDS[0],
+              **{name: BOOTSTRAP_BINDING for name in ("call", "attempt", "instance")}}
+    log = root / "bootstrap.jsonl"
+    execute([CORE, "infer", *flags({**inputs, "python": sys.executable, "worker": ENTRY, "cache": root,
+             "adapter": initial / "adapter.safetensors"})], log)
+    core.invoke(["policy", *flags({**inputs, "checkpoint": initial, "log": log, "exit-code": 0})], executable=CORE)
+    settings = {"policy": observed["policy"], "learner": observed["learner"], "reference-digest": observed["policy"],
+                **{name + "-digest": observed[name] for name in ("tokenizer", "base", "assembly")},
+                **{"behavior-" + name + "-digest": inference[name] for name in ("base", "assembly")},
+                "clip": 0.2, "penalty": 0, "delta": 0.0001, "rate": 0.0001, "beta1": 0.9, "beta2": 0.999,
+                "optimizer-epsilon": 0.00000001, "decay": 0,
+                "python": sys.executable, "inference-python": sys.executable, "inference": ENTRY, "learning": ENTRY,
+                "inference-mode": "serial", "learning-mode": "resident", "cache": root, "checkpoint": initial,
+                "reference": initial / "adapter.safetensors", "publication": "reference"}
+    return root, settings
+
+
 class OverlapTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.root = Path(tempfile.mkdtemp(prefix="invar-overlap-"))
-        cls.initial = cls.root / "initial"
-        observed, = execute([sys.executable, "-B", ENTRY, "--cache", cls.root, "--output", cls.initial], cls.root / "initial.jsonl")
-        inference = observed["inference"]
-        inputs = {"digest": observed["policy"], "tokenizer-digest": observed["tokenizer"],
-                  "base-digest": inference["base"], "assembly-digest": inference["assembly"],
-                  "prompt": PROMPT, "tokens": 4, "temperature": 0.8, "seed": SEEDS[0],
-                  **{name: BOOTSTRAP_BINDING for name in ("call", "attempt", "instance")}}
-        log = cls.root / "bootstrap.jsonl"
-        execute([CORE, "infer", *flags({**inputs, "python": sys.executable, "worker": ENTRY, "cache": cls.root,
-                 "adapter": cls.initial / "adapter.safetensors"})], log)
-        core.invoke(["policy", *flags({**inputs, "checkpoint": cls.initial, "log": log, "exit-code": 0})], executable=CORE)
-        cls.settings = {"policy": observed["policy"], "learner": observed["learner"], "reference-digest": observed["policy"],
-                        **{name + "-digest": observed[name] for name in ("tokenizer", "base", "assembly")},
-                        **{"behavior-" + name + "-digest": inference[name] for name in ("base", "assembly")},
-                        "clip": 0.2, "penalty": 0, "delta": 0.0001, "rate": 0.0001, "beta1": 0.9, "beta2": 0.999,
-                        "optimizer-epsilon": 0.00000001, "decay": 0,
-                        "python": sys.executable, "inference-python": sys.executable, "inference": ENTRY, "learning": ENTRY,
-                        "inference-mode": "serial", "learning-mode": "resident", "cache": cls.root, "checkpoint": cls.initial,
-                        "reference": cls.initial / "adapter.safetensors", "publication": "reference"}
+        cls.root, cls.settings = prepared("invar-overlap-")
 
     def train(self, name, cycles, **extra):
         output = self.root / name
