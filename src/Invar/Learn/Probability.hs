@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Learn.Probability (Sample (..), validate, observe) where
+module Invar.Learn.Probability (Sample (..), roles, validate, observe) where
 
 import Control.Monad (unless, when)
 import Data.Aeson (Object, Value, withObject, (.:))
@@ -48,26 +48,28 @@ document (intended, consumed) fields = do
     request <- fields .: "request"
     unless (request == Request.value consumed) (fail "Probability observation request mismatch")
     observations <- fields .: "samples"
-    withObject "probability request" (samples observations) (Request.value consumed)
+    samples consumed observations
 
-samples :: [Object] -> Object -> Parser [Sample]
-samples observed request = do
-    order <- request .: "order" :: Parser [Text]
-    plan <- request .: "steps" :: Parser [[Text]]
-    source <- request .: "reference_source" :: Parser Text
-    delivered <- request .: "samples" :: Parser [Object]
-    originals <- Map.fromList <$> traverse (\item -> (,) <$> item .: "sample" <*> ((,) <$> item .: "behavior_bits" <*> item .: "reference_bits")) delivered
-    names <- traverse (.: "sample") observed
-    unless (names == order) (fail "Probability samples differ from logical order")
-    let learnerSource = source == ("learner" :: Text)
+roles :: [Key]
+roles = ["proximal", "reference", "steps"]
+
+samples :: Request.Request -> [Object] -> Parser [Sample]
+samples consumed observed = do
+    let planned = Request.exchange consumed
+        plan = S.batches planned
+        originals = Map.fromList [(S.name entry, entry) | entry <- S.members planned]
+        learnerSource = S.source planned == S.FromLearner
         participation name = [position | (position, batch) <- zip [0 ..] plan, name `elem` batch]
         first = case plan of
             batch : _ -> batch
             [] -> []
-    traverse (\(name, item) -> maybe (fail "Unknown probability sample") (\(consumedWords, engineWords) -> sample learnerSource (participation name, name `elem` first) consumedWords engineWords item) (Map.lookup name originals)) (zip names observed)
+    names <- traverse (.: "sample") observed
+    unless (names == Request.order consumed) (fail "Probability samples differ from logical order")
+    traverse (\(name, item) -> maybe (fail "Unknown probability sample") (\declared -> sample learnerSource (participation name, name `elem` first) declared item) (Map.lookup name originals)) (zip names observed)
 
-sample :: Bool -> ([Natural], Bool) -> [Word32] -> [Word32] -> Object -> Parser Sample
-sample learnerSource (participation, inFirst) behaviorWords scores fields = do
+sample :: Bool -> ([Natural], Bool) -> S.Sample -> Object -> Parser Sample
+sample learnerSource (participation, inFirst) declared fields = do
+    let behaviorWords = S.behaviorWords declared
     exact (["sample", "dtype", "proximal", "steps"] ++ ["reference" | learnerSource]) fields
     name <- fields .: "sample"
     dtype <- fields .: "dtype"
@@ -80,11 +82,11 @@ sample learnerSource (participation, inFirst) behaviorWords scores fields = do
     case observed of
         (0, currentWords) : _ | inFirst -> unless (currentWords == proximalWords) (fail "Proximal words differ from the first step's observation")
         _ -> pure ()
-    pure (Sample fields name behaviorWords proximalWords referenceWords (if null scores then behaviorWords else scores) observed)
+    pure (Sample fields name behaviorWords proximalWords referenceWords (S.engineWords declared) observed)
   where
     entry item = do
         exact ["step", "current"] item
-        (,) <$> item .: "step" <*> vector (length behaviorWords) item "current"
+        (,) <$> item .: "step" <*> vector (length (S.behaviorWords declared)) item "current"
 
 vector :: Int -> Object -> Key -> Parser [Word32]
 vector count fields role = do

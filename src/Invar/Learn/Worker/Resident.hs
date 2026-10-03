@@ -124,7 +124,7 @@ complete (identity, directory) progress encoded = do
   where
     observe permit = do
         result <- first W.InvalidOutput (P.observe permit encoded)
-        first W.ProtocolFailure (Framing.completion (P.request result) encoded)
+        first W.ProtocolFailure (Framing.completion (P.checkedRequest result) encoded)
         let fact = P.loadedFact permit
         prepared <- first W.ProtocolFailure (Boundary.prepare identity [fact] encoded)
         pure (result, fact, prepared)
