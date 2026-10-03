@@ -5,24 +5,24 @@ module Invar.Process (Command (..), Launch (..), Exchange (..), Failure (..), ru
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as Bytes
 import Invar.Process.Internal (Exchange (..), Failure (..), Launch (..), Pipes, Session (..), exited, finish, next, reject, response, send, stage, withLaunch)
-import Invar.Transcript (Transcript (..))
+import Invar.Transcript (Transcript)
 import System.Exit (ExitCode (..))
 
 data Command = Command {executable :: FilePath, arguments :: [String], environment :: [(String, String)], input :: ByteString, output :: Transcript}
 
 batch :: Launch -> [Exchange problem] -> IO (Either (Failure problem) [ByteString])
 batch _ [] = pure (Right [])
-batch launch exchanges = withLaunch launch $ \handles -> exchangeAll (record (transcript launch)) handles exchanges []
+batch launch exchanges = withLaunch launch $ \handles -> exchangeAll handles exchanges []
 
-exchangeAll :: (ByteString -> IO ()) -> Pipes -> [Exchange problem] -> [ByteString] -> IO (Either (Failure problem) [ByteString])
-exchangeAll report handles [] collected = fmap (reverse collected <$) (finish (Session handles (const (pure (Right ""))) report))
-exchangeAll report handles (exchange : remaining) collected = do
+exchangeAll :: Pipes -> [Exchange problem] -> [ByteString] -> IO (Either (Failure problem) [ByteString])
+exchangeAll handles [] collected = fmap (reverse collected <$) (finish (Session handles (const (pure (Right "")))))
+exchangeAll handles (exchange : remaining) collected = do
     send handles (message exchange)
-    let session = Session handles (permission exchange) report
+    let session = Session handles (permission exchange)
     received <- response session exchange ([], False)
     case received of
         Left problem -> pure (Left problem)
-        Right output -> exchangeAll report handles remaining (output : collected)
+        Right output -> exchangeAll handles remaining (output : collected)
 
 run :: Command -> (ByteString -> IO (Either problem ByteString)) -> IO (Either (Failure problem) ByteString)
 run command approve = conversation command approve Nothing
@@ -30,7 +30,7 @@ run command approve = conversation command approve Nothing
 conversation :: Command -> (ByteString -> IO (Either problem ByteString)) -> Maybe (ByteString -> IO (Either problem ByteString)) -> IO (Either (Failure problem) ByteString)
 conversation command approve replying = withLaunch launch $ \handles -> do
     send handles (input command)
-    consume (Session handles approve (record (output command)), replying) [] False
+    consume (Session handles approve, replying) [] False
   where
     launch = Launch (executable command) (arguments command) (environment command) (output command)
 

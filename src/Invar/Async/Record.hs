@@ -13,7 +13,7 @@ import Invar.Async.Core qualified as Core
 import Invar.Async.Plan (Request (..), Update (..), Version (..))
 import Invar.Infer.Wire qualified as Wire
 import Invar.Spec.Invocation qualified as V
-import Invar.Transcript (Outcome (..))
+import Invar.Transcript (Outcome (..), Output (..))
 import Numeric.Natural (Natural)
 import System.Exit (ExitCode (..))
 
@@ -107,18 +107,29 @@ roleOf other = fail ("Unknown process role: " ++ show other)
 outcomeFields :: Outcome -> [Pair]
 outcomeFields chosen = case chosen of
     Unlaunched reason -> ["outcome" .= ("unlaunched" :: Text), "reason" .= reason]
-    Exited ExitSuccess -> ["outcome" .= ("exited" :: Text), "status" .= (0 :: Int)]
-    Exited (ExitFailure status) -> ["outcome" .= ("exited" :: Text), "status" .= status]
-    Stopped -> ["outcome" .= ("stopped" :: Text)]
+    Exited code read' -> ["outcome" .= ("exited" :: Text), "status" .= statusOf code, "output" .= outputName read']
+    Stopped read' -> ["outcome" .= ("stopped" :: Text), "output" .= outputName read']
+  where
+    statusOf ExitSuccess = 0 :: Int
+    statusOf (ExitFailure status) = status
 
 outcome :: Object -> Parser Outcome
 outcome fields = do
     kind <- fields .: "outcome"
     case kind :: Text of
         "unlaunched" -> Unlaunched <$> fields .: "reason"
-        "exited" -> Exited . (\status -> if status == 0 then ExitSuccess else ExitFailure status) <$> fields .: "status"
-        "stopped" -> pure Stopped
+        "exited" -> Exited . (\status -> if status == 0 then ExitSuccess else ExitFailure status) <$> fields .: "status" <*> (fields .: "output" >>= outputOf)
+        "stopped" -> Stopped <$> (fields .: "output" >>= outputOf)
         _ -> fail ("Unknown process outcome: " ++ show kind)
+
+outputName :: Output -> Text
+outputName Complete = "complete"
+outputName Cut = "cut"
+
+outputOf :: Text -> Parser Output
+outputOf "complete" = pure Complete
+outputOf "cut" = pure Cut
+outputOf other = fail ("Unknown process output: " ++ show other)
 
 claimValue :: Claim -> Value
 claimValue event = case event of

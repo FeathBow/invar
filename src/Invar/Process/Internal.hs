@@ -2,27 +2,30 @@
 
 module Invar.Process.Internal (Launch (..), Exchange (..), Failure (..), Session (..), Pipes, withLaunch, send, line, next, exited, response, reject, finish, stage) where
 
-import Control.Exception (catch, finally, throwIO)
-import Control.Monad (unless)
+import Control.Exception (catch, finally, throwIO, tryJust)
+import Control.Monad (guard, unless)
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as Bytes
-import Data.IORef (IORef, newIORef, readIORef, writeIORef)
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Maybe (fromMaybe)
 import Data.Text qualified as Text
 import GHC.IO.Exception (IOErrorType (ResourceVanished), IOException (ioe_type))
 import Invar.Json qualified as Json
-import Invar.Transcript (Outcome (..), Transcript (..))
+import Invar.Transcript (Outcome (..), Output (..), Transcript (..))
 import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..))
-import System.IO (Handle, hClose, hFlush, hIsEOF)
+import System.IO (Handle, hClose, hFlush, hIsEOF, hReady)
+import System.IO.Error (isEOFError)
 import System.Process
 
-data Pipes = Pipes Handle Handle ProcessHandle (IORef Bool)
+data Pipes = Pipes Handle Handle ProcessHandle Transcript (IORef Reading)
+
+data Reading = Reading {pending :: [ByteString], ended :: Bool, stopped :: Bool}
 
 data Launch = Launch {program :: FilePath, launchArguments :: [String], overlay :: [(String, String)], transcript :: Transcript}
 data Failure problem = Exit ExitCode | Rejected problem | Protocol String
     deriving (Eq, Show)
-data Session problem = Session {pipes :: Pipes, review :: ByteString -> IO (Either problem ByteString), emit :: ByteString -> IO ()}
+data Session problem = Session {pipes :: Pipes, review :: ByteString -> IO (Either problem ByteString)}
 data Exchange problem = Exchange {message :: ByteString, permission :: ByteString -> IO (Either problem ByteString), completion :: ByteString -> IO (Either problem ()), answer :: Maybe (ByteString -> IO (Either problem ByteString))}
 
 withLaunch :: Launch -> (Pipes -> IO value) -> IO value
@@ -30,14 +33,15 @@ withLaunch launch action = do
     prepared <- environmentFor (overlay launch)
     outcome <- newIORef Nothing
     let configured = (proc (program launch) (launchArguments launch)) {std_in = CreatePipe, std_out = CreatePipe, std_err = Inherit, env = prepared}
-        observed child stopped = do
-            halted <- readIORef stopped
+        observed child state = do
+            current <- readIORef state
             code <- getProcessExitCode child
-            writeIORef outcome (Just (if halted then Stopped else maybe Stopped Exited code))
+            let read' = if ended current then Complete else Cut
+            writeIORef outcome (Just (if stopped current then Stopped read' else maybe (Stopped read') (`Exited` read') code))
         run = withCreateProcess configured $ \incoming outgoing _ child -> case (incoming, outgoing) of
             (Just writer, Just reader) -> do
-                stopped <- newIORef False
-                action (Pipes writer reader child stopped) `finally` observed child stopped
+                state <- newIORef (Reading [] False False)
+                action (Pipes writer reader child (transcript launch) state) `finally` observed child state
             _ -> ioError (userError "Worker protocol pipes were not created")
         report = readIORef outcome >>= finished (transcript launch) . fromMaybe (Unlaunched "The worker process could not be started")
     run `finally` report
@@ -49,7 +53,7 @@ environmentFor added = do
     pure (Just ([entry | entry@(name, _) <- inherited, name `notElem` map fst added] ++ added))
 
 send :: Pipes -> ByteString -> IO ()
-send (Pipes writer _ _ _) value = vanished (Bytes.hPutStrLn writer value >> hFlush writer)
+send (Pipes writer _ _ _ _) value = vanished (Bytes.hPutStrLn writer value >> hFlush writer)
 
 vanished :: IO () -> IO ()
 vanished action = action `catch` \failure -> unless (ioe_type failure == ResourceVanished) (throwIO failure)
@@ -67,17 +71,26 @@ line session = do
 
 next :: Session problem -> IO (Maybe ByteString)
 next session = do
-    let Pipes _ reader _ _ = pipes session
-    ended <- hIsEOF reader
-    if ended
-        then pure Nothing
-        else do
-            received <- Bytes.hGetLine reader
-            emit session received
+    let Pipes _ reader _ recorded state = pipes session
+    held <- pending <$> readIORef state
+    case held of
+        newest : older | Just position <- Bytes.elemIndex '\n' newest -> do
+            let received = Bytes.concat (reverse (Bytes.take position newest : older))
+                rest = Bytes.drop (position + 1) newest
+            modifyIORef' state (\current -> current {pending = [rest | not (Bytes.null rest)]})
+            record recorded received
             pure (Just received)
+        _ -> do
+            chunk <- Bytes.hGetSome reader 65536
+            if Bytes.null chunk
+                then do
+                    let received = Bytes.concat (reverse held)
+                    modifyIORef' state (\current -> current {pending = [], ended = True})
+                    if Bytes.null received then pure Nothing else partial recorded received >> pure (Just received)
+                else modifyIORef' state (\current -> current {pending = chunk : pending current}) >> next session
 
 exited :: Pipes -> IO ExitCode
-exited (Pipes _ _ child _) = waitForProcess child
+exited (Pipes _ _ child _ _) = waitForProcess child
 
 response :: Session problem -> Exchange problem -> ([ByteString], Bool) -> IO (Either (Failure problem) ByteString)
 response session exchange state = do
@@ -119,27 +132,48 @@ permitResponse session (exchange, observed) output = do
 
 reject :: Session problem -> Failure problem -> IO (Either (Failure problem) value)
 reject session problem = do
-    let Pipes _ _ child stopped = pipes session
-    writeIORef stopped True
+    let handles@(Pipes _ _ child _ state) = pipes session
+    modifyIORef' state (\current -> current {stopped = True})
     terminateProcess child
     _ <- waitForProcess child
+    drain handles
     pure (Left problem)
+
+drain :: Pipes -> IO ()
+drain (Pipes _ reader _ recorded state) = do
+    held <- pending <$> readIORef state
+    exhausted <- gather (remainder - sum (map Bytes.length held))
+    pieces <- Bytes.split '\n' . Bytes.concat . reverse . pending <$> readIORef state
+    modifyIORef' state (\current -> current {pending = [], ended = exhausted})
+    mapM_ (record recorded) (take (length pieces - 1) pieces)
+    mapM_ (partial recorded) (filter (not . Bytes.null) (drop (length pieces - 1) pieces))
+  where
+    gather remaining = do
+        ready <- tryJust (guard . isEOFError) (hReady reader)
+        case ready of
+            Left () -> pure True
+            Right True | remaining > 0 -> do
+                chunk <- Bytes.hGetNonBlocking reader (min remaining 65536)
+                if Bytes.null chunk then pure False else modifyIORef' state (\current -> current {pending = chunk : pending current}) >> gather (remaining - Bytes.length chunk)
+            Right _ -> pure False
+
+remainder :: Int
+remainder = 1048576
 
 finish :: Session problem -> IO (Either (Failure problem) ())
 finish session = do
-    let Pipes writer reader child _ = pipes session
+    let Pipes writer reader child _ state = pipes session
     vanished (hClose writer)
-    ended <- hIsEOF reader
-    if ended
+    held <- pending <$> readIORef state
+    exhausted <- if null held then hIsEOF reader else pure False
+    if exhausted
         then do
+            modifyIORef' state (\current -> current {ended = True})
             status <- waitForProcess child
             pure $ case status of
                 ExitSuccess -> Right ()
                 _ -> Left (Exit status)
-        else do
-            trailing <- Bytes.hGetSome reader 65536
-            mapM_ (emit session) (Bytes.lines trailing)
-            reject session (Protocol "Output follows the final batch response")
+        else reject session (Protocol "Output follows the final batch response")
 
 stage :: ByteString -> Either String String
 stage encoded = Text.unpack <$> Json.textField "stage" encoded

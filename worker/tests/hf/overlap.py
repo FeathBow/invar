@@ -98,8 +98,8 @@ class OverlapTests(unittest.TestCase):
         self.assertEqual(consumed[1]["policy"], records[0]["policy"])
         entries = journaled(output)
         reserved = [entry["process"] for entry in entries if entry["entry"] == "process"]
-        self.assertEqual({entry["process"]: (entry["outcome"], entry["status"]) for entry in entries if entry["entry"] == "exit"},
-                         {number: ("exited", 0) for number in reserved})
+        self.assertEqual({entry["process"]: (entry["outcome"], entry["status"], entry["output"]) for entry in entries if entry["entry"] == "exit"},
+                         {number: ("exited", 0, "complete") for number in reserved})
         self.assertEqual(sorted(path.name for path in (output / "transcripts").iterdir()), sorted(f"{number}.jsonl" for number in reserved))
         intervals = {(entry["role"], entry["update"]): (entry["start"], entry["end"]) for entry in entries if entry["entry"] == "interval"}
         self.assertEqual(sorted(intervals), [("learner", 0), ("learner", 1), ("rollout", 0), ("rollout", 1)])

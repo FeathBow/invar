@@ -39,7 +39,7 @@ journals =
         , ("resuming a run keeps the caller's working directory when it refuses or fails", withTests 1 (property directories))
         , ("only an unterminated final line is dropped; any other malformed line is refused", withTests 1 (property damaged))
         , ("every journal entry reads back as the entry that was written", withTests 300 (property typed))
-        , ("a transcript is created once, keeps its lines and journals how its process ended; a closed journal closes the transcripts left open and opens no more", withTests 1 (property transcribed))
+        , ("a transcript is created once, keeps its lines and the bytes after the last newline exactly and journals how its process ended; a closed journal closes the transcripts left open and opens no more", withTests 1 (property transcribed))
         ]
 
 entry :: Int -> Value
@@ -151,7 +151,8 @@ typed = do
             , Record.Committed <$> number <*> number
             , Record.Abandoned <$> number <*> number
             ]
-    ended = Gen.choice [Transcript.Unlaunched <$> text, pure (Transcript.Exited ExitSuccess), Transcript.Exited . ExitFailure <$> Gen.filter (/= 0) (Gen.int (Range.linear (-64) 255)), pure Transcript.Stopped]
+    read' = Gen.element [Transcript.Complete, Transcript.Cut]
+    ended = Gen.choice [Transcript.Unlaunched <$> text, Transcript.Exited ExitSuccess <$> read', Transcript.Exited . ExitFailure <$> Gen.filter (/= 0) (Gen.int (Range.linear (-64) 255)) <*> read', Transcript.Stopped <$> read']
     declared = Fields.fromList <$> Gen.list (Range.linear 0 4) ((,) . Key.fromString <$> Gen.filter (`notElem` ["entry", "directory"]) text <*> (toJSON <$> text))
     entries =
         Gen.choice
@@ -180,7 +181,8 @@ transcribed = do
         Transcript.record transcript "{\"line\":0}"
         Journal.append journal (entry 0)
         Transcript.record transcript "{\"line\":1}"
-        Transcript.finished transcript (Transcript.Exited (ExitFailure 3))
+        Transcript.partial transcript "{\"li"
+        Transcript.finished transcript (Transcript.Stopped Transcript.Cut)
         late <- tryIOError (Transcript.record transcript "{\"line\":2}")
         again <- tryIOError (Journal.transcript journal first' ending)
         left <- Journal.transcript journal (root </> "1.jsonl") ending
@@ -193,6 +195,6 @@ transcribed = do
     assert (isLeft closed)
     refused <- evalIO (tryIOError (Journal.transcript journal' (root </> "2.jsonl") ending))
     assert (isLeft refused)
-    evalIO (Bytes.readFile first') >>= (=== "{\"line\":0}\n{\"line\":1}\n")
+    evalIO (Bytes.readFile first') >>= (=== "{\"line\":0}\n{\"line\":1}\n{\"li")
     recorded <- evalIO (Bytes.readFile path) >>= evalEither . Journal.entries
-    map Object recorded === [declaration, entry 0, ending (Transcript.Exited (ExitFailure 3))]
+    map Object recorded === [declaration, entry 0, ending (Transcript.Stopped Transcript.Cut)]

@@ -178,12 +178,12 @@ transcribed = do
     ended <- evalIO (newIORef [])
     let open slot = do
             atomicModifyIORef' opened (\slots -> (slot : slots, ()))
-            pure (Transcript.Transcript (const (pure ())) (\outcome -> atomicModifyIORef' ended (\outcomes -> ((slot, outcome) : outcomes, ()))))
+            pure (Transcript.Transcript (const (pure ())) (const (pure ())) (\outcome -> atomicModifyIORef' ended (\outcomes -> ((slot, outcome) : outcomes, ()))))
     outcome <- evalIO (R.withRecordedDriver R.Serial (R.worker chosen, R.sessions chosen) open (\driver -> void <$> R.run driver chosen))
     evalEither outcome >>= evalEither
     slots <- evalIO (readIORef opened)
     sort slots === [0 .. members - 1]
     outcomes <- evalIO (readIORef ended)
-    sortOn fst outcomes === [(slot, Transcript.Exited ExitSuccess) | slot <- [0 .. members - 1]]
+    sortOn fst outcomes === [(slot, Transcript.Exited ExitSuccess Transcript.Complete) | slot <- [0 .. members - 1]]
     launched <- evalIO (readFile (root </> "launched"))
     length (lines launched) === fromIntegral members

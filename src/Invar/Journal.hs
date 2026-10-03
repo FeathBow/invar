@@ -63,9 +63,9 @@ transcript :: Journal -> FilePath -> (Transcript.Outcome -> Value) -> IO Transcr
 transcript journal@(Journal _ open) path ending = mask_ $ do
     file <- exclusive path
     (held, key) <- registered file `onException` Posix.closeFd file
-    let recorded encoded = modifyMVar_ held (maybe (ioError (userError "Transcript is closed")) (\(target, _) -> written target (encoded <> Char.singleton '\n') >> pure (Just (target, True))))
+    let recorded encoded = modifyMVar_ held (maybe (ioError (userError "Transcript is closed")) (\(target, _) -> written target encoded >> pure (Just (target, True))))
         retire = modifyMVar_ open (\current -> modifyMVar_ held shut >> pure (Map.delete key <$> current))
-    pure (Transcript.Transcript recorded (\outcome -> append journal (ending outcome) `finally` retire))
+    pure (Transcript.Transcript (recorded . (<> Char.singleton '\n')) recorded (\outcome -> append journal (ending outcome) `finally` retire))
   where
     registered file = do
         synchronizeEntry path file
