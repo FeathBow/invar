@@ -2,7 +2,7 @@
 
 module Invar.Process.Internal (Launch (..), Exchange (..), Failure (..), Session (..), Pipes, withLaunch, send, line, next, exited, response, reject, finish, stage) where
 
-import Control.Exception (catch, finally, mask_, throwIO, tryJust)
+import Control.Exception (catch, finally, mask_, onException, throwIO, tryJust)
 import Control.Monad (guard, unless)
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as Bytes
@@ -20,7 +20,7 @@ import System.Process
 
 data Pipes = Pipes Handle Handle ProcessHandle Transcript (IORef Reading)
 
-data Reading = Reading {pending :: [ByteString], ended :: Bool, stopped :: Bool}
+data Reading = Reading {pending :: [ByteString], ended :: Bool, stopped :: Bool, broken :: Bool}
 
 data Launch = Launch {program :: FilePath, launchArguments :: [String], overlay :: [(String, String)], transcript :: Transcript}
 data Failure problem = Exit ExitCode | Rejected problem | Protocol String
@@ -36,11 +36,11 @@ withLaunch launch action = do
         observed child state = do
             current <- readIORef state
             code <- getProcessExitCode child
-            let read' = if ended current then Complete else Cut
+            let read' = if ended current && not (broken current) then Complete else Cut
             writeIORef outcome (Just (if stopped current then Stopped read' else maybe (Stopped read') (`Exited` read') code))
         run = withCreateProcess configured $ \incoming outgoing _ child -> case (incoming, outgoing) of
             (Just writer, Just reader) -> do
-                state <- newIORef (Reading [] False False)
+                state <- newIORef (Reading [] False False False)
                 (hSetBinaryMode writer True >> hSetBinaryMode reader True >> action (Pipes writer reader child (transcript launch) state)) `finally` observed child state
             _ -> ioError (userError "Worker protocol pipes were not created")
         report = readIORef outcome >>= finished (transcript launch) . fromMaybe (Unlaunched "The worker process could not be started")
@@ -94,7 +94,10 @@ kept state chunk = do
     pure (Bytes.length chunk)
 
 settle :: IORef Reading -> IO () -> (Reading -> Reading) -> IO ()
-settle state write change = mask_ (write >> modifyIORef' state change)
+settle state write change = mask_ $ do
+    current <- readIORef state
+    unless (broken current) (write `onException` modifyIORef' state (\reading -> reading {broken = True}))
+    modifyIORef' state change
 
 exited :: Pipes -> IO ExitCode
 exited (Pipes _ _ child _ _) = waitForProcess child

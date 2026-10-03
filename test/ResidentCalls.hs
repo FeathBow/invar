@@ -18,6 +18,7 @@ import Invar.Infer.Invocation qualified as Call
 import Invar.Infer.Result qualified as Result
 import Invar.Spec.Invocation qualified as Invocation
 import Invar.Spec.Load qualified as Load
+import Invar.Transcript qualified as Transcript
 import Invar.Worker qualified as Worker
 import Invar.Worker.Resident qualified as Resident
 import ResidentFixture qualified as F
@@ -34,7 +35,7 @@ residentCalls =
         , ("retired activation identities remain unavailable for replay", once replay)
         , ("initial load and subsequent activation observations remain distinct", once loading)
         , ("resident owner completion requires exact final close and child exit, and output after the close is recorded", once closing)
-        , ("a line whose transcript write fails stays pending, so the transcript of the interrupted owner has no gap", once gapless)
+        , ("a transcript write that fails ends the transcript: nothing more is written, the output is cut and the original error surfaces", once unwritten)
         ]
   where
     once = withTests 1 . property
@@ -103,13 +104,12 @@ rejected :: Either Worker.Failure value -> PropertyT IO ()
 rejected (Left _) = success
 rejected (Right _) = failure
 
-gapless :: PropertyT IO ()
-gapless = do
+unwritten :: PropertyT IO ()
+unwritten = do
     root <- workspace
     group <- F.prepare root 0 [0, 1]
-    let written = Bytes.lines (Fixture.wire (F.after group))
-    refused <- evalMaybe (listToMaybe written)
-    (thrown, emitted) <- F.interrupted root (F.scenario [group]) refused
-    assert thrown
-    assert (Bytes.unlines written `Bytes.isInfixOf` emitted)
-    length (filter (== refused) (Bytes.lines emitted)) === 1
+    refused <- evalMaybe (listToMaybe (Bytes.lines (Fixture.wire (F.after group))))
+    (thrown, emitted, ending) <- F.interrupted root (F.scenario [group]) refused
+    thrown === Just "The transcript refused a write"
+    emitted === Fixture.wire (F.before group) <> Bytes.take 1 refused
+    ending === Just (Transcript.Stopped Transcript.Cut)

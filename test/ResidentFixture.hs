@@ -20,7 +20,7 @@ import Invar.Worker qualified as Worker
 import Invar.Worker.Resident qualified as Resident
 import Numeric.Natural (Natural)
 import System.FilePath ((</>))
-import System.IO.Error (tryIOError)
+import System.IO.Error (ioeGetErrorString, tryIOError)
 
 data Exchange = Exchange {calls :: [Call.Call], before :: [Value], after :: [Value], permission :: ByteString, release :: Value, released :: Value}
 data Scenario = Scenario {groups :: [Exchange], closed :: Value, ending :: String}
@@ -115,19 +115,25 @@ run root selected = do
     emitted <- evalIO (Bytes.unlines . reverse <$> readIORef buffer)
     pure (returned, emitted)
 
-interrupted :: FilePath -> Scenario -> ByteString -> PropertyT IO (Bool, ByteString)
+interrupted :: FilePath -> Scenario -> ByteString -> PropertyT IO (Maybe String, ByteString, Maybe Transcript.Outcome)
 interrupted root selected refused = do
     let path = root </> "resident.sh"
         worker = Worker.Worker "/bin/sh" path root adapter [] Nothing
     evalIO (writeFile path (script root selected))
     buffer <- evalIO (newIORef [])
     failed <- evalIO (newIORef False)
-    let write line = do
+    closing <- evalIO (newIORef Nothing)
+    let append bytes = modifyIORef' buffer (bytes :)
+        write line = do
             already <- readIORef failed
-            if line == refused && not already then writeIORef failed True >> ioError (userError "The transcript refused a write") else modifyIORef' buffer (line :)
-    thrown <- evalIO (tryIOError (Resident.withResident (Resident.Options worker owner (Transcript.echoing write)) (\resident -> executeGroups resident (groups selected))))
-    emitted <- evalIO (Bytes.unlines . reverse <$> readIORef buffer)
-    pure (either (const True) (const False) thrown, emitted)
+            if line == refused && not already
+                then writeIORef failed True >> append (Bytes.take 1 line) >> ioError (userError "The transcript refused a write")
+                else append (Bytes.snoc line '\n')
+        transcript = Transcript.Transcript write append (writeIORef closing . Just)
+    thrown <- evalIO (tryIOError (Resident.withResident (Resident.Options worker owner transcript) (\resident -> executeGroups resident (groups selected))))
+    emitted <- evalIO (Bytes.concat . reverse <$> readIORef buffer)
+    ending <- evalIO (readIORef closing)
+    pure (either (Just . ioeGetErrorString) (const Nothing) thrown, emitted, ending)
 
 executeGroups :: Resident.Resident scope -> [Exchange] -> IO (Either Worker.Failure [Resident.Receipt])
 executeGroups _ [] = pure (Right [])
