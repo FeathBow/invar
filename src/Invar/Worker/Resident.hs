@@ -15,10 +15,11 @@ import Invar.Process.Resident qualified as ProcessResident
 import Invar.Resident qualified as Boundary
 import Invar.Spec.Invocation qualified as Invocation
 import Invar.Spec.Load qualified as Load
+import Invar.Transcript qualified as Transcript
 import Invar.Worker qualified as Worker
 import Numeric.Natural (Natural)
 
-data Options = Options {worker :: Worker.Worker, owner :: Natural, echo :: ByteString -> IO ()}
+data Options = Options {worker :: Worker.Worker, owner :: Natural, transcript :: Transcript.Transcript}
 data State = State Load.Registry Natural
 data Receipt = Receipt Invocation.Completion Result.Result Load.Fact ByteString Natural
 data Progress = Awaiting | Consumed Batch.Permit | Completed [(Invocation.Completion, Result.Result, Load.Fact)] Boundary.Release | Released [Receipt]
@@ -30,7 +31,7 @@ withResident :: Options -> (forall scope. Resident scope -> IO (Either Worker.Fa
 withResident options action = bracket (newIORef (State Load.empty 0)) retireOwner $ \state -> do
     let selected = worker options
         arguments = [Worker.script selected, "--cache=" ++ Worker.cache selected, "--session=" ++ show (owner options)] ++ maybe [] (\path -> ["--config=" ++ path]) (Worker.configuration selected)
-        launch = Process.Launch (Worker.executable selected) arguments (Worker.environment selected) (echo options)
+        launch = Process.Launch (Worker.executable selected) arguments (Worker.environment selected) (transcript options)
         identity = Boundary.Owner Boundary.Inference (owner options)
         closing = ProcessResident.Handshake (Boundary.close identity) (close identity state)
     first failure <$> ProcessResident.withResident launch (const closing) (\process -> first transport <$> action (Resident process state identity (owner options)))

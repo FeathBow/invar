@@ -17,6 +17,7 @@ import Invar.Learn.Worker qualified as W
 import Invar.Learn.Worker.Resident qualified as Resident
 import Invar.Spec.Invocation qualified as V
 import Invar.Spec.Load qualified as Load
+import Invar.Transcript qualified as Transcript
 import LearnerFixture qualified as F
 import Policies qualified
 import Store (workspace)
@@ -212,7 +213,7 @@ processed = do
             worker = W.Worker "/bin/sh" (root </> "process.sh") root "process checkpoint" "process reference" directory
             applied = [value | value <- F.steps exchange, F.stage value == Just "applied"]
         writeFile (W.script worker) (F.process (root </> "replies") exchange)
-        outcome <- W.run worker (F.call exchange)
+        outcome <- W.run worker Transcript.standard (F.call exchange)
         received <- Bytes.readFile (root </> "replies")
         pure (void outcome, received, concat [digests | value <- applied, Just digests <- [parseMaybe (withObject "applied" (.: "consumed")) value]])
     returned === Right ()
@@ -259,7 +260,7 @@ hooked = do
                             else Right () <$ record ("reply " ++ Text.unpack (S.replySample reply), S.replyState reply, show (map Completion.step (S.completions stream)), S.replyStep reply)
                 writeFile replies ""
                 writeFile (W.script worker) (F.process replies exchange)
-                outcome <- W.run worker (W.hooked hooks (F.call exchange))
+                outcome <- W.run worker Transcript.standard (W.hooked hooks (F.call exchange))
                 (,,) (void outcome) <$> readIORef events <*> (length . Bytes.lines <$> Bytes.readFile replies)
         (,) <$> attempt "accepted" Nothing <*> attempt "refused" (Just 1)
     let (acceptedOutcome, acceptedEvents, acceptedReplies) = accepted

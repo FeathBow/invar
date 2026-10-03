@@ -15,6 +15,7 @@ import Data.Text.Encoding (decodeUtf8)
 import Hedgehog
 import Invar.Artifact qualified as Artifact
 import Invar.Infer.Invocation qualified as Call
+import Invar.Transcript qualified as Transcript
 import Invar.Worker qualified as Worker
 import Invar.Worker.Resident qualified as Resident
 import Numeric.Natural (Natural)
@@ -108,7 +109,7 @@ run root selected = do
         worker = Worker.Worker "/bin/sh" path root adapter [] Nothing
     evalIO (writeFile path (script root selected))
     buffer <- evalIO (newIORef [])
-    let options = Resident.Options worker owner (\line -> modifyIORef' buffer (line :))
+    let options = Resident.Options worker owner (Transcript.echoing (\line -> modifyIORef' buffer (line :)))
     returned <- evalIO (Resident.withResident options (\resident -> executeGroups resident (groups selected)))
     emitted <- evalIO (Bytes.unlines . reverse <$> readIORef buffer)
     pure (returned, emitted)

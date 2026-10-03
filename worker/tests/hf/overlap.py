@@ -43,6 +43,15 @@ def execute(command, output, *, stdin=None, cwd=None):
     return [json.loads(line) for line in completed.stdout.splitlines()]
 
 
+def journaled(output):
+    return [json.loads(line) for line in (output / "journal.jsonl").read_text().splitlines()]
+
+
+def transcribed(output, role):
+    return [json.loads(line) for entry in journaled(output) if entry["entry"] == "process" and entry["role"] == role
+            for line in (output / "transcripts" / f"{entry['process']}.jsonl").read_text().splitlines()]
+
+
 def prepared(prefix):
     root = Path(tempfile.mkdtemp(prefix=prefix))
     initial = root / "initial"
@@ -80,15 +89,18 @@ class OverlapTests(unittest.TestCase):
 
     def test_the_next_rollout_runs_while_the_stale_update_learns(self):
         records, output = self.train("stale", 2, staleness=1)
-        publications = [value for value in records if value.get("phase") == "published"]
-        self.assertEqual([value["update"] for value in publications], [0, 1])
-        self.assertNotEqual(publications[0]["policy"], self.settings["policy"])
-        consumed = [value["request"] for value in records if value.get("stage") == "consumed" and "samples" in value["request"]]
+        self.assertEqual([(value["phase"], value["update"]) for value in records], [("published", 0), ("published", 1)])
+        self.assertNotEqual(records[0]["policy"], self.settings["policy"])
+        consumed = [value["request"] for value in transcribed(output, "learner") if value.get("stage") == "consumed" and "samples" in value["request"]]
         self.assertEqual([request["schedule"] for request in consumed], [{"update": 0, "staleness": 1}, {"update": 1, "staleness": 1}])
         self.assertEqual({(sample["version"], sample["behavior_policy"]) for request in consumed for sample in request["samples"]},
                          {(0, self.settings["policy"])})
-        self.assertEqual(consumed[1]["policy"], publications[0]["policy"])
-        entries = [json.loads(line) for line in (output / "journal.jsonl").read_text().splitlines()]
+        self.assertEqual(consumed[1]["policy"], records[0]["policy"])
+        entries = journaled(output)
+        reserved = [entry["process"] for entry in entries if entry["entry"] == "process"]
+        self.assertEqual({entry["process"]: (entry["outcome"], entry["status"]) for entry in entries if entry["entry"] == "exit"},
+                         {number: ("exited", 0) for number in reserved})
+        self.assertEqual(sorted(path.name for path in (output / "transcripts").iterdir()), sorted(f"{number}.jsonl" for number in reserved))
         intervals = {(entry["role"], entry["update"]): (entry["start"], entry["end"]) for entry in entries if entry["entry"] == "interval"}
         self.assertEqual(sorted(intervals), [("learner", 0), ("learner", 1), ("rollout", 0), ("rollout", 1)])
         rollout, learner = intervals["rollout", 1], intervals["learner", 0]

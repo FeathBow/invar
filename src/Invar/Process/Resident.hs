@@ -9,6 +9,7 @@ import Data.ByteString (ByteString)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.Kind (Type)
 import Invar.Process.Internal qualified as Process
+import Invar.Transcript qualified as Transcript
 import Numeric.Natural (Natural)
 
 data Handshake problem = Handshake {message :: ByteString, admit :: ByteString -> IO (Either problem ())}
@@ -20,7 +21,7 @@ data Resident (scope :: Type) = Resident Process.Pipes (ByteString -> IO ()) (MV
 
 withResident :: Process.Launch -> (forall scope. Resident scope -> Handshake problem) -> (forall scope. Resident scope -> IO (Either (Process.Failure problem) value)) -> IO (Either (Process.Failure problem) value)
 withResident launch closing action = Process.withLaunch launch $ \handles -> do
-    resident <- Resident handles (Process.echo launch) <$> newMVar () <*> newIORef (Idle 0)
+    resident <- Resident handles (Transcript.record (Process.transcript launch)) <$> newMVar () <*> newIORef (Idle 0)
     returned <- action resident `onException` poison resident (Process.Protocol "Resident owner was interrupted")
     case returned of
         Left problem -> poison resident problem

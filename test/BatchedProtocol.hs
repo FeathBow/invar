@@ -9,7 +9,7 @@ import Data.Aeson (Value (..), encode, object, toJSON, (.=))
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as Bytes
 import Data.ByteString.Lazy qualified as Lazy
-import Data.IORef (modifyIORef', newIORef, readIORef)
+import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding (decodeUtf8, encodeUtf8)
@@ -21,12 +21,14 @@ import Invar.Infer.Result qualified as Result
 import Invar.Reward qualified as Reward
 import Invar.Rollout qualified as Rollout
 import Invar.Spec.Invocation qualified as Invocation
+import Invar.Transcript qualified as Transcript
 import Invar.Worker qualified as Worker
 import Numeric.Natural (Natural)
 import Store (workspace)
 import System.Directory (doesFileExist)
 import System.Exit (ExitCode (ExitFailure))
 import System.FilePath ((</>))
+import System.IO.Error (tryIOError)
 
 batchedProtocol :: Group
 batchedProtocol =
@@ -40,6 +42,7 @@ batchedProtocol =
         , ("batched rollout retains device partition and logical delivery", once rollout)
         , ("a declared reference reaches both finite worker protocols", once declared)
         , ("a worker that exits before reading its input reports its exit status", once unread)
+        , ("a transcript learns whether its process exited, was stopped by the core or never started", once ended)
         ]
   where
     once = withTests 1 . property
@@ -102,7 +105,7 @@ run requests observations = do
         worker = Worker.Worker "/bin/sh" path root "adapter path" [] (Just configuration)
     evalIO (writeFile path (argument ++ script root (map fst requests) observations))
     output <- evalIO (newIORef [])
-    returned <- evalIO (Worker.runBatchedSession worker Nothing (\line -> modifyIORef' output (line :)) (map fst requests))
+    returned <- evalIO (Worker.runBatchedSession worker Nothing (Transcript.echoing (\line -> modifyIORef' output (line :))) (map fst requests))
     approved <- evalIO (doesFileExist (root </> "approved"))
     emitted <- evalIO (Bytes.unlines . reverse <$> readIORef output)
     pure (returned, approved, emitted)
@@ -215,12 +218,12 @@ declared = do
         serial = root </> "serial.sh"
         arguments = root </> "arguments"
     evalIO (writeFile batched ("IFS= read -r request || exit 21\ntest \"$request\" = " ++ Serial.quote (Bytes.unpack (inputWith "adapter path" expected (map fst requests))) ++ " || exit 22\nexit 23\n"))
-    batchedOutcome <- evalIO (Worker.runBatchedSession (Worker.Worker "/bin/sh" batched root "adapter path" [] Nothing) (Just selected) (const (pure ())) (map fst requests))
+    batchedOutcome <- evalIO (Worker.runBatchedSession (Worker.Worker "/bin/sh" batched root "adapter path" [] Nothing) (Just selected) (Transcript.echoing (const (pure ()))) (map fst requests))
     case batchedOutcome of
         Left problem -> problem === Worker.WorkerExit (ExitFailure 23)
         Right _ -> failure
     evalIO (writeFile serial ("printf '%s\\n' \"$@\" > " ++ Serial.quote arguments ++ "\nexit 23\n"))
-    _ <- evalIO (Worker.runSession (Worker.Worker "/bin/sh" serial root "adapter path" [] Nothing) (Just selected) (const (pure ())) (map fst requests))
+    _ <- evalIO (Worker.runSession (Worker.Worker "/bin/sh" serial root "adapter path" [] Nothing) (Just selected) (Transcript.echoing (const (pure ()))) (map fst requests))
     received <- evalIO (lines <$> readFile arguments)
     drop 2 received === ["--reference=reference adapter", "--reference-digest=" ++ replicate 64 'c']
 
@@ -231,7 +234,26 @@ unread = do
     let exiting = root </> "unread.sh"
     evalIO (writeFile exiting "exit 23\n")
     annotateShow (Bytes.length (inputWith "adapter path" Null (map fst requests)))
-    outcome <- evalIO (Worker.runBatchedSession (Worker.Worker "/bin/sh" exiting root "adapter path" [] Nothing) Nothing (const (pure ())) (map fst requests))
+    outcome <- evalIO (Worker.runBatchedSession (Worker.Worker "/bin/sh" exiting root "adapter path" [] Nothing) Nothing (Transcript.echoing (const (pure ()))) (map fst requests))
     case outcome of
         Left problem -> problem === Worker.WorkerExit (ExitFailure 23)
         Right _ -> failure
+
+ended :: PropertyT IO ()
+ended = do
+    requests <- setup [2, 0, 1]
+    root <- workspace
+    let exiting = root </> "exiting.sh"
+        refused = root </> "refused.sh"
+        observe executable path = do
+            outcome <- newIORef Nothing
+            _ <- tryIOError (Worker.runBatchedSession (Worker.Worker executable path root "adapter path" [] Nothing) Nothing (Transcript.Transcript (const (pure ())) (writeIORef outcome . Just)) (map fst requests))
+            readIORef outcome
+    evalIO (writeFile exiting "exit 23\n")
+    evalIO (writeFile refused (script root (map fst requests) ([duration "load", frame "consumed" []], [], clean)))
+    evalIO (observe "/bin/sh" exiting) >>= (=== Just (Transcript.Exited (ExitFailure 23)))
+    evalIO (observe "/bin/sh" refused) >>= (=== Just Transcript.Stopped)
+    missing <- evalIO (observe (root </> "missing") exiting)
+    case missing of
+        Just (Transcript.Unlaunched _) -> success
+        _ -> annotateShow missing >> failure

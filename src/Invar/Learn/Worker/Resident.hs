@@ -19,9 +19,10 @@ import Invar.Process qualified as Process
 import Invar.Process.Resident qualified as Transport
 import Invar.Resident qualified as Boundary
 import Invar.Spec.Load qualified as Load
+import Invar.Transcript qualified as Transcript
 import Numeric.Natural (Natural)
 
-data Options = Options {worker :: W.Worker, owner :: Natural, echo :: ByteString -> IO ()}
+data Options = Options {worker :: W.Worker, owner :: Natural, transcript :: Transcript.Transcript}
 data Paths = Paths {checkpoint :: FilePath, output :: FilePath}
 data State = State Load.Registry Natural
 
@@ -37,7 +38,7 @@ withResident :: Options -> (forall scope. Resident scope -> IO (Either W.Failure
 withResident options action = bracket (newIORef (State Load.empty 0)) retireOwner $ \state -> do
     let selected = worker options
         arguments = [W.script selected, "--cache=" ++ W.cache selected, "--reference=" ++ W.reference selected, "--session=" ++ show (owner options)]
-        launch = Process.Launch (W.executable selected) arguments [] (echo options)
+        launch = Process.Launch (W.executable selected) arguments [] (transcript options)
         identity = Boundary.Owner Boundary.Learning (owner options)
         closing = Transport.Handshake (Boundary.close identity) (close identity state)
     first failure <$> Transport.withResident launch (const closing) (\process -> first Process.Rejected <$> action (Resident process state identity))

@@ -14,18 +14,19 @@ import Invar.Learn.Worker.Internal
 import Invar.Process qualified as Process
 import Invar.Spec.Invocation qualified as V
 import Invar.Spec.Load qualified as Registry
+import Invar.Transcript qualified as Transcript
 
 type role Execution nominal
 data Execution scope = Execution (L.Plan scope) P.Result FilePath Registry.Fact
 
-run :: Worker -> Call scope -> IO (Either Failure (Execution scope))
-run worker call = bracket (newIORef Registry.empty) (`modifyIORef'` Registry.close) (execute worker call)
+run :: Worker -> Transcript.Transcript -> Call scope -> IO (Either Failure (Execution scope))
+run worker transcript call = bracket (newIORef Registry.empty) (`modifyIORef'` Registry.close) (execute worker transcript call)
 
-execute :: Worker -> Call scope -> IORef Registry.Registry -> IO (Either Failure (Execution scope))
-execute worker call@(Call planned binding runtime _ hooks) registry = do
+execute :: Worker -> Transcript.Transcript -> Call scope -> IORef Registry.Registry -> IO (Either Failure (Execution scope))
+execute worker transcript call@(Call planned binding runtime _ hooks) registry = do
     slot <- newIORef Nothing
     let arguments = [script worker, "--cache=" ++ cache worker, "--checkpoint=" ++ checkpoint worker, "--reference=" ++ reference worker, "--output=" ++ output worker]
-        command = Process.Command (executable worker) arguments [] (encodeUtf8 (Text.pack (input call)))
+        command = Process.Command (executable worker) arguments [] (encodeUtf8 (Text.pack (input call))) transcript
         approve observed = do
             authorized <- authorize (registry, slot) (binding, runtime) observed
             case authorized of

@@ -12,13 +12,9 @@ import sys
 
 import torch
 
-from worker.tests.hf.overlap import CHILD_SECONDS, CORE, execute, flags, prepared, workload
+from worker.tests.hf.overlap import CHILD_SECONDS, CORE, execute, flags, journaled, prepared, workload
 
 LOCK = "import fcntl, sys; held = open(sys.argv[1], 'a'); fcntl.lockf(held, fcntl.LOCK_EX); print(flush=True); sys.stdin.read()"
-
-
-def entries(output):
-    return [json.loads(line) for line in (output / "journal.jsonl").read_text().splitlines()]
 
 
 def bindings(recorded):
@@ -50,10 +46,14 @@ class RecoveryTests(unittest.TestCase):
     def cut(self, output, kept):
         journal = output / "journal.jsonl"
         lines = journal.read_text().splitlines(keepends=True)
+        reserved = {entry["process"] for entry in map(json.loads, lines[:kept]) if entry["entry"] == "process"}
+        for path in (output / "transcripts").iterdir():
+            if int(path.stem) not in reserved:
+                path.unlink()
         journal.write_text("".join(lines[:kept]) + '{"entry":"ev')
 
     def applied(self, output, update):
-        recorded = entries(output)
+        recorded = journaled(output)
         call = [entry["binding"]["call"] for entry in recorded if entry["entry"] == "attempt" and entry["update"] == update][-1]
         receipt = [index for index, entry in enumerate(recorded) if entry["entry"] == "interval" and entry["role"] == "learner" and entry["update"] == update][-1]
         self.cut(output, receipt)
@@ -62,7 +62,7 @@ class RecoveryTests(unittest.TestCase):
         return call, receipt
 
     def recorded(self, output, update):
-        recorded = entries(output)
+        recorded = journaled(output)
         kept = [index for index, entry in enumerate(recorded) if entry["entry"] == "event" and entry["event"]["kind"] == "recorded" and entry["event"]["update"] == update][-1] + 1
         self.cut(output, kept)
         return kept
@@ -81,7 +81,7 @@ class RecoveryTests(unittest.TestCase):
         kept = self.recorded(output, 0)
         names = sorted(path.name for path in output.iterdir())
         self.assertEqual(self.resume(output, "earlyacknowledged"), [{"phase": "resumed", "committed": [0]}])
-        self.assertEqual(len(entries(output)), kept + 1)
+        self.assertEqual(len(journaled(output)), kept + 1)
         self.assertEqual(sorted(path.name for path in output.iterdir()), names)
         with (output / "generation1" / "learner.pt").open("ab") as learner:
             learner.write(b"\0")
@@ -98,13 +98,16 @@ class RecoveryTests(unittest.TestCase):
         records = self.resume(output, "resumed")
         self.assertEqual(records[0], {"phase": "resumed", "committed": [0]})
         self.assertEqual(published(records), {1: expected[1]})
-        after = entries(output)[before:]
+        recorded = journaled(output)
+        after = recorded[before:]
         self.assertEqual(after[0]["entry"], "resume")
+        earlier = [entry["process"] for entry in recorded[:before] if entry["entry"] == "process"]
+        self.assertGreater(min(entry["process"] for entry in after if entry["entry"] == "process"), max(earlier))
         self.assertEqual({entry["update"] for entry in after if entry["entry"] == "attempt"}, {1})
         self.assertEqual(os.readlink(output / "generation1"), first)
         self.assertNotEqual(os.readlink(output / "generation2"), "staging" + str(abandoned))
-        recorded = bindings(entries(output))
-        self.assertEqual(len(recorded), len(set(recorded)))
+        identities = bindings(recorded)
+        self.assertEqual(len(identities), len(set(identities)))
         native = torch.load(output / "generation2" / "learner.pt", weights_only=True)
         self.assertTrue(all(slot["step"].item() == 2 for slot in native["optimizer"]["state"].values()))
 

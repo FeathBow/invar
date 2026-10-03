@@ -4,6 +4,7 @@ import Data.IORef (newIORef, readIORef, writeIORef)
 import Invar.Process qualified as Process
 import Invar.Score qualified as Score
 import Invar.Spec.Load qualified as Load
+import Invar.Transcript qualified as Transcript
 import Invar.Worker qualified as Worker
 import System.Exit (ExitCode)
 
@@ -16,7 +17,7 @@ run worker call = do
     let arguments =
             [Worker.script worker, "--cache=" ++ Worker.cache worker, "--adapter=" ++ Worker.adapter worker]
                 ++ maybe [] (\path -> ["--config=" ++ path]) (Worker.configuration worker)
-        command = Process.Command (Worker.executable worker) arguments (Worker.environment worker) (Score.input call)
+        command = Process.Command (Worker.executable worker) arguments (Worker.environment worker) (Score.input call) Transcript.standard
         authorize bytes = do
             previous <- readIORef slot
             case previous of

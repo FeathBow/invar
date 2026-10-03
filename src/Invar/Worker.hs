@@ -13,6 +13,7 @@ import Invar.Infer.Result qualified as R
 import Invar.Process qualified as Process
 import Invar.Spec.Invocation qualified as V
 import Invar.Spec.Load qualified as L
+import Invar.Transcript qualified as Transcript
 import System.Exit (ExitCode)
 
 data Worker = Worker
@@ -44,31 +45,31 @@ run :: Worker -> I.Call -> IO (Either Failure Execution)
 run worker call = withRegistry worker $ \registry -> do
     pending <- Pending call <$> newIORef Nothing
     let inputs = arguments worker ++ I.arguments call
-        command = Process.Command (executable worker) inputs (environment worker) (encodeUtf8 (Text.pack (I.input call)))
+        command = Process.Command (executable worker) inputs (environment worker) (encodeUtf8 (Text.pack (I.input call))) Transcript.standard
     returned <- Process.run command (authorize registry pending)
     case first failure returned of
         Right output -> first InvalidOutput <$> observe pending output
         Left problem -> pure (Left problem)
 
 runBatch :: Worker -> [I.Call] -> IO (Either Failure [Execution])
-runBatch worker = runSession worker Nothing Process.live
+runBatch worker = runSession worker Nothing Transcript.standard
 
-runSession :: Worker -> Maybe Batch.Reference -> (ByteString -> IO ()) -> [I.Call] -> IO (Either Failure [Execution])
-runSession worker reference echo calls = withRegistry worker $ \registry -> do
+runSession :: Worker -> Maybe Batch.Reference -> Transcript.Transcript -> [I.Call] -> IO (Either Failure [Execution])
+runSession worker reference transcript calls = withRegistry worker $ \registry -> do
     pending <- traverse (\call -> Pending call <$> newIORef Nothing) calls
     let inputs = arguments worker ++ foldMap (\declared -> ["--reference=" ++ Batch.location declared, "--reference-digest=" ++ Batch.identity declared]) reference
-        launch = Process.Launch (executable worker) inputs (environment worker) echo
+        launch = Process.Launch (executable worker) inputs (environment worker) transcript
         exchange value@(Pending call _) = Process.Exchange (I.batchInput call) (authorize registry value) (fmap void . observe value) Nothing
     returned <- Process.batch launch (map exchange pending)
     case first failure returned of
         Right outputs -> fmap (first InvalidOutput . sequence) (traverse (uncurry observe) (zip pending outputs))
         Left problem -> pure (Left problem)
 
-runBatchedSession :: Worker -> Maybe Batch.Reference -> (ByteString -> IO ()) -> [I.Call] -> IO (Either Failure [Execution])
+runBatchedSession :: Worker -> Maybe Batch.Reference -> Transcript.Transcript -> [I.Call] -> IO (Either Failure [Execution])
 runBatchedSession _ _ _ [] = pure (Right [])
-runBatchedSession worker reference echo calls = withRegistry worker $ \registry -> do
+runBatchedSession worker reference transcript calls = withRegistry worker $ \registry -> do
     slot <- newIORef Nothing
-    let launch = Process.Launch (executable worker) (batchArguments worker) (environment worker) echo
+    let launch = Process.Launch (executable worker) (batchArguments worker) (environment worker) transcript
         review output = do
             accepted <- grant registry slot (\current -> Batch.authorize current calls output)
             pure (Batch.permission <$> accepted)

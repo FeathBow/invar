@@ -1,6 +1,6 @@
-module Invar.Journal (Journal, with, resume, append, store, entries) where
+module Invar.Journal (Journal, with, resume, append, store, transcript, entries) where
 
-import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar, withMVar)
+import Control.Concurrent.MVar (MVar, modifyMVar, modifyMVar_, newMVar, readMVar, withMVar)
 import Control.Exception (bracket, finally, onException)
 import Control.Monad (when)
 import Data.Aeson (Object, Value, eitherDecodeStrict, encode)
@@ -8,7 +8,10 @@ import Data.ByteString (ByteString)
 import Data.ByteString qualified as Bytes
 import Data.ByteString.Char8 qualified as Char
 import Data.ByteString.Lazy qualified as Lazy
+import Data.Map.Strict (Map)
+import Data.Map.Strict qualified as Map
 import Invar.Store qualified as Store
+import Invar.Transcript qualified as Transcript
 import System.FilePath (takeDirectory)
 import System.IO (SeekMode (AbsoluteSeek))
 import System.IO.Error (catchIOError, isEOFError)
@@ -17,7 +20,7 @@ import System.Posix.IO qualified as Posix
 import System.Posix.IO.ByteString qualified as Raw
 import System.Posix.Types (Fd)
 
-newtype Journal = Journal (MVar (Maybe Fd))
+data Journal = Journal (MVar (Maybe Fd)) (MVar (Map Int (MVar (Maybe (Fd, Bool)))))
 
 with :: FilePath -> Value -> (Journal -> IO value) -> IO value
 with path declaration = bracket (create path declaration) close
@@ -26,7 +29,7 @@ create :: FilePath -> Value -> IO Journal
 create path declaration = do
     file <- exclusive path
     (locked file >> write file (line declaration) >> synchronizeEntry path file) `onException` Posix.closeFd file
-    Journal <$> newMVar (Just file)
+    Journal <$> newMVar (Just file) <*> newMVar Map.empty
 
 resume :: FilePath -> ([Object] -> Journal -> IO value) -> IO value
 resume path action = bracket (Posix.openFd path Posix.ReadWrite Posix.defaultFileFlags {Posix.append = True}) Posix.closeFd $ \file -> do
@@ -37,13 +40,37 @@ resume path action = bracket (Posix.openFd path Posix.ReadWrite Posix.defaultFil
     let complete = Bytes.length encoded - Bytes.length (Char.takeWhileEnd (/= '\n') encoded)
     when (complete /= Bytes.length encoded) (setFdSize file (fromIntegral complete) >> Store.synchronizeFile file)
     lock <- newMVar (Just file)
-    action recorded (Journal lock) `finally` modifyMVar_ lock (const (pure Nothing))
+    open <- newMVar Map.empty
+    let journal = Journal lock open
+    action recorded journal `finally` abandon journal
 
 close :: Journal -> IO ()
-close (Journal lock) = modifyMVar_ lock (\held -> mapM_ Posix.closeFd held >> pure Nothing)
+close journal = abandon journal >>= mapM_ Posix.closeFd
+
+abandon :: Journal -> IO (Maybe Fd)
+abandon (Journal lock open) = do
+    readMVar open >>= mapM_ (`modifyMVar_` (\held -> mapM_ (Posix.closeFd . fst) held >> pure Nothing))
+    modifyMVar lock (\held -> pure (Nothing, held))
 
 append :: Journal -> Value -> IO ()
-append (Journal lock) entry = withMVar lock (maybe (ioError (userError "Journal is closed")) (\file -> write file (line entry)))
+append (Journal lock open) entry = do
+    readMVar open >>= mapM_ (`modifyMVar_` traverse synchronized)
+    withMVar lock (maybe (ioError (userError "Journal is closed")) (\file -> write file (line entry)))
+  where
+    synchronized (file, changed) = when changed (Store.synchronizeFile file) >> pure (file, False)
+
+transcript :: Journal -> FilePath -> (Transcript.Outcome -> Value) -> IO Transcript.Transcript
+transcript journal@(Journal _ open) path ending = do
+    file <- exclusive path
+    synchronizeEntry path file `onException` Posix.closeFd file
+    held <- newMVar (Just (file, False))
+    key <- modifyMVar open (\current -> let next = maybe 0 ((+ 1) . fst) (Map.lookupMax current) in pure (Map.insert next held current, next))
+    let recorded encoded = modifyMVar_ held (maybe (ioError (userError "Transcript is closed")) (\(target, _) -> written target (encoded <> Char.singleton '\n') >> pure (Just (target, True))))
+        finished outcome = do
+            append journal (ending outcome)
+            modifyMVar_ open (pure . Map.delete key)
+            modifyMVar_ held (\current -> mapM_ (Posix.closeFd . fst) current >> pure Nothing)
+    pure (Transcript.Transcript recorded finished)
 
 store :: FilePath -> ByteString -> IO ()
 store path encoded = bracket (exclusive path) Posix.closeFd $ \file -> do
@@ -67,11 +94,14 @@ line :: Value -> ByteString
 line entry = Lazy.toStrict (encode entry) <> Char.singleton '\n'
 
 write :: Fd -> ByteString -> IO ()
-write file remaining
-    | Bytes.null remaining = Store.synchronizeFile file
+write file encoded = written file encoded >> Store.synchronizeFile file
+
+written :: Fd -> ByteString -> IO ()
+written file remaining
+    | Bytes.null remaining = pure ()
     | otherwise = do
-        written <- Raw.fdWrite file remaining
-        write file (Bytes.drop (fromIntegral written) remaining)
+        count <- Raw.fdWrite file remaining
+        written file (Bytes.drop (fromIntegral count) remaining)
 
 synchronizeEntry :: FilePath -> Fd -> IO ()
 synchronizeEntry path file = bracket (Posix.openFd (takeDirectory path) Posix.ReadOnly Posix.defaultFileFlags) Posix.closeFd (`Store.synchronizeDirectory` file)
