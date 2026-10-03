@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module ResidentFixture (Exchange (..), Scenario (..), owner, adapter, timer, prepare, prepareWith, scenario, scenarioWith, scriptWith, run) where
+module ResidentFixture (Exchange (..), Scenario (..), owner, adapter, timer, prepare, prepareWith, scenario, scenarioWith, scriptWith, run, interrupted) where
 
 import BatchCalls qualified as Serial
 import BatchedProtocol qualified as Batch
@@ -9,7 +9,7 @@ import Data.Aeson (Value (..), object, withObject, (.:), (.=))
 import Data.Aeson.Types (parseEither)
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as Bytes
-import Data.IORef (modifyIORef', newIORef, readIORef)
+import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Text (Text)
 import Data.Text.Encoding (decodeUtf8)
 import Hedgehog
@@ -20,6 +20,7 @@ import Invar.Worker qualified as Worker
 import Invar.Worker.Resident qualified as Resident
 import Numeric.Natural (Natural)
 import System.FilePath ((</>))
+import System.IO.Error (tryIOError)
 
 data Exchange = Exchange {calls :: [Call.Call], before :: [Value], after :: [Value], permission :: ByteString, release :: Value, released :: Value}
 data Scenario = Scenario {groups :: [Exchange], closed :: Value, ending :: String}
@@ -113,10 +114,25 @@ run root selected = do
     returned <- evalIO (Resident.withResident options (\resident -> executeGroups resident (groups selected)))
     emitted <- evalIO (Bytes.unlines . reverse <$> readIORef buffer)
     pure (returned, emitted)
-  where
-    executeGroups _ [] = pure (Right [])
-    executeGroups resident (group : remaining) = do
-        returned <- Resident.run resident adapter Nothing (calls group)
-        case returned of
-            Left problem -> pure (Left problem)
-            Right values -> fmap (values ++) <$> executeGroups resident remaining
+
+interrupted :: FilePath -> Scenario -> ByteString -> PropertyT IO (Bool, ByteString)
+interrupted root selected refused = do
+    let path = root </> "resident.sh"
+        worker = Worker.Worker "/bin/sh" path root adapter [] Nothing
+    evalIO (writeFile path (script root selected))
+    buffer <- evalIO (newIORef [])
+    failed <- evalIO (newIORef False)
+    let write line = do
+            already <- readIORef failed
+            if line == refused && not already then writeIORef failed True >> ioError (userError "The transcript refused a write") else modifyIORef' buffer (line :)
+    thrown <- evalIO (tryIOError (Resident.withResident (Resident.Options worker owner (Transcript.echoing write)) (\resident -> executeGroups resident (groups selected))))
+    emitted <- evalIO (Bytes.unlines . reverse <$> readIORef buffer)
+    pure (either (const True) (const False) thrown, emitted)
+
+executeGroups :: Resident.Resident scope -> [Exchange] -> IO (Either Worker.Failure [Resident.Receipt])
+executeGroups _ [] = pure (Right [])
+executeGroups resident (group : remaining) = do
+    returned <- Resident.run resident adapter Nothing (calls group)
+    case returned of
+        Left problem -> pure (Left problem)
+        Right values -> fmap (values ++) <$> executeGroups resident remaining

@@ -4,7 +4,7 @@ module BatchedProtocol (batchedProtocol, setup, prefix, suffix, input, permissio
 
 import BatchCalls qualified as Serial
 import Calls qualified as Fixture
-import Control.Monad (forM_)
+import Control.Monad (forM_, when)
 import Data.Aeson (Value (..), encode, object, toJSON, (.=))
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as Bytes
@@ -43,6 +43,7 @@ batchedProtocol =
         , ("a declared reference reaches both finite worker protocols", once declared)
         , ("a worker that exits before reading its input reports its exit status", once unread)
         , ("a transcript learns whether its process exited, was stopped by the core or never started, and whether its output was read to the end", once ended)
+        , ("output whose transcript write fails is not reported as read to the end", once unwritten)
         ]
   where
     once = withTests 1 . property
@@ -201,6 +202,10 @@ terminal = do
     _ <- evalEither bare
     kept === Fixture.wire (prefix requests ++ [duration "inference"]) <> result
     whole === Just (Transcript.Exited ExitSuccess Transcript.Complete)
+    (undecoded, _, (raw, binary)) <- run requests (prefix requests, suffix requests, "IFS= read -r extra\nprintf '\\377\\376tail'\nexit 0")
+    rejected undecoded
+    raw === expected <> Bytes.pack "\xff\xfe" <> "tail"
+    binary === Just (Transcript.Stopped Transcript.Complete)
 
 rollout :: PropertyT IO ()
 rollout = forM_ [1, 2] $ \count -> do
@@ -280,3 +285,21 @@ ended = do
     case missing of
         Just (Transcript.Unlaunched _) -> success
         _ -> annotateShow missing >> failure
+
+unwritten :: PropertyT IO ()
+unwritten = do
+    requests <- setup [2, 0, 1]
+    root <- workspace
+    let result = Lazy.toStrict (encode (frame "result" (map (Fixture.wire . pure . last . snd) requests)))
+        observe name (after, ending) refused = do
+            let path = root </> name
+                write bytes = when (refused bytes) (ioError (userError "The transcript refused a write"))
+            writeFile path (script root (map fst requests) (prefix requests, after, ending))
+            closing <- newIORef Nothing
+            _ <- tryIOError (Worker.runBatchedSession (Worker.Worker "/bin/sh" path root "adapter path" [] Nothing) Nothing (Transcript.Transcript write write (writeIORef closing . Just)) (map fst requests))
+            fmap reading <$> readIORef closing
+        reading (Transcript.Exited _ read') = read'
+        reading (Transcript.Stopped read') = read'
+        reading (Transcript.Unlaunched _) = Transcript.Cut
+    evalIO (observe "final.sh" ([duration "inference"], "printf '%s' " ++ Serial.quote (Bytes.unpack result) ++ "\nexit 0") (== result)) >>= (=== Just Transcript.Cut)
+    evalIO (observe "trailing.sh" (suffix requests, "printf 'trailing\\nmore'\nexit 0") (== "trailing")) >>= (=== Just Transcript.Cut)

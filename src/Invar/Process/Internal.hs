@@ -2,7 +2,7 @@
 
 module Invar.Process.Internal (Launch (..), Exchange (..), Failure (..), Session (..), Pipes, withLaunch, send, line, next, exited, response, reject, finish, stage) where
 
-import Control.Exception (catch, finally, throwIO, tryJust)
+import Control.Exception (catch, finally, mask_, throwIO, tryJust)
 import Control.Monad (guard, unless)
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as Bytes
@@ -14,7 +14,7 @@ import Invar.Json qualified as Json
 import Invar.Transcript (Outcome (..), Output (..), Transcript (..))
 import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..))
-import System.IO (Handle, hClose, hFlush, hIsEOF, hReady)
+import System.IO (Handle, hClose, hFlush, hIsEOF, hReady, hSetBinaryMode)
 import System.IO.Error (isEOFError)
 import System.Process
 
@@ -41,7 +41,7 @@ withLaunch launch action = do
         run = withCreateProcess configured $ \incoming outgoing _ child -> case (incoming, outgoing) of
             (Just writer, Just reader) -> do
                 state <- newIORef (Reading [] False False)
-                action (Pipes writer reader child (transcript launch) state) `finally` observed child state
+                (hSetBinaryMode writer True >> hSetBinaryMode reader True >> action (Pipes writer reader child (transcript launch) state)) `finally` observed child state
             _ -> ioError (userError "Worker protocol pipes were not created")
         report = readIORef outcome >>= finished (transcript launch) . fromMaybe (Unlaunched "The worker process could not be started")
     run `finally` report
@@ -77,17 +77,24 @@ next session = do
         newest : older | Just position <- Bytes.elemIndex '\n' newest -> do
             let received = Bytes.concat (reverse (Bytes.take position newest : older))
                 rest = Bytes.drop (position + 1) newest
-            modifyIORef' state (\current -> current {pending = [rest | not (Bytes.null rest)]})
-            record recorded received
+            settle state (record recorded received) (\current -> current {pending = [rest | not (Bytes.null rest)]})
             pure (Just received)
         _ -> do
-            chunk <- Bytes.hGetSome reader 65536
-            if Bytes.null chunk
+            count <- mask_ (Bytes.hGetSome reader 65536 >>= kept state)
+            if count == 0
                 then do
                     let received = Bytes.concat (reverse held)
-                    modifyIORef' state (\current -> current {pending = [], ended = True})
-                    if Bytes.null received then pure Nothing else partial recorded received >> pure (Just received)
-                else modifyIORef' state (\current -> current {pending = chunk : pending current}) >> next session
+                    settle state (unless (Bytes.null received) (partial recorded received)) (\current -> current {pending = [], ended = True})
+                    pure (if Bytes.null received then Nothing else Just received)
+                else next session
+
+kept :: IORef Reading -> ByteString -> IO Int
+kept state chunk = do
+    unless (Bytes.null chunk) (modifyIORef' state (\current -> current {pending = chunk : pending current}))
+    pure (Bytes.length chunk)
+
+settle :: IORef Reading -> IO () -> (Reading -> Reading) -> IO ()
+settle state write change = mask_ (write >> modifyIORef' state change)
 
 exited :: Pipes -> IO ExitCode
 exited (Pipes _ _ child _ _) = waitForProcess child
@@ -143,19 +150,26 @@ drain :: Pipes -> IO ()
 drain (Pipes _ reader _ recorded state) = do
     held <- pending <$> readIORef state
     exhausted <- gather (remainder - sum (map Bytes.length held))
-    pieces <- Bytes.split '\n' . Bytes.concat . reverse . pending <$> readIORef state
-    modifyIORef' state (\current -> current {pending = [], ended = exhausted})
-    mapM_ (record recorded) (take (length pieces - 1) pieces)
-    mapM_ (partial recorded) (filter (not . Bytes.null) (drop (length pieces - 1) pieces))
+    modifyIORef' state (\current -> current {pending = filter (not . Bytes.null) [Bytes.concat (reverse (pending current))]})
+    flush exhausted
   where
     gather remaining = do
         ready <- tryJust (guard . isEOFError) (hReady reader)
         case ready of
             Left () -> pure True
             Right True | remaining > 0 -> do
-                chunk <- Bytes.hGetNonBlocking reader (min remaining 65536)
-                if Bytes.null chunk then pure False else modifyIORef' state (\current -> current {pending = chunk : pending current}) >> gather (remaining - Bytes.length chunk)
+                count <- mask_ (Bytes.hGetNonBlocking reader (min remaining 65536) >>= kept state)
+                if count == 0 then pure False else gather (remaining - count)
             Right _ -> pure False
+    flush exhausted = do
+        held <- pending <$> readIORef state
+        case held of
+            [bytes] | Just position <- Bytes.elemIndex '\n' bytes -> do
+                let rest = Bytes.drop (position + 1) bytes
+                settle state (record recorded (Bytes.take position bytes)) (\current -> current {pending = [rest | not (Bytes.null rest)]})
+                flush exhausted
+            [bytes] -> settle state (partial recorded bytes) (\current -> current {pending = [], ended = exhausted})
+            _ -> modifyIORef' state (\current -> current {ended = exhausted})
 
 remainder :: Int
 remainder = 1048576

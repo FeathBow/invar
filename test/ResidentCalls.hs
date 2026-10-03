@@ -9,6 +9,7 @@ import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as Fields
 import Data.Aeson.Types (parseEither)
 import Data.ByteString.Char8 qualified as Bytes
+import Data.Maybe (listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding (decodeUtf8)
@@ -33,6 +34,7 @@ residentCalls =
         , ("retired activation identities remain unavailable for replay", once replay)
         , ("initial load and subsequent activation observations remain distinct", once loading)
         , ("resident owner completion requires exact final close and child exit, and output after the close is recorded", once closing)
+        , ("a line whose transcript write fails stays pending, so the transcript of the interrupted owner has no gap", once gapless)
         ]
   where
     once = withTests 1 . property
@@ -100,3 +102,14 @@ without _ value = value
 rejected :: Either Worker.Failure value -> PropertyT IO ()
 rejected (Left _) = success
 rejected (Right _) = failure
+
+gapless :: PropertyT IO ()
+gapless = do
+    root <- workspace
+    group <- F.prepare root 0 [0, 1]
+    let written = Bytes.lines (Fixture.wire (F.after group))
+    refused <- evalMaybe (listToMaybe written)
+    (thrown, emitted) <- F.interrupted root (F.scenario [group]) refused
+    assert thrown
+    assert (Bytes.unlines written `Bytes.isInfixOf` emitted)
+    length (filter (== refused) (Bytes.lines emitted)) === 1
