@@ -38,7 +38,7 @@ batchedProtocol =
         , ("invalid or incomplete group readiness grants no permission", once readiness)
         , ("batch completion rejects a wrong missing extra or reordered result", once results)
         , ("batch completion preserves the original probability zero sign", once zeroSign)
-        , ("batch completion requires clean exit and no trailing output", once terminal)
+        , ("batch completion requires clean exit and no trailing output, and records the trailing output", once terminal)
         , ("batched rollout retains device partition and logical delivery", once rollout)
         , ("a declared reference reaches both finite worker protocols", once declared)
         , ("a worker that exits before reading its input reports its exit status", once unread)
@@ -175,11 +175,11 @@ terminal :: PropertyT IO ()
 terminal = do
     requests <- setup [0, 1]
     forM_ ["exit 7", "printf '%s\\n' trailing\nexit 0"] $ \ending -> do
-        (outcome, approved, _) <- run requests (prefix requests, suffix requests, ending)
+        (outcome, approved, emitted) <- run requests (prefix requests, suffix requests, ending)
         approved === True
         case outcome of
-            Left (Worker.WorkerExit (ExitFailure 7)) -> success
-            Left (Worker.ProtocolFailure _) -> success
+            Left (Worker.WorkerExit (ExitFailure 7)) -> emitted === Fixture.wire (prefix requests ++ suffix requests)
+            Left (Worker.ProtocolFailure _) -> emitted === Fixture.wire (prefix requests ++ suffix requests) <> "trailing\n"
             _ -> failure
 
 rollout :: PropertyT IO ()

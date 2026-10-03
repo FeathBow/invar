@@ -96,9 +96,7 @@ execute driver@(Driver _ _ pool recorded) observer options (base, selected) = ca
     prepared = (,) <$> traverse (prepareCall base) selected <*> runners driver options
     dispatch _ [] = pure (Left (Dispatch "At least one session is required"))
     dispatch calls [single] = do
-        transcript <- output single 0 (pure Transcript.standard)
-        dispatched observer 0 [(index, I.binding call) | ((index, _), call) <- zip selected calls]
-        returned <- launched single transcript (zip selected calls)
+        returned <- started single 0 (pure Transcript.standard) (zip selected calls)
         report (finishSession selected returned)
     dispatch calls workers = do
         let assigned = partition (length workers) (zip selected calls)
@@ -109,16 +107,18 @@ execute driver@(Driver _ _ pool recorded) observer options (base, selected) = ca
             pure (sortOn (\(index, _, _) -> index) (concat completed))
     session slot launch members = do
         buffer <- newIORef []
-        transcript <- output launch slot (pure (Transcript.echoing (\line -> modifyIORef' buffer (line :))))
-        dispatched observer slot [(index, I.binding call) | ((index, _), call) <- members]
-        returned <- launched launch transcript members
+        returned <- started launch slot (pure (Transcript.echoing (\line -> modifyIORef' buffer (line :)))) members
         emitted <- reverse <$> readIORef buffer
         finished <- report (finishSession (map fst members) returned)
         pure (emitted, finished)
-    output (Finite _) slot standard = maybe standard ($ slot) recorded
-    output (Owned _) _ _ = pure Transcript.standard
-    launched (Finite launch) transcript members = launch transcript (map snd members)
-    launched (Owned launch) _ members = launch (map snd members)
+    started (Finite _) _ _ [] = pure (Right [])
+    started (Finite launch) slot standard members = do
+        transcript <- maybe standard ($ slot) recorded
+        dispatched observer slot [(index, I.binding call) | ((index, _), call) <- members]
+        launch transcript (map snd members)
+    started (Owned launch) slot _ members = do
+        dispatched observer slot [(index, I.binding call) | ((index, _), call) <- members]
+        launch (map snd members)
     report finished = do
         mapM_ (mapM_ (\(index, _, executed) -> checked observer index (V.completedBinding (Observed.completion executed)) (Observed.report executed))) finished
         pure finished

@@ -39,7 +39,7 @@ journals =
         , ("resuming a run keeps the caller's working directory when it refuses or fails", withTests 1 (property directories))
         , ("only an unterminated final line is dropped; any other malformed line is refused", withTests 1 (property damaged))
         , ("every journal entry reads back as the entry that was written", withTests 300 (property typed))
-        , ("a transcript is created once, keeps its lines and journals how its process ended; closing the journal closes one left open", withTests 1 (property transcribed))
+        , ("a transcript is created once, keeps its lines and journals how its process ended; a closed journal closes the transcripts left open and opens no more", withTests 1 (property transcribed))
         ]
 
 entry :: Int -> Value
@@ -175,7 +175,7 @@ transcribed = do
         declaration = object ["entry" .= ("declaration" :: String)]
         first' = root </> "0.jsonl"
         ending = Record.encode . Record.Finished 0
-    (again, late, left) <- evalIO $ Journal.with path declaration $ \journal -> do
+    (again, late, (journal', left)) <- evalIO $ Journal.with path declaration $ \journal -> do
         transcript <- Journal.transcript journal first' ending
         Transcript.record transcript "{\"line\":0}"
         Journal.append journal (entry 0)
@@ -184,13 +184,15 @@ transcribed = do
         late <- tryIOError (Transcript.record transcript "{\"line\":2}")
         again <- tryIOError (Journal.transcript journal first' ending)
         left <- Journal.transcript journal (root </> "1.jsonl") ending
-        pure (again, late, left)
+        pure (again, late, (journal, left))
     case again of
         Left problem -> assert (isAlreadyExistsError problem)
         Right _ -> annotate "a transcript was created over an earlier one" >> failure
     assert (isLeft late)
     closed <- evalIO (tryIOError (Transcript.record left "{}"))
     assert (isLeft closed)
+    refused <- evalIO (tryIOError (Journal.transcript journal' (root </> "2.jsonl") ending))
+    assert (isLeft refused)
     evalIO (Bytes.readFile first') >>= (=== "{\"line\":0}\n{\"line\":1}\n")
     recorded <- evalIO (Bytes.readFile path) >>= evalEither . Journal.entries
     map Object recorded === [declaration, entry 0, ending (Transcript.Exited (ExitFailure 3))]

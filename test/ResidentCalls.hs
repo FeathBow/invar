@@ -32,7 +32,7 @@ residentCalls =
         , ("acknowledgement requires exact owner digest load inventory and measurement", once release)
         , ("retired activation identities remain unavailable for replay", once replay)
         , ("initial load and subsequent activation observations remain distinct", once loading)
-        , ("resident owner completion requires exact final close and child exit", once closing)
+        , ("resident owner completion requires exact final close and child exit, and output after the close is recorded", once closing)
         ]
   where
     once = withTests 1 . property
@@ -87,8 +87,11 @@ closing = do
     root <- workspace
     group <- F.prepare root 0 [0, 1]
     let original = F.scenario [group]
-        invalid = [original {F.closed = Fixture.change "groups" (Number 0) (F.closed original)}, original {F.closed = without "measurement" (F.closed original)}, original {F.ending = "exit 7"}, original {F.ending = "printf '%s\\n' trailing\nexit 0"}]
+        invalid = [original {F.closed = Fixture.change "groups" (Number 0) (F.closed original)}, original {F.closed = without "measurement" (F.closed original)}, original {F.ending = "exit 7"}]
     forM_ invalid (F.run root >=> rejected . fst)
+    (outcome, emitted) <- F.run root original {F.ending = "printf '%s\\n' trailing\nexit 0"}
+    rejected outcome
+    last (Bytes.lines emitted) === "trailing"
 
 without :: Text -> Value -> Value
 without key (Object fields) = Object (Fields.delete (Key.fromText key) fields)

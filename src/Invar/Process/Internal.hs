@@ -136,7 +136,10 @@ finish session = do
             pure $ case status of
                 ExitSuccess -> Right ()
                 _ -> Left (Exit status)
-        else reject session (Protocol "Output follows the final batch response")
+        else do
+            trailing <- Bytes.hGetSome reader 65536
+            mapM_ (emit session) (Bytes.lines trailing)
+            reject session (Protocol "Output follows the final batch response")
 
 stage :: ByteString -> Either String String
 stage encoded = Text.unpack <$> Json.textField "stage" encoded

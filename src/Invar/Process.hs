@@ -15,7 +15,7 @@ batch _ [] = pure (Right [])
 batch launch exchanges = withLaunch launch $ \handles -> exchangeAll (record (transcript launch)) handles exchanges []
 
 exchangeAll :: (ByteString -> IO ()) -> Pipes -> [Exchange problem] -> [ByteString] -> IO (Either (Failure problem) [ByteString])
-exchangeAll _ handles [] collected = fmap (reverse collected <$) (finish (Session handles (const (pure (Right ""))) (const (pure ()))))
+exchangeAll report handles [] collected = fmap (reverse collected <$) (finish (Session handles (const (pure (Right ""))) report))
 exchangeAll report handles (exchange : remaining) collected = do
     send handles (message exchange)
     let session = Session handles (permission exchange) report
