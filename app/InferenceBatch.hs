@@ -4,15 +4,14 @@ import Control.Monad (when)
 import Data.Aeson (eitherDecodeStrict)
 import Data.Bifunctor (first)
 import Data.ByteString qualified as Bytes
-import Data.ByteString.Char8 qualified as TextBytes
 import InferenceInput qualified
 import Invar.Infer qualified as Infer
 import Invar.Infer.Invocation qualified as Call
+import Invar.Transcript qualified as Transcript
 import Invar.Worker qualified as Worker
 import Options qualified as O
 import System.Console.GetOpt (OptDescr, usageInfo)
 import System.Exit (die)
-import System.IO (hFlush, stdout)
 
 run :: [String] -> IO ()
 run ["--help"] = putStrLn usage
@@ -23,9 +22,7 @@ run supplied = do
     arguments <- either die pure (eitherDecodeStrict encoded)
     when (null arguments) (die "A finite inference batch requires at least one call")
     calls <- either die pure (traverse prepare arguments)
-    Worker.runBatchedSession worker Nothing emit calls >>= either (die . show) (const (pure ()))
-  where
-    emit line = TextBytes.hPutStrLn stdout line >> hFlush stdout
+    Worker.runBatchedSession worker Nothing Transcript.standard calls >>= either (die . show) (const (pure ()))
 
 prepare :: [String] -> Either String Call.Call
 prepare supplied = do

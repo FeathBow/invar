@@ -25,6 +25,7 @@ import Invar.Policy qualified as Policy
 import Invar.Rollout qualified as R
 import Invar.Spec.Invocation qualified as V
 import Invar.Spec.Load qualified as Load
+import Invar.Transcript qualified as Transcript
 import Policies qualified
 import Probabilities qualified
 import ResidentFixture (timer)
@@ -161,7 +162,7 @@ run :: FilePath -> Scenario scope -> (forall ownerScope. Resident.Resident owner
 run root selected action = do
     writeFile (W.script (worker root)) (script root selected)
     buffer <- newIORef []
-    returned <- Resident.withResident (Resident.Options (worker root) 0 (\line -> modifyIORef' buffer (line :))) action
+    returned <- Resident.withResident (Resident.Options (worker root) 0 (Transcript.echoing (\line -> modifyIORef' buffer (line :)))) action
     emitted <- Bytes.unlines . reverse <$> readIORef buffer
     pure (returned, emitted)
 

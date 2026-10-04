@@ -8,8 +8,9 @@ import Control.Concurrent.MVar (MVar, modifyMVar, modifyMVar_, newEmptyMVar, new
 import Control.Exception (SomeAsyncException, bracket, finally, fromException, throwIO, try)
 import Control.Monad (foldM, forM_, forever, unless, void, when)
 import Crypto.Hash.SHA256 qualified as SHA256
-import Data.Aeson (Object, Value, encode, object, withObject, (.:), (.=))
-import Data.Aeson.Types (Pair, Parser, parseEither)
+import Data.Aeson (Object, Value, encode, object, (.=))
+import Data.Aeson.KeyMap qualified as Fields
+import Data.Aeson.Types (Pair, parseEither)
 import Data.Bifunctor (first)
 import Data.ByteString.Char8 qualified as Char
 import Data.ByteString.Lazy qualified as Lazy
@@ -20,13 +21,14 @@ import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Set (Set)
 import Data.Set qualified as Set
+import Data.Text (Text)
 import GHC.Clock (getMonotonicTime)
 import Invar.Artifact qualified as Artifact
-import Invar.Async.Completion qualified as Completion
 import Invar.Async.Core (Attempt (..), Command (..), Epoch (..), Event (..), Worker (..))
 import Invar.Async.Core qualified as Core
 import Invar.Async.Plan (Declared (..), Request (..), Update (..), Version (..))
 import Invar.Async.Plan qualified as Plan
+import Invar.Async.Record qualified as Record
 import Invar.Cohort qualified as C
 import Invar.Infer.Result qualified as Result
 import Invar.Infer.Wire qualified as Wire
@@ -40,11 +42,11 @@ import Invar.Learn.Worker.Owner qualified as Owner
 import Invar.Learn.Worker.Resident qualified as Resident
 import Invar.Loop qualified as Loop
 import Invar.Policy qualified as Policy
-import Invar.Process qualified as Process
 import Invar.Rollout qualified as R
 import Invar.Rollout.Internal qualified as Internal
 import Invar.Spec.Invocation qualified as V
 import Invar.Store qualified as Store
+import Invar.Transcript qualified as Transcript
 import Numeric.Natural (Natural)
 import System.Directory (canonicalizePath, createDirectory, getCurrentDirectory, listDirectory, withCurrentDirectory)
 import System.FilePath ((</>))
@@ -56,7 +58,7 @@ data Run = Run Loop.Config Natural [String -> Either String Loop.Cycle] [Natural
 
 data Published = Published Loop.Checkpoint Policy.Description
 
-data Origin = Origin Core.State [Command] (Map Natural Published) Natural Natural
+data Origin = Origin Core.State [Command] (Map Natural Published) Natural Natural Natural
 
 data Ledger = Ledger
     { acknowledged :: Set Natural
@@ -66,6 +68,7 @@ data Ledger = Ledger
     , epochs :: Map Natural Natural
     , bindings :: Set V.Binding
     , attempts :: Set Natural
+    , processes :: Natural
     }
 
 data Shared scope = Shared
@@ -87,6 +90,8 @@ data Shared scope = Shared
     , runner :: Owner.Runner
     }
 
+data Recorder = Recorder Journal.Journal FilePath (MVar Natural) Natural
+
 run :: Run -> [Pair] -> IO (Either Error ())
 run selected@(Run chosen _ _ _) declared = do
     prepared <- prepare selected
@@ -94,12 +99,12 @@ run selected@(Run chosen _ _ _) declared = do
         Left problem -> pure (Left problem)
         Right (planned, initial) -> do
             started <- getCurrentDirectory
-            let declaration = object (["entry" .= ("declaration" :: String), "directory" .= started] ++ declared)
             createDirectory (Loop.root chosen)
             createDirectory (Loop.root chosen </> "results")
-            Journal.with (Loop.root chosen </> "journal.jsonl") declaration $ \recorded -> do
+            createDirectory (Loop.root chosen </> "transcripts")
+            Journal.with (Loop.root chosen </> "journal.jsonl") (Record.encode (Record.Declared started (Fields.fromList declared))) $ \recorded -> do
                 let (state, commands) = Core.start planned
-                begin selected planned (Origin state commands (Map.singleton 0 initial) 0 0) recorded
+                begin selected planned (Origin state commands (Map.singleton 0 initial) 0 0 0) recorded
 
 resume :: FilePath -> (Object -> Either String Run) -> IO (Either Error ())
 resume directory interpret = do
@@ -107,27 +112,26 @@ resume directory interpret = do
     Journal.resume (target </> "journal.jsonl") (continue target interpret)
 
 continue :: FilePath -> (Object -> Either String Run) -> [Object] -> Journal.Journal -> IO (Either Error ())
-continue target interpret recorded resumed = case recorded of
-    declaration : later | parseEither (.: "entry") declaration == Right ("declaration" :: String) -> case parseEither (.: "directory") declaration of
-        Left problem -> pure (Left (Recovery problem))
-        Right started ->
-            withCurrentDirectory started $ case interpret declaration of
-                Left problem -> pure (Left (Declaration problem))
-                Right selected@(Run chosen _ _ _) -> do
-                    same <- (== target) <$> canonicalizePath (Loop.root chosen)
-                    prepared <- prepare selected
-                    case prepared of
-                        _ | not same -> pure (Left (Declaration "The declared output directory is not the resumed directory"))
-                        Left problem -> pure (Left problem)
-                        Right (planned, initial) -> do
-                            recovered <- recover chosen planned initial later
-                            case recovered of
-                                Left problem -> pure (Left problem)
-                                Right origin@(Origin state _ _ next identities) -> do
-                                    let done = [update | Update update <- Core.committed state]
-                                    Journal.append resumed (object ["entry" .= ("resume" :: String), "committed" .= done, "epoch" .= next, "identities" .= identities])
-                                    announce (object ["phase" .= ("resumed" :: String), "committed" .= done])
-                                    if Core.committed state == Plan.updates planned then pure (Right ()) else begin selected planned origin resumed
+continue target interpret recorded resumed = case traverse (parseEither Record.decode) recorded of
+    Left problem -> pure (Left (Recovery problem))
+    Right (Record.Declared started declaration : later) ->
+        withCurrentDirectory started $ case interpret declaration of
+            Left problem -> pure (Left (Declaration problem))
+            Right selected@(Run chosen _ _ _) -> do
+                same <- (== target) <$> canonicalizePath (Loop.root chosen)
+                prepared <- prepare selected
+                case prepared of
+                    _ | not same -> pure (Left (Declaration "The declared output directory is not the resumed directory"))
+                    Left problem -> pure (Left problem)
+                    Right (planned, initial) -> do
+                        recovered <- recover chosen planned initial later
+                        case recovered of
+                            Left problem -> pure (Left problem)
+                            Right origin@(Origin state _ _ next identities numbers) -> do
+                                let done = [update | Update update <- Core.committed state]
+                                Journal.append resumed (Record.encode (Record.Resumed done next identities numbers))
+                                announce (object ["phase" .= ("resumed" :: String), "committed" .= done])
+                                if Core.committed state == Plan.updates planned then pure (Right ()) else begin selected planned origin resumed
     _ -> pure (Left (Recovery "The journal does not start with a run declaration"))
 
 prepare :: Run -> IO (Either Error (Plan.Plan, Published))
@@ -144,8 +148,8 @@ prepare (Run chosen lag _ sizes)
             planned <- first (Declaration . show) (Plan.prepare lag [Declared requests (chunks (L.steps settings) requests) | requests <- members])
             pure (planned, Published initial description)
 
-recover :: Loop.Config -> Plan.Plan -> Published -> [Object] -> IO (Either Error Origin)
-recover chosen planned initial later = case parseEither (foldM ledger (Ledger Set.empty Map.empty Map.empty Map.empty Map.empty Set.empty Set.empty)) later of
+recover :: Loop.Config -> Plan.Plan -> Published -> [Record.Entry] -> IO (Either Error Origin)
+recover chosen planned initial later = case foldM ledger (Ledger Set.empty Map.empty Map.empty Map.empty Map.empty Set.empty Set.empty 0) later of
     Left problem -> pure (Left (Recovery problem))
     Right found -> do
         names <- listDirectory (Loop.root chosen)
@@ -167,7 +171,7 @@ recover chosen planned initial later = case parseEither (foldM ledger (Ledger Se
                             identities = maybe 0 (+ 1) (Set.lookupMax (Set.map largest (bindings found)))
                             fresh = maybe 0 (+ 1) (Set.lookupMax (attempts found))
                         (state, commands) <- first (Recovery . show) (Core.recover planned (map Update (genericTake count [0 ..])) Map.empty lowest (bindings found) fresh)
-                        pure (Origin state commands held next identities)
+                        pure (Origin state commands held next identities (processes found))
       where
         generation held version = do
             let update = version - 1
@@ -186,66 +190,39 @@ recover chosen planned initial later = case parseEither (foldM ledger (Ledger Se
 largest :: V.Binding -> Natural
 largest (V.Binding (V.CallId call) (V.AttemptId attempt) (V.Instance instanceId)) = maximum [call, attempt, instanceId]
 
-ledger :: Ledger -> Object -> Parser Ledger
-ledger found fields = do
-    kind <- fields .: "entry"
-    case kind :: String of
-        "epoch" -> do
-            worker <- fields .: "worker"
-            used <- fields .: "epoch"
-            pure found {epochs = Map.insertWith max worker used (epochs found)}
-        "dispatched" -> do
-            bound <- Wire.binding fields
-            pure found {bindings = Set.insert bound (bindings found)}
-        "attempt" -> do
-            bound <- Wire.binding fields
-            attempt <- fields .: "attempt"
-            pure found {bindings = Set.insert bound (bindings found), attempts = Set.insert attempt (attempts found)}
-        "event" -> do
-            recorded <- fields .: "event" >>= withObject "journaled event" (journaled found)
-            issued <- fields .: "commands" :: Parser [Value]
-            foldM (withObject "journaled command" . commanded) recorded issued
-        "checkpoint" -> do
-            key <- (,) <$> fields .: "update" <*> fields .: "attempt"
-            digest <- fields .: "learner"
-            pure found {learners = Map.insert key digest (learners found)}
-        "resume" -> do
-            done <- fields .: "committed"
-            pure found {acknowledged = Set.union (acknowledged found) (Set.fromList done)}
-        _ | kind `elem` ["result", "interval"] -> pure found
-        _ -> fail ("Unknown journal entry: " ++ kind)
+ledger :: Ledger -> Record.Entry -> Either String Ledger
+ledger found recorded = case recorded of
+    Record.Declared _ _ -> Left "The journal declares its run twice"
+    Record.Opened worker used -> Right found {epochs = Map.insertWith max worker used (epochs found)}
+    Record.Dispatched _ _ _ bound -> Right found {bindings = Set.insert bound (bindings found)}
+    Record.Attempted _ attempt bound -> Right found {bindings = Set.insert bound (bindings found), attempts = Set.insert attempt (attempts found)}
+    Record.Reserved number _ _ _ -> Right found {processes = max (number + 1) (processes found)}
+    Record.Happened event commands -> Right (foldl' commanded (claimed event) commands)
+    Record.Verified update attempt learner -> Right found {learners = Map.insert (update, attempt) learner (learners found)}
+    Record.Resumed done _ _ numbers -> Right found {acknowledged = Set.union (acknowledged found) (Set.fromList done), processes = max numbers (processes found)}
+    Record.Finished _ _ -> Right found
+    Record.Stored {} -> Right found
+    Record.Elapsed {} -> Right found
   where
-    journaled held event = do
-        kind <- event .: "kind"
-        case kind :: String of
-            "committed" -> do
-                update <- event .: "update"
-                pure held {acknowledged = Set.insert update (acknowledged held)}
-            "staged" -> do
-                key <- (,) <$> event .: "update" <*> event .: "attempt"
-                digest <- event .: "digest"
-                pure held {staged = Map.insert key digest (staged held)}
-            _ -> pure held
-    commanded held command' = do
-        kind <- command' .: "kind"
-        case kind :: String of
-            "send" -> do
-                attempt <- command' .: "attempt"
-                pure held {attempts = Set.insert attempt (attempts held)}
-            "commit" -> do
-                update <- command' .: "update"
-                attempt <- command' .: "attempt"
-                pure held {commits = Map.insert update attempt (commits held)}
-            _ -> pure held
+    claimed event = case event of
+        Record.Committed update _ -> found {acknowledged = Set.insert update (acknowledged found)}
+        Record.Staged update attempt digest -> found {staged = Map.insert (update, attempt) digest (staged found)}
+        _ -> found
+    commanded held issued = case issued of
+        Send _ (Attempt attempt) -> held {attempts = Set.insert attempt (attempts held)}
+        Commit (Update update) (Attempt attempt) -> held {commits = Map.insert update attempt (commits held)}
+        _ -> held
 
 begin :: Run -> Plan.Plan -> Origin -> Journal.Journal -> IO (Either Error ())
-begin (Run chosen lag workload sizes) planned (Origin state commands versions next identities) recorded = do
+begin (Run chosen lag workload sizes) planned (Origin state commands versions next identities numbers) recorded = do
     let settings = Loop.settings chosen
         engine = Loop.backend chosen
         initial = Loop.Checkpoint (Loop.checkpoint chosen) (L.policy settings) (L.learner settings)
-    outcome <- R.withConfiguredDriver (Loop.inferenceMode engine) (Loop.inferenceWorker chosen initial, Loop.sessions engine) $ \collector -> do
+    counter <- newMVar numbers
+    let recorder = Recorder recorded (Loop.root chosen </> "transcripts") counter next
+    outcome <- R.withRecordedDriver (Loop.inferenceMode engine) (Loop.inferenceWorker chosen initial, Loop.sessions engine) (opening recorder Record.Inference) $ \collector -> do
         void (Internal.reserve collector identities)
-        owned <- Owner.withRunner (Loop.learningMode engine) (Loop.updateWorker chosen (initial, 0)) $ \updater -> do
+        owned <- Owner.withRecordedRunner (Loop.learningMode engine) (Loop.updateWorker chosen (initial, 0)) (opening recorder Record.Learner 0) $ \updater -> do
             shared <-
                 Shared chosen lag planned workload (scanl (+) 0 sizes) recorded next
                     <$> newMVar state
@@ -261,13 +238,19 @@ begin (Run chosen lag workload sizes) planned (Origin state commands versions ne
         pure (either (Left . Learning) id owned)
     pure (either (Left . Rollout) id outcome)
 
+opening :: Recorder -> Record.Role -> Natural -> IO Transcript.Transcript
+opening (Recorder recorded directory counter used) role slot = do
+    number <- modifyMVar counter (\current -> pure (current + 1, current))
+    Journal.append recorded (Record.encode (Record.Reserved number role slot used))
+    Journal.transcript recorded (directory </> (show number ++ ".jsonl")) (Record.encode . Record.Finished number)
+
 execute :: Shared scope -> [Command] -> IO (Either Error ())
 execute shared initial =
     bracket (worker (forever (readChan (cohorts shared) >>= guarded shared . collect shared))) stop $ \_ ->
         bracket (worker (forever (readChan (updates shared) >>= guarded shared . learn shared))) stop $ \_ -> do
             guarded shared $ do
                 forM_ (genericTake sessions [0 ..]) $ \slot -> do
-                    Journal.append (journal shared) (object ["entry" .= ("epoch" :: String), "worker" .= slot, "epoch" .= epoch shared])
+                    Journal.append (journal shared) (Record.encode (Record.Opened slot (epoch shared)))
                     void (transition shared (Connected (Worker slot) (Epoch (epoch shared))))
                 route shared initial
                 finish shared
@@ -302,7 +285,7 @@ transition shared event = do
     returned <- modifyMVar (core shared) $ \state -> case Core.step state event of
         Left problem -> pure (state, Left problem)
         Right (next, commands) -> do
-            Journal.append (journal shared) (object ["entry" .= ("event" :: String), "event" .= eventValue event, "commands" .= map commandValue commands])
+            Journal.append (journal shared) (Record.encode (Record.Happened (Record.claim event) commands))
             pure (next, Right commands)
     case returned of
         Left problem -> ioError (userError ("Event core refused " ++ show event ++ ": " ++ show problem))
@@ -351,7 +334,7 @@ collect shared (update, version) = do
     dispatched slots offset slot requests = do
         forM_ requests $ \(index, binding) -> do
             atomicModifyIORef' slots (\held -> (Map.insert index slot held, ()))
-            Journal.append (journal shared) (object ["entry" .= ("dispatched" :: String), "request" .= (offset + index), "worker" .= slot, "epoch" .= epoch shared, "binding" .= Wire.bindingValue binding])
+            Journal.append (journal shared) (Record.encode (Record.Dispatched (offset + index) slot (epoch shared) binding))
         forM_ requests $ \(index, _) -> void (transition shared (Started (Worker slot) (Epoch (epoch shared)) (Request (offset + index))))
     checked slots offset index binding result = do
         slot <- maybe (ioError (userError "Checked result was never dispatched")) pure . Map.lookup index =<< readIORef slots
@@ -361,7 +344,7 @@ collect shared (update, version) = do
             path = Loop.root (config shared) </> "results" </> ("call" ++ show call ++ ".json")
         Journal.store path encoded
         let digest = Artifact.hex (SHA256.hash encoded)
-        Journal.append (journal shared) (object ["entry" .= ("result" :: String), "request" .= request, "binding" .= Wire.bindingValue binding, "digest" .= digest])
+        Journal.append (journal shared) (Record.encode (Record.Stored request binding digest))
         void (transition shared (Completed (Worker slot) (Epoch (epoch shared)) (Request request) digest))
 
 learn :: Shared scope -> (Natural, Attempt) -> IO ()
@@ -383,7 +366,7 @@ learn shared (update, attempt@(Attempt counter)) = do
             ordinal <- Internal.reserve (driver shared) 1
             let binding = V.ordinal ordinal
                 staging = Loop.stagedName ordinal
-            Journal.append (journal shared) (object ["entry" .= ("attempt" :: String), "update" .= update, "attempt" .= counter, "binding" .= Wire.bindingValue binding])
+            Journal.append (journal shared) (Record.encode (Record.Attempted update counter binding))
             case W.prepare binding planned of
                 Left problem -> fail' shared (Learning problem)
                 Right call -> do
@@ -398,7 +381,7 @@ learn shared (update, attempt@(Attempt counter)) = do
                             interval shared ("learner", update) started
                             let produced = Observation.report observed
                             close attempt forwarded (S.completions (P.stream produced))
-                            Journal.append (journal shared) (object ["entry" .= ("checkpoint" :: String), "update" .= update, "attempt" .= counter, "learner" .= P.learner produced])
+                            Journal.append (journal shared) (Record.encode (Record.Verified update counter (P.learner produced)))
                             commands <- transition shared (Staged (Update update) attempt (P.adapter produced))
                             publish shared (update, attempt, ordinal) (description, produced) commands
   where
@@ -441,38 +424,13 @@ publish shared (update, attempt, ordinal) (description, produced) commands = do
     recording (Record (Update target) current _) = target == update && current == attempt
     recording _ = False
 
-interval :: Shared scope -> (String, Natural) -> Double -> IO ()
+interval :: Shared scope -> (Text, Natural) -> Double -> IO ()
 interval shared (role, update) started = do
     ended <- getMonotonicTime
-    Journal.append (journal shared) (object ["entry" .= ("interval" :: String), "role" .= role, "update" .= update, "start" .= started, "end" .= ended])
+    Journal.append (journal shared) (Record.encode (Record.Elapsed role update started ended))
 
 announce :: Value -> IO ()
-announce value = Process.live (Lazy.toStrict (encode value))
-
-eventValue :: Event -> Value
-eventValue event = case event of
-    Connected (Worker worker) (Epoch used) -> object ["kind" .= ("connected" :: String), "worker" .= worker, "epoch" .= used]
-    Lost (Worker worker) (Epoch used) -> object ["kind" .= ("lost" :: String), "worker" .= worker, "epoch" .= used]
-    Started (Worker worker) (Epoch used) (Request request) -> object ["kind" .= ("started" :: String), "worker" .= worker, "epoch" .= used, "request" .= request]
-    Completed (Worker worker) (Epoch used) (Request request) digest -> object ["kind" .= ("completed" :: String), "worker" .= worker, "epoch" .= used, "request" .= request, "digest" .= digest]
-    Ready update attempt bound identity before -> addressed "ready" update attempt ["binding" .= Wire.bindingValue bound, "plan" .= identity, "before" .= before]
-    Current update attempt index before -> addressed "current" update attempt ["step" .= index, "before" .= before]
-    Applied update attempt done -> addressed "applied" update attempt ["binding" .= Wire.bindingValue (Completion.binding done), "plan" .= Completion.plan done, "step" .= Completion.step done, "consumed" .= Completion.consumed done, "before" .= Completion.before done, "after" .= Completion.after done]
-    Staged update attempt digest -> addressed "staged" update attempt ["digest" .= digest]
-    Recorded update attempt -> addressed "recorded" update attempt []
-    Committed update attempt -> addressed "committed" update attempt []
-    Abandoned update attempt -> addressed "abandoned" update attempt []
-
-commandValue :: Command -> Value
-commandValue issued = case issued of
-    Dispatch (Request request) (Version version) -> object ["kind" .= ("dispatch" :: String), "request" .= request, "version" .= version]
-    Send update attempt -> addressed "send" update attempt []
-    Open update attempt index before -> addressed "open" update attempt ["step" .= index, "before" .= before]
-    Record update attempt digest -> addressed "record" update attempt ["digest" .= digest]
-    Commit update attempt -> addressed "commit" update attempt []
-
-addressed :: String -> Update -> Attempt -> [Pair] -> Value
-addressed kind (Update update) (Attempt attempt) rest = object (["kind" .= kind, "update" .= update, "attempt" .= attempt] ++ rest)
+announce value = Transcript.live (Lazy.toStrict (encode value))
 
 chunks :: Natural -> [value] -> [[value]]
 chunks count = go (fromIntegral count)

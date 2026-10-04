@@ -9,6 +9,7 @@ import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as Fields
 import Data.Aeson.Types (parseEither)
 import Data.ByteString.Char8 qualified as Bytes
+import Data.Maybe (listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding (decodeUtf8)
@@ -17,6 +18,7 @@ import Invar.Infer.Invocation qualified as Call
 import Invar.Infer.Result qualified as Result
 import Invar.Spec.Invocation qualified as Invocation
 import Invar.Spec.Load qualified as Load
+import Invar.Transcript qualified as Transcript
 import Invar.Worker qualified as Worker
 import Invar.Worker.Resident qualified as Resident
 import ResidentFixture qualified as F
@@ -32,7 +34,8 @@ residentCalls =
         , ("acknowledgement requires exact owner digest load inventory and measurement", once release)
         , ("retired activation identities remain unavailable for replay", once replay)
         , ("initial load and subsequent activation observations remain distinct", once loading)
-        , ("resident owner completion requires exact final close and child exit", once closing)
+        , ("resident owner completion requires exact final close and child exit, and output after the close is recorded", once closing)
+        , ("a transcript write that fails ends the transcript: nothing more is written, the output is cut and the original error surfaces", once unwritten)
         ]
   where
     once = withTests 1 . property
@@ -87,8 +90,11 @@ closing = do
     root <- workspace
     group <- F.prepare root 0 [0, 1]
     let original = F.scenario [group]
-        invalid = [original {F.closed = Fixture.change "groups" (Number 0) (F.closed original)}, original {F.closed = without "measurement" (F.closed original)}, original {F.ending = "exit 7"}, original {F.ending = "printf '%s\\n' trailing\nexit 0"}]
+        invalid = [original {F.closed = Fixture.change "groups" (Number 0) (F.closed original)}, original {F.closed = without "measurement" (F.closed original)}, original {F.ending = "exit 7"}]
     forM_ invalid (F.run root >=> rejected . fst)
+    (outcome, emitted) <- F.run root original {F.ending = "printf '%s\\n' trailing\nexit 0"}
+    rejected outcome
+    last (Bytes.lines emitted) === "trailing"
 
 without :: Text -> Value -> Value
 without key (Object fields) = Object (Fields.delete (Key.fromText key) fields)
@@ -97,3 +103,13 @@ without _ value = value
 rejected :: Either Worker.Failure value -> PropertyT IO ()
 rejected (Left _) = success
 rejected (Right _) = failure
+
+unwritten :: PropertyT IO ()
+unwritten = do
+    root <- workspace
+    group <- F.prepare root 0 [0, 1]
+    refused <- evalMaybe (listToMaybe (Bytes.lines (Fixture.wire (F.after group))))
+    (thrown, emitted, ending) <- F.interrupted root (F.scenario [group]) refused
+    thrown === Just "The transcript refused a write"
+    emitted === Fixture.wire (F.before group) <> Bytes.take 1 refused
+    ending === Just (Transcript.Stopped Transcript.Cut)

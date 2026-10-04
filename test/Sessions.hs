@@ -9,7 +9,7 @@ import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Monad (forM_, void)
 import Data.Aeson (Value)
 import Data.IORef (atomicModifyIORef', newIORef, readIORef)
-import Data.List (sort)
+import Data.List (sort, sortOn)
 import Data.Maybe (isNothing)
 import Hedgehog
 import Invar.Cohort qualified as C
@@ -19,10 +19,11 @@ import Invar.Infer.Result qualified as Result
 import Invar.Reward qualified as Reward
 import Invar.Rollout qualified as R
 import Invar.Spec.Invocation qualified as B
+import Invar.Transcript qualified as Transcript
 import Invar.Worker qualified as W
 import Numeric.Natural (Natural)
 import Store (workspace)
-import System.Exit (ExitCode (ExitFailure))
+import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
 import System.Timeout (timeout)
 
@@ -35,6 +36,7 @@ sessions =
         , ("cancelling the cohort stops every session", once cancelled)
         , ("cancelling the cohort after one session returned stops the others", once returned)
         , ("each request is reported when dispatched to a session and each result after its check", once observed)
+        , ("a session without requests opens no transcript, and every opened transcript learns its outcome", once transcribed)
         ]
   where
     once = withTests 1 . property
@@ -167,3 +169,21 @@ observed = do
         [words32 | index <- [0 .. members - 1], Just (_, words32) <- [lookup index checked]] === batch
   where
     project result = [map fromIntegral (Result.behaviorBits (R.observation sample)) | sample <- R.samples result]
+
+transcribed :: PropertyT IO ()
+transcribed = do
+    root <- workspace
+    chosen <- options root 7
+    opened <- evalIO (newIORef [])
+    ended <- evalIO (newIORef [])
+    let open slot = do
+            atomicModifyIORef' opened (\slots -> (slot : slots, ()))
+            pure (Transcript.Transcript (const (pure ())) (const (pure ())) (\outcome -> atomicModifyIORef' ended (\outcomes -> ((slot, outcome) : outcomes, ()))))
+    outcome <- evalIO (R.withRecordedDriver R.Serial (R.worker chosen, R.sessions chosen) open (\driver -> void <$> R.run driver chosen))
+    evalEither outcome >>= evalEither
+    slots <- evalIO (readIORef opened)
+    sort slots === [0 .. members - 1]
+    outcomes <- evalIO (readIORef ended)
+    sortOn fst outcomes === [(slot, Transcript.Exited ExitSuccess Transcript.Complete) | slot <- [0 .. members - 1]]
+    launched <- evalIO (readFile (root </> "launched"))
+    length (lines launched) === fromIntegral members
