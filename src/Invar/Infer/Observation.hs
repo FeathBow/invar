@@ -5,24 +5,22 @@ module Invar.Infer.Observation (Report, admit, admitFrames, admitGroup, result, 
 import Control.Monad (unless, when)
 import Crypto.Hash.SHA256 qualified as SHA256
 import Data.Aeson (Object, Value (..), object, withObject, (.:), (.=))
-import Data.Aeson.Key (Key)
 import Data.Aeson.KeyMap qualified as Fields
-import Data.Aeson.Types (Parser, parseEither)
+import Data.Aeson.Types (parseEither)
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as Bytes
 import Data.Text (Text)
-import Data.Text qualified as Text
 import Invar.Artifact qualified as Artifact
 import Invar.Infer qualified as Infer
 import Invar.Infer.Framing qualified as Framing
 import Invar.Infer.Invocation qualified as Invocation
 import Invar.Infer.Output qualified as Output
+import Invar.Infer.Records qualified as Records
 import Invar.Infer.Result qualified as Result
 import Invar.Infer.Wire qualified as Wire
 import Invar.Json qualified as Json
 import Invar.Policy qualified as Policy
 import Invar.Spec.Invocation qualified as V
-import Invar.Spec.Load qualified as Load
 
 data Report = Report String V.Binding Result.Result Object
     deriving (Eq, Show)
@@ -65,9 +63,9 @@ check :: Infer.Plan -> V.Binding -> (ByteString, [Object]) -> (Object, Object, O
 check planned bound (source, values) (loaded, consumed, output, rawOutput) = do
     call <- either (Left . show) Right (Invocation.prepare bound planned)
     expected <- Json.decode (Invocation.batchInput call) >>= parseEither (withObject "expected inference consumption" pure)
-    unless (Fields.delete "stage" consumed == expected) (Left "Inference consumption differs from the declared invocation")
-    parseEither (checkLoad (planned, bound, expected)) loaded
-    parseEither (checkResult bound) output
+    Records.consumed expected consumed
+    _ <- Records.loaded (planned, bound, expected) loaded
+    Records.result bound output
     observed <- either (Left . show) Right (Result.observeObjects planned values)
     Output.rawBehavior rawOutput (Result.behaviorBits observed)
     let digest = Artifact.hex (SHA256.hash source)
@@ -86,42 +84,6 @@ trace records = do
     stage expected fields = do
         actual <- parseEither (.: "stage") fields
         unless (actual == (expected :: Text) && not (Fields.member "phase" fields)) (Left "Missing or reordered inference observation stage")
-
-checkLoad :: (Infer.Plan, V.Binding, Object) -> Object -> Parser ()
-checkLoad (planned, bound, expected) fields = do
-    let required = ["stage", "binding", "load", "image", "requested", "consumed", "tokenizer", "base", "assembly", "model", "revision"]
-        selected = Infer.requested planned
-        image = Infer.image selected
-        imageValue = object ["artifact" .= Bytes.unpack (Load.artifact image), "profile" .= Bytes.unpack (Load.profile image)]
-    Json.fields (required ++ ["scope" | Fields.member "scope" fields]) fields
-    checkBinding bound fields
-    loading <- fields .: "load"
-    unless (Just loading == Fields.lookup "load" expected) (fail "Inference load invocation differs from consumption")
-    actual <- fields .: "image"
-    unless (actual == imageValue) (fail "Inference load image differs from the declared materialization")
-    mapM_ (identity fields) [("requested", Infer.artifact selected), ("consumed", Infer.artifact selected), ("tokenizer", Infer.tokenizer selected), ("base", Infer.base selected), ("assembly", Infer.assembly selected)]
-    mapM_ (nonempty fields) (["model", "revision"] ++ ["scope" | Fields.member "scope" fields])
-
-identity :: Object -> (Key, String) -> Parser ()
-identity fields (key, expected) = do
-    actual <- fields .: key >>= Json.identity
-    unless (actual == expected) (fail "Inference load materialization differs from the declared request")
-
-nonempty :: Object -> Key -> Parser ()
-nonempty fields key = do
-    value <- fields .: key
-    when (Text.null value) (fail "Expected nonempty inference model or scope text")
-
-checkResult :: V.Binding -> Object -> Parser ()
-checkResult bound fields = do
-    Json.fields (["stage", "binding", "adapter", "tokenizer", "base", "assembly", "request", "tokens", "prompt_length", "behavior", "behavior_bits", "text", "truncated"] ++ ["reference" | Fields.member "reference" fields]) fields
-    checkBinding bound fields
-    fields .: "request" >>= withObject "inference numerical request" (Json.fields ["prompt", "tokens", "temperature", "seed"])
-
-checkBinding :: V.Binding -> Object -> Parser ()
-checkBinding bound fields = do
-    actual <- fields .: "binding"
-    unless (actual == Wire.bindingValue bound) (fail "Inference observation binding mismatch")
 
 result :: Report -> Result.Result
 result (Report _ _ observed _) = observed

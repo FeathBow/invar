@@ -15,6 +15,7 @@ import Data.Text.Encoding (decodeUtf8)
 import Hedgehog
 import Invar.Artifact qualified as Artifact
 import Invar.Infer.Invocation qualified as Call
+import Invar.Infer.Trajectory (Trajectory)
 import Invar.Transcript qualified as Transcript
 import Invar.Worker qualified as Worker
 import Invar.Worker.Resident qualified as Resident
@@ -104,7 +105,7 @@ scriptWith (physical, paths) root selected =
     receive variable expected = "IFS= read -r " ++ variable ++ " || exit 21\ntest \"$" ++ variable ++ "\" = " ++ Serial.quote (Bytes.unpack expected) ++ " || exit 22"
     emit values = "printf '%s\\n' " ++ unwords (map (Serial.quote . Bytes.unpack) (Bytes.lines (Fixture.wire values)))
 
-run :: FilePath -> Scenario -> PropertyT IO (Either Worker.Failure [Resident.Receipt], ByteString)
+run :: FilePath -> Scenario -> PropertyT IO (Either Worker.Failure [Trajectory], ByteString)
 run root selected = do
     let path = root </> "resident.sh"
         worker = Worker.Worker "/bin/sh" path root adapter [] Nothing
@@ -135,7 +136,7 @@ interrupted root selected refused = do
     ending <- evalIO (readIORef closing)
     pure (either (Just . ioeGetErrorString) (const Nothing) thrown, emitted, ending)
 
-executeGroups :: Resident.Resident scope -> [Exchange] -> IO (Either Worker.Failure [Resident.Receipt])
+executeGroups :: Resident.Resident scope -> [Exchange] -> IO (Either Worker.Failure [Trajectory])
 executeGroups _ [] = pure (Right [])
 executeGroups resident (group : remaining) = do
     returned <- Resident.run resident adapter Nothing (calls group)

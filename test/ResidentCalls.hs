@@ -15,12 +15,11 @@ import Data.Text qualified as Text
 import Data.Text.Encoding (decodeUtf8)
 import Hedgehog
 import Invar.Infer.Invocation qualified as Call
-import Invar.Infer.Result qualified as Result
+import Invar.Infer.Trajectory qualified as Trajectory
 import Invar.Spec.Invocation qualified as Invocation
 import Invar.Spec.Load qualified as Load
 import Invar.Transcript qualified as Transcript
 import Invar.Worker qualified as Worker
-import Invar.Worker.Resident qualified as Resident
 import ResidentFixture qualified as F
 import Store (workspace)
 import System.Directory (doesFileExist)
@@ -48,11 +47,9 @@ completed = do
     (returned, emitted) <- F.run root (F.scenario [first, second])
     receipts <- evalEither returned
     let expected = concatMap F.calls [first, second]
-    map (Invocation.completedBinding . Resident.completion) receipts === map Call.binding expected
-    map (Invocation.completedBinding . Load.report . Resident.loaded) receipts === map Call.binding expected
-    map (Result.behaviorBits . Resident.report) receipts === replicate 4 [0xbf000000, 0xbe800000]
-    map Resident.session receipts === replicate 4 F.owner
-    map Resident.acknowledgement receipts === concatMap (replicate 2 . Bytes.init . Fixture.wire . pure . F.released) [first, second]
+    map Trajectory.binding receipts === map Call.binding expected
+    map (Invocation.completedBinding . Load.report . Trajectory.loaded) receipts === map Call.binding expected
+    map Trajectory.behaviorBits receipts === replicate 4 [0xbf000000, 0xbe800000]
     evalIO (length . lines <$> readFile (root </> "pids")) >>= (=== 1)
     assert (Fixture.wire (F.before second) `Bytes.isInfixOf` emitted)
 

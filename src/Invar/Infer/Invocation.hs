@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Infer.Invocation (Call, Permit, Error (..), prepare, arguments, input, batchInput, binding, authorize, authorizeBatch, permission, loadFact, observe) where
+module Invar.Infer.Invocation (Call, Permit, Error (..), prepare, arguments, input, batchInput, binding, plan, authorize, authorizeBatch, permission, loadFact, observe) where
 
 import Control.Monad (foldM, unless)
 import Data.Aeson (Object, eitherDecodeStrict, encode, (.:))
@@ -44,6 +44,9 @@ batchInput (Call planned bound program _ loading) = Lazy.toStrict (encode (Wire.
 
 binding :: Call -> V.Binding
 binding (Call _ bound _ _ _) = bound
+
+plan :: Call -> I.Plan
+plan (Call planned _ _ _ _) = planned
 
 observe :: Permit -> ByteString -> Either Error (V.Completion, R.Result)
 observe (Permit planned bound prefix consumed _ _) output = do

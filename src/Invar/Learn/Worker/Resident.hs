@@ -4,12 +4,13 @@
 module Invar.Learn.Worker.Resident (Options (..), Paths (..), Resident, Receipt, withResident, withBorrowed, run, report, plan, staged, loaded, acknowledgement) where
 
 import Control.Exception (bracket, mask_)
-import Control.Monad (unless, void)
-import Data.Aeson (encode, object, (.=))
+import Control.Monad (unless)
+import Data.Aeson (Value (..), encode, object, (.=))
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import Data.ByteString.Lazy qualified as Lazy
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
+import Invar.Infer.Framing qualified as InferFraming
 import Invar.Learn qualified as L
 import Invar.Learn.Framing qualified as Framing
 import Invar.Learn.Protocol qualified as P
@@ -18,6 +19,7 @@ import Invar.Learn.Worker.Internal qualified as W
 import Invar.Process qualified as Process
 import Invar.Process.Resident qualified as Transport
 import Invar.Resident qualified as Boundary
+import Invar.Resident.Owner qualified as Owner
 import Invar.Spec.Load qualified as Load
 import Invar.Transcript qualified as Transcript
 import Numeric.Natural (Natural)
@@ -40,15 +42,12 @@ withResident options action = bracket (newIORef (State Load.empty 0)) retireOwne
         arguments = [W.script selected, "--cache=" ++ W.cache selected, "--reference=" ++ W.reference selected, "--session=" ++ show (owner options)]
         launch = Process.Launch (W.executable selected) arguments [] (transcript options)
         identity = Boundary.Owner Boundary.Learning (owner options)
-        closing = Transport.Handshake (Boundary.close identity) (close identity state)
-    first failure <$> Transport.withResident launch (const closing) (\process -> first Process.Rejected <$> action (Resident process state identity))
+        ready _ = do
+            State registry _ <- readIORef state
+            pure (if null (Load.active registry) then Right () else Left (W.ProtocolFailure "Learner closes with active invocation loads"))
+    first failure <$> Transport.withResident launch identity ready (\process -> first Process.Rejected <$> action (Resident process state identity))
   where
     retireOwner state = modifyIORef' state (\(State registry groups) -> State (Load.close registry) groups)
-    close identity state encoded = do
-        State registry groups <- readIORef state
-        pure $ first W.ProtocolFailure $ do
-            unless (null (Load.active registry)) (Left "Learner closes with active invocation loads")
-            void (Boundary.closed identity groups encoded)
 
 withBorrowed :: Transport.Resident scope -> Boundary.Owner -> (Resident scope -> IO value) -> IO value
 withBorrowed process identity action = bracket (newIORef (State Load.empty 0)) retire $ \state -> do
@@ -78,7 +77,7 @@ authorize :: Transport.Resident owner -> (IORef State, IORef (Progress scope)) -
 authorize process (state, progress) call@(W.Call planned binding runtime _ hooks) encoded = mask_ $ do
     current <- readIORef progress
     State registry groups <- readIORef state
-    physical <- Transport.groups process
+    physical <- Transport.initial process
     case current of
         Awaiting -> case admit registry physical of
             Left problem -> pure (Left problem)
@@ -92,9 +91,9 @@ authorize process (state, progress) call@(W.Call planned binding runtime _ hooks
                         pure (Right (W.permission call))
         _ -> pure (Left (W.ProtocolFailure "Resident update already holds a consumption permit"))
   where
-    admit registry groups = do
+    admit registry initial = do
         request <- first W.Lowering (Wire.lower (L.emission planned))
-        first W.ProtocolFailure (Framing.readiness (groups == 0) request encoded)
+        first W.ProtocolFailure (Framing.readiness initial request encoded)
         first W.InvalidOutput (P.authorizeResident registry (binding, runtime) encoded)
 
 answer :: W.Call scope -> IORef (Progress scope) -> ByteString -> IO (Either W.Failure ByteString)
@@ -130,8 +129,8 @@ complete (identity, directory) progress encoded = do
         prepared <- first W.ProtocolFailure (Boundary.prepare identity [fact] encoded)
         pure (result, fact, prepared)
 
-release :: (IORef State, IORef (Progress scope)) -> (Paths, W.Call scope) -> ByteString -> IO (Either W.Failure (Transport.Handshake W.Failure))
-release (state, progress) (paths, W.Call planned _ _ _ _) _ = do
+release :: (IORef State, IORef (Progress scope)) -> (Paths, W.Call scope) -> ByteString -> IO (Either W.Failure (Transport.Handshake W.Failure Owner.Released))
+release (state, progress) (paths, W.Call planned binding _ _ _) produced = do
     current <- readIORef progress
     pure $ case current of
         Completed result fact prepared -> Right (Transport.Handshake (Boundary.request prepared) (acknowledge prepared result fact))
@@ -139,12 +138,17 @@ release (state, progress) (paths, W.Call planned _ _ _ _) _ = do
   where
     acknowledge prepared result fact encoded = mask_ $ do
         State registry groups <- readIORef state
-        case first W.ProtocolFailure (Boundary.retire prepared registry encoded) of
+        case first W.ProtocolFailure (retired prepared registry encoded) of
             Left problem -> pure (Left problem)
-            Right updated -> do
+            Right (updated, group) -> do
                 writeIORef state (State updated (groups + 1))
                 writeIORef progress (Released (Receipt planned result (output paths) fact encoded))
-                pure (Right ())
+                pure (Right group)
+    retired prepared registry encoded = do
+        updated <- Boundary.retire prepared registry encoded
+        frames <- InferFraming.decode produced
+        let loadedRecords = [InferFraming.fields frame | frame <- frames, InferFraming.stageName frame == Just (String "loaded_learner")]
+        pure (updated, Owner.Released (map InferFraming.raw frames) [binding] loadedRecords encoded)
 
 report :: Receipt scope -> P.Result
 report (Receipt _ result _ _ _) = result

@@ -1,18 +1,15 @@
-module Invar.Worker (Worker (..), Batch.Reference (..), Failure (..), Execution, report, completion, loaded, run, runBatch, runSession, runBatchedSession) where
+module Invar.Worker (Worker (..), Batch.Reference (..), Failure (..), run, runBatch, runSession, runBatchedSession, exchange, failure) where
 
-import Control.Exception (bracket, mask_)
-import Data.Bifunctor (first)
+import Control.Monad (foldM)
 import Data.ByteString (ByteString)
-import Data.Functor (void)
-import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Text qualified as Text
 import Data.Text.Encoding (encodeUtf8)
 import Invar.Infer.Batch qualified as Batch
 import Invar.Infer.Invocation qualified as I
-import Invar.Infer.Result qualified as R
+import Invar.Infer.Session qualified as Session
+import Invar.Infer.Trajectory (Trajectory)
 import Invar.Process qualified as Process
-import Invar.Spec.Invocation qualified as V
-import Invar.Spec.Load qualified as L
+import Invar.Resident.Owner qualified as Owner
 import Invar.Transcript qualified as Transcript
 import System.Exit (ExitCode)
 
@@ -28,62 +25,61 @@ data Worker = Worker
 data Failure = WorkerExit ExitCode | InvalidOutput I.Error | ProtocolFailure String
     deriving (Eq, Show)
 
-data Execution = Execution V.Completion R.Result L.Fact
+run :: Worker -> I.Call -> IO (Either Failure Trajectory)
+run worker call = do
+    let launch = Process.Launch (executable worker) (arguments worker ++ I.arguments call) (environment worker) Transcript.standard
+    returned <- drive Session.Single launch (const (encodeUtf8 (Text.pack (I.input call)))) (Session.Declaration [call] Nothing)
+    pure $ case returned of
+        Right [single] -> Right single
+        Right _ -> Left (ProtocolFailure "Expected one completed inference call")
+        Left problem -> Left problem
 
-data Pending = Pending I.Call (IORef (Maybe I.Permit))
-
-report :: Execution -> R.Result
-report (Execution _ result _) = result
-
-completion :: Execution -> V.Completion
-completion (Execution completed _ _) = completed
-
-loaded :: Execution -> L.Fact
-loaded (Execution _ _ fact) = fact
-
-run :: Worker -> I.Call -> IO (Either Failure Execution)
-run worker call = withRegistry worker $ \registry -> do
-    pending <- Pending call <$> newIORef Nothing
-    let inputs = arguments worker ++ I.arguments call
-        command = Process.Command (executable worker) inputs (environment worker) (encodeUtf8 (Text.pack (I.input call))) Transcript.standard
-    returned <- Process.run command (authorize registry pending)
-    case first failure returned of
-        Right output -> first InvalidOutput <$> observe pending output
-        Left problem -> pure (Left problem)
-
-runBatch :: Worker -> [I.Call] -> IO (Either Failure [Execution])
+runBatch :: Worker -> [I.Call] -> IO (Either Failure [Trajectory])
 runBatch worker = runSession worker Nothing Transcript.standard
 
-runSession :: Worker -> Maybe Batch.Reference -> Transcript.Transcript -> [I.Call] -> IO (Either Failure [Execution])
-runSession worker reference transcript calls = withRegistry worker $ \registry -> do
-    pending <- traverse (\call -> Pending call <$> newIORef Nothing) calls
-    let inputs = arguments worker ++ foldMap (\declared -> ["--reference=" ++ Batch.location declared, "--reference-digest=" ++ Batch.identity declared]) reference
-        launch = Process.Launch (executable worker) inputs (environment worker) transcript
-        exchange value@(Pending call _) = Process.Exchange (I.batchInput call) (authorize registry value) (fmap void . observe value) Nothing
-    returned <- Process.batch launch (map exchange pending)
-    case first failure returned of
-        Right outputs -> fmap (first InvalidOutput . sequence) (traverse (uncurry observe) (zip pending outputs))
-        Left problem -> pure (Left problem)
+runSession :: Worker -> Maybe Batch.Reference -> Transcript.Transcript -> [I.Call] -> IO (Either Failure [Trajectory])
+runSession _ _ _ [] = pure (Right [])
+runSession worker reference transcript calls = drive Session.Serial launch (\(Session.Request selected) -> foldMap I.batchInput selected) (Session.Declaration calls (fmap Batch.identity reference))
+  where
+    inputs = arguments worker ++ foldMap (\declared -> ["--reference=" ++ Batch.location declared, "--reference-digest=" ++ Batch.identity declared]) reference
+    launch = Process.Launch (executable worker) inputs (environment worker) transcript
 
-runBatchedSession :: Worker -> Maybe Batch.Reference -> Transcript.Transcript -> [I.Call] -> IO (Either Failure [Execution])
+runBatchedSession :: Worker -> Maybe Batch.Reference -> Transcript.Transcript -> [I.Call] -> IO (Either Failure [Trajectory])
 runBatchedSession _ _ _ [] = pure (Right [])
-runBatchedSession worker reference transcript calls = withRegistry worker $ \registry -> do
-    slot <- newIORef Nothing
-    let launch = Process.Launch (executable worker) (batchArguments worker) (environment worker) transcript
-        review output = do
-            accepted <- grant registry slot (\current -> Batch.authorize current calls output)
-            pure (Batch.permission <$> accepted)
-        finish output = do
-            permit <- readIORef slot
-            pure $ case permit of
-                Nothing -> Left (I.Protocol "Batch result has no accepted consumption permits")
-                Just accepted -> map (\(completed, result, fact) -> Execution completed result fact) <$> Batch.observe accepted output
-        exchange = Process.Exchange (Batch.input (adapter worker) reference calls) review (fmap void . finish) Nothing
-    returned <- Process.batch launch [exchange]
-    case first failure returned of
-        Right [output] -> first InvalidOutput <$> finish output
-        Right _ -> pure (Left (ProtocolFailure "Expected one finite batch response"))
-        Left problem -> pure (Left problem)
+runBatchedSession worker reference transcript calls = drive Session.Batched launch (\(Session.Request selected) -> Batch.input (adapter worker) reference selected) (Session.Declaration calls (fmap Batch.identity reference))
+  where
+    launch = Process.Launch (executable worker) (batchArguments worker) (environment worker) transcript
+
+drive :: Session.Protocol -> Process.Launch -> (Session.Request -> ByteString) -> Session.Declaration -> IO (Either Failure [Trajectory])
+drive protocol launch encode declaration = Process.withChannel launch $ \channel -> do
+    returned <- exchange channel encode (Session.start protocol) (Session.Dispatched declaration)
+    pure (either (Left . failure) (\(_, trajectories, _) -> Right trajectories) returned)
+
+exchange :: Process.Channel -> (Session.Request -> ByteString) -> Session.Session -> Session.Input -> IO (Either Session.Error (Session.Session, [Trajectory], Maybe Owner.State))
+exchange channel encode = step Nothing
+  where
+    step owned session supplied = case Session.step session supplied of
+        Left problem -> case supplied of
+            Session.Ended _ -> pure (Left problem)
+            _ -> Process.halt channel >> pure (Left problem)
+        Right (following, products) -> do
+            (admitted, held) <- foldM perform (Nothing, owned) products
+            case admitted of
+                Just trajectories -> pure (Right (following, trajectories, held))
+                Nothing -> do
+                    received <- Process.receive channel
+                    case received of
+                        Process.Line value -> step held following (Session.Line value)
+                        Process.Fragment value -> step held following (Session.Fragment value)
+                        Process.Exhausted -> do
+                            status <- Process.exited channel
+                            step held following (Session.Ended (Transcript.Exited status Transcript.Complete))
+    perform (found, held) produced = case produced of
+        Session.SendRequest request -> Process.send channel (encode request) >> pure (found, held)
+        Session.Send value -> Process.send channel value >> pure (found, held)
+        Session.Close -> Process.shut channel >> pure (found, held)
+        Session.Admitted trajectories -> pure (Just trajectories, held)
+        Session.Owned current -> pure (found, Just current)
 
 arguments :: Worker -> [String]
 arguments worker = [script worker, "--cache=" ++ cache worker, "--adapter=" ++ adapter worker] ++ maybe [] (\path -> ["--config=" ++ path]) (configuration worker)
@@ -91,37 +87,7 @@ arguments worker = [script worker, "--cache=" ++ cache worker, "--adapter=" ++ a
 batchArguments :: Worker -> [String]
 batchArguments worker = [script worker, "--cache=" ++ cache worker] ++ maybe [] (\path -> ["--config=" ++ path]) (configuration worker)
 
-withRegistry :: Worker -> (IORef L.Registry -> IO value) -> IO value
-withRegistry _ = bracket (newIORef L.empty) (`modifyIORef'` L.close)
-
-authorize :: IORef L.Registry -> Pending -> ByteString -> IO (Either I.Error ByteString)
-authorize owner (Pending call slot) output = do
-    accepted <- grant owner slot (\registry -> I.authorize registry call output)
-    pure (I.permission <$> accepted)
-
-grant :: IORef L.Registry -> IORef (Maybe permit) -> (L.Registry -> Either I.Error (L.Registry, permit)) -> IO (Either I.Error permit)
-grant owner slot admit = mask_ $ do
-    previous <- readIORef slot
-    registry <- readIORef owner
-    case previous of
-        Just _ -> pure (Left (I.Protocol "Invocation already holds a consumption permit"))
-        Nothing -> case admit registry of
-            Left problem -> pure (Left problem)
-            Right (updated, permit) -> do
-                writeIORef owner updated
-                writeIORef slot (Just permit)
-                pure (Right permit)
-
-observe :: Pending -> ByteString -> IO (Either I.Error Execution)
-observe (Pending _ slot) output = do
-    accepted <- readIORef slot
-    pure $ case accepted of
-        Nothing -> Left (I.Protocol "Inference result has no accepted load and consumption permit")
-        Just permit -> completed permit <$> I.observe permit output
-  where
-    completed permit (result, value) = Execution result value (I.loadFact permit)
-
-failure :: Process.Failure I.Error -> Failure
-failure (Process.Exit status) = WorkerExit status
-failure (Process.Rejected problem) = InvalidOutput problem
-failure (Process.Protocol problem) = ProtocolFailure problem
+failure :: Session.Error -> Failure
+failure (Session.Exited status) = WorkerExit status
+failure (Session.Invalid problem) = InvalidOutput problem
+failure (Session.Protocol problem) = ProtocolFailure problem

@@ -5,13 +5,14 @@ import Control.Monad (join)
 import Data.IORef (atomicModifyIORef', modifyIORef', newIORef)
 import Invar.Infer.Batch qualified as Batch
 import Invar.Infer.Invocation qualified as Call
+import Invar.Infer.Trajectory (Trajectory)
 import Invar.Transcript qualified as Transcript
 import Invar.Worker qualified as Worker
 import Invar.Worker.Resident qualified as Resident
 import Numeric.Natural (Natural)
 
 type Configuration = (Worker.Worker, [[(String, String)]])
-type Session = FilePath -> Maybe Batch.Reference -> [Call.Call] -> IO (Either Worker.Failure [Resident.Receipt])
+type Session = FilePath -> Maybe Batch.Reference -> [Call.Call] -> IO (Either Worker.Failure [Trajectory])
 
 data Pool = Pool Configuration [Session] (IO ())
 

@@ -2,7 +2,7 @@
 
 module Sessions (sessions) where
 
-import BatchCalls (exchange, prepared, quote)
+import BatchCalls (prepared, quote, session)
 import Calls qualified as Fixture
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
@@ -16,6 +16,7 @@ import Invar.Cohort qualified as C
 import Invar.Infer qualified as I
 import Invar.Infer.Invocation qualified as V
 import Invar.Infer.Result qualified as Result
+import Invar.Infer.Trajectory qualified as Trajectory
 import Invar.Reward qualified as Reward
 import Invar.Rollout qualified as R
 import Invar.Spec.Invocation qualified as B
@@ -69,7 +70,7 @@ script root calls count =
     unlines (opening ++ branches ++ ["*) exit 31;;", "esac"])
   where
     opening = ["printf '%s\\n' launched >> " ++ quote (root </> "launched"), "case \"${INVAR_TEST_SESSION:-single}\" in"]
-    branches = [tag slot ++ ") " ++ concatMap (exchange root) chosen ++ "exit 0;;" | (slot, chosen) <- zip [0 :: Int ..] (grouped calls (assignment count))]
+    branches = [tag slot ++ ") " ++ session root chosen ++ "exit 0;;" | (slot, chosen) <- zip [0 :: Int ..] (grouped calls (assignment count))]
     tag slot = if count == 1 then "single" else show slot
     grouped remaining (chosen : rest) = let (here, later) = splitAt (length chosen) remaining in here : grouped later rest
     grouped _ [] = []
@@ -153,7 +154,7 @@ observed = do
         chosen <- options root count
         log' <- evalIO (newIORef [])
         let push report = atomicModifyIORef' log' (\reports -> (reports ++ [report], ()))
-            observer = R.Observer (\slot requests -> mapM_ (\(index, binding) -> push (Dispatched slot index binding)) requests) (\index binding result -> push (Checked index binding (map fromIntegral (Result.behaviorBits result))))
+            observer = R.Observer (\slot requests -> mapM_ (\(index, binding) -> push (Dispatched slot index binding)) requests) (\index admitted -> push (Checked index (Trajectory.binding admitted) (map fromIntegral (Trajectory.behaviorBits admitted))))
         batch <- evalIO (R.withDriver (\driver -> fmap project <$> R.runObserved driver observer chosen)) >>= evalEither
         reports <- evalIO (readIORef log')
         let dispatched = [(index, (slot, binding)) | Dispatched slot index binding <- reports]

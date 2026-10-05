@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Process.Internal (Launch (..), Exchange (..), Failure (..), Session (..), Pipes, withLaunch, send, line, next, exited, response, reject, finish, stage) where
+module Invar.Process.Internal (Launch (..), Exchange (..), Failure (..), Session (..), Pipes, Received (..), withLaunch, send, shut, line, next, receive, exited, halt, response, reject, finish, stage) where
 
 import Control.Exception (catch, finally, mask_, onException, throwIO, tryJust)
 import Control.Monad (guard, unless)
@@ -21,6 +21,8 @@ import System.Process
 data Pipes = Pipes Handle Handle ProcessHandle Transcript (IORef Reading)
 
 data Reading = Reading {pending :: [ByteString], ended :: Bool, stopped :: Bool, broken :: Bool}
+
+data Received = Line ByteString | Fragment ByteString | Exhausted
 
 data Launch = Launch {program :: FilePath, launchArguments :: [String], overlay :: [(String, String)], transcript :: Transcript}
 data Failure problem = Exit ExitCode | Rejected problem | Protocol String
@@ -71,22 +73,32 @@ line session = do
 
 next :: Session problem -> IO (Maybe ByteString)
 next session = do
-    let Pipes _ reader _ recorded state = pipes session
+    received <- receive (pipes session)
+    pure $ case received of
+        Line value -> Just value
+        Fragment value -> Just value
+        Exhausted -> Nothing
+
+receive :: Pipes -> IO Received
+receive handles@(Pipes _ reader _ recorded state) = do
     held <- pending <$> readIORef state
     case held of
         newest : older | Just position <- Bytes.elemIndex '\n' newest -> do
             let received = Bytes.concat (reverse (Bytes.take position newest : older))
                 rest = Bytes.drop (position + 1) newest
             settle state (record recorded received) (\current -> current {pending = [rest | not (Bytes.null rest)]})
-            pure (Just received)
+            pure (Line received)
         _ -> do
             count <- mask_ (Bytes.hGetSome reader 65536 >>= kept state)
             if count == 0
                 then do
                     let received = Bytes.concat (reverse held)
                     settle state (unless (Bytes.null received) (partial recorded received)) (\current -> current {pending = [], ended = True})
-                    pure (if Bytes.null received then Nothing else Just received)
-                else next session
+                    pure (if Bytes.null received then Exhausted else Fragment received)
+                else receive handles
+
+shut :: Pipes -> IO ()
+shut (Pipes writer _ _ _ _) = vanished (hClose writer)
 
 kept :: IORef Reading -> ByteString -> IO Int
 kept state chunk = do
@@ -141,13 +153,14 @@ permitResponse session (exchange, observed) output = do
         Right allowed -> send (pipes session) allowed >> response session exchange (observed, True)
 
 reject :: Session problem -> Failure problem -> IO (Either (Failure problem) value)
-reject session problem = do
-    let handles@(Pipes _ _ child _ state) = pipes session
+reject session problem = halt (pipes session) >> pure (Left problem)
+
+halt :: Pipes -> IO ()
+halt handles@(Pipes _ _ child _ state) = do
     modifyIORef' state (\current -> current {stopped = True})
     terminateProcess child
     _ <- waitForProcess child
     drain handles
-    pure (Left problem)
 
 drain :: Pipes -> IO ()
 drain (Pipes _ reader _ recorded state) = do

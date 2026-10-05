@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Resident (Owner (..), Role (..), Release, format, ownerValue, prepare, request, retire, released, observeRelease, close, closed) where
+module Invar.Resident (Owner (..), Role (..), Release, format, ownerValue, prepare, request, retire, released, observeRelease, close, closed, measured) where
 
 import Control.Monad (foldM, unless, void)
 import Crypto.Hash.SHA256 qualified as SHA256
@@ -92,8 +92,13 @@ acknowledgement stage expected encoded = do
             Object expectedFields -> Object (Fields.insert "stage" (String stage) (Fields.delete "action" expectedFields))
             _ -> expected
     unless (actual == target) (Left "Resident acknowledgement differs from its owner or exact completed inventory")
-    measured <- encodeUtf8 <$> parseEither (.: "measurement") fields
-    frames <- Framing.decode measured
+    measured stage encoded
+
+measured :: Text -> ByteString -> Either String Duration.Duration
+measured stage encoded = do
+    fields <- Json.decode encoded >>= parseEither (withObject "resident acknowledgement" pure)
+    operation <- encodeUtf8 <$> parseEither (.: "measurement") fields
+    frames <- Framing.decode operation
     case frames of
         [Framing.Frame raw values] -> do
             unless (Fields.lookup "stage" values == Just (String stage)) (Left "Resident acknowledgement has a different measured operation")

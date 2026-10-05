@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module BatchCalls (batchCalls, prepared, exchange, quote) where
+module BatchCalls (batchCalls, prepared, exchange, session, timer, quote) where
 
 import Calls qualified as Fixture
 import Control.Monad (forM_)
@@ -9,6 +9,8 @@ import Data.ByteString.Char8 qualified as Bytes
 import Hedgehog
 import Invar.Infer qualified as I
 import Invar.Infer.Invocation qualified as C
+import Invar.Infer.Trajectory (Trajectory)
+import Invar.Infer.Trajectory qualified as Trajectory
 import Invar.Spec.Invocation qualified as V
 import Invar.Worker qualified as W
 import Numeric.Natural (Natural)
@@ -50,30 +52,38 @@ prepared planned events index previous = do
 quote :: String -> String
 quote text = "'" ++ concatMap (\character -> if character == '\'' then "'\\''" else [character]) text ++ "'"
 
-exchange :: FilePath -> (C.Call, [Value]) -> String
-exchange root (call, events) =
+exchange :: FilePath -> Bool -> (C.Call, [Value]) -> String
+exchange root initial (call, events) =
     unlines
         [ "IFS= read -r request || exit 21"
         , "printf '%s\\n' received >> " ++ quote (root </> "received")
         , "test \"$request\" = " ++ quote (Bytes.unpack (C.batchInput call)) ++ " || exit 22"
-        , emit (Fixture.reviewPrefix events)
+        , emit ([timer "load" | initial] ++ Fixture.reviewPrefix events)
         , "IFS= read -r permission || exit 23"
         , "test \"$permission\" = " ++ quote (Bytes.unpack (Fixture.permissionInput call)) ++ " || exit 24"
-        , emit (drop (length (Fixture.reviewPrefix events)) events)
+        , emit (measured (drop (length (Fixture.reviewPrefix events)) events))
         ]
   where
     emit [] = "exit 0"
     emit values = "printf '%s\\n' " ++ unwords (map (quote . Bytes.unpack) (Bytes.lines (Fixture.wire values)))
+    measured [] = []
+    measured values = timer "inference" : values
 
-run :: [(C.Call, [Value])] -> String -> PropertyT IO (Either W.Failure [W.Execution], Int)
+timer :: String -> Value
+timer stage = object ["stage" .= stage, "cpu_seconds" .= Number 0.25]
+
+session :: FilePath -> [(C.Call, [Value])] -> String
+session root requests = concat (zipWith (exchange root) (True : repeat False) requests)
+
+run :: [(C.Call, [Value])] -> String -> PropertyT IO (Either W.Failure [Trajectory], Int)
 run = runWith Nothing
 
-runWith :: Maybe FilePath -> [(C.Call, [Value])] -> String -> PropertyT IO (Either W.Failure [W.Execution], Int)
+runWith :: Maybe FilePath -> [(C.Call, [Value])] -> String -> PropertyT IO (Either W.Failure [Trajectory], Int)
 runWith configuration requests ending = do
     root <- workspace
     let script = root </> "batch.sh"
         configuredArgument = maybe "" (\path -> "test \"$3\" = " ++ quote ("--config=" ++ path) ++ " || exit 20\n") configuration
-        body = configuredArgument ++ "printf '%s\\n' launched >> " ++ quote (root </> "launched") ++ "\n" ++ concatMap (exchange root) requests ++ ending
+        body = configuredArgument ++ "printf '%s\\n' launched >> " ++ quote (root </> "launched") ++ "\n" ++ session root requests ++ ending
     evalIO (writeFile script body)
     returned <- evalIO (W.runBatch (W.Worker "/bin/sh" script root "unused" [] configuration) (map fst requests))
     launches <- evalIO (readFile (root </> "launched"))
@@ -95,7 +105,7 @@ completed = do
     (outcome, count) <- run requests "IFS= read -r extra && exit 25\nexit 0\n"
     values <- evalEither outcome
     count === length requests
-    map (V.completedBinding . W.completion) values === [V.Binding (V.CallId index) (V.AttemptId index) (V.Instance index) | index <- [0 .. 2]]
+    map Trajectory.binding values === [V.Binding (V.CallId index) (V.AttemptId index) (V.Instance index) | index <- [0 .. 2]]
     forM_ requests $ \(call, _) -> do
         envelope <- evalEither (eitherDecodeStrict (C.batchInput call))
         case envelope of
@@ -140,10 +150,11 @@ lifetime = do
         first : (call, unloaded : events) : remaining -> do
             let wrongBinding = Fixture.change "binding" (object ["call" .= Number 99, "attempt" .= Number 99, "instance" .= Number 99]) unloaded
                 wrongProgram = Fixture.change "program" (String "wrong") unloaded
-            forM_ [events, unloaded : unloaded : events, wrongBinding : events, wrongProgram : events] $ \changed -> do
+            forM_ [(events, False), (unloaded : unloaded : events, False), (wrongBinding : events, True), (wrongProgram : events, True)] $ \(changed, associated) -> do
                 (outcome, count) <- run (first : (call, changed) : remaining) "exit 0\n"
                 count === 2
-                case outcome of
-                    Left (W.InvalidOutput _) -> success
+                case (associated, outcome) of
+                    (True, Left (W.InvalidOutput _)) -> success
+                    (False, Left (W.ProtocolFailure _)) -> success
                     _ -> failure
         _ -> failure

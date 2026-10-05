@@ -1,12 +1,17 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Process (Command (..), Launch (..), Exchange (..), Failure (..), run, conversation, batch) where
+module Invar.Process (Command (..), Launch (..), Exchange (..), Failure (..), Channel, Received (..), run, conversation, batch, withChannel, send, shut, receive, exited, halt) where
 
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as Bytes
-import Invar.Process.Internal (Exchange (..), Failure (..), Launch (..), Pipes, Session (..), exited, finish, next, reject, response, send, stage, withLaunch)
+import Invar.Process.Internal (Exchange (..), Failure (..), Launch (..), Pipes, Received (..), Session (..), exited, finish, halt, next, receive, reject, response, send, shut, stage, withLaunch)
 import Invar.Transcript (Transcript)
 import System.Exit (ExitCode (..))
+
+type Channel = Pipes
+
+withChannel :: Launch -> (Channel -> IO value) -> IO value
+withChannel = withLaunch
 
 data Command = Command {executable :: FilePath, arguments :: [String], environment :: [(String, String)], input :: ByteString, output :: Transcript}
 
@@ -39,10 +44,10 @@ consume context@(session, _) collected granted = do
     received <- next session
     case received of
         Nothing -> complete (pipes session) collected granted
-        Just value -> receive context (collected, granted) value
+        Just value -> handled context (collected, granted) value
 
-receive :: (Session problem, Maybe (ByteString -> IO (Either problem ByteString))) -> ([ByteString], Bool) -> ByteString -> IO (Either (Failure problem) ByteString)
-receive context@(session, replying) (collected, granted) line = do
+handled :: (Session problem, Maybe (ByteString -> IO (Either problem ByteString))) -> ([ByteString], Bool) -> ByteString -> IO (Either (Failure problem) ByteString)
+handled context@(session, replying) (collected, granted) line = do
     let observed = line : collected
     case stage line of
         Left problem -> reject session (Protocol problem)
