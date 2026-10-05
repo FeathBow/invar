@@ -20,7 +20,7 @@ import System.Process
 
 data Pipes = Pipes Handle Handle ProcessHandle Transcript (IORef Reading)
 
-data Reading = Reading {pending :: [ByteString], ended :: Bool, stopped :: Bool, broken :: Bool}
+data Reading = Reading {pending :: [ByteString], ended :: Bool, stopped :: Bool, broken :: Bool, reaped :: Bool}
 
 data Received = Line ByteString | Fragment ByteString | Exhausted
 
@@ -42,7 +42,7 @@ withLaunch launch action = do
             writeIORef outcome (Just (if stopped current then Stopped read' else maybe (Stopped read') (`Exited` read') code))
         run = withCreateProcess configured $ \incoming outgoing _ child -> case (incoming, outgoing) of
             (Just writer, Just reader) -> do
-                state <- newIORef (Reading [] False False False)
+                state <- newIORef (Reading [] False False False False)
                 (hSetBinaryMode writer True >> hSetBinaryMode reader True >> action (Pipes writer reader child (transcript launch) state)) `finally` observed child state
             _ -> ioError (userError "Worker protocol pipes were not created")
         report = readIORef outcome >>= finished (transcript launch) . fromMaybe (Unlaunched "The worker process could not be started")
@@ -64,20 +64,21 @@ line :: Session problem -> IO (Either (Failure problem) ByteString)
 line session = do
     received <- next session
     case received of
-        Nothing -> do
+        Right Nothing -> do
             status <- exited (pipes session)
             pure $ case status of
                 ExitSuccess -> Left (Protocol "Worker exited before a complete response")
                 _ -> Left (Exit status)
-        Just value -> pure (Right value)
+        Right (Just value) -> pure (Right value)
+        Left problem -> pure (Left problem)
 
-next :: Session problem -> IO (Maybe ByteString)
+next :: Session problem -> IO (Either (Failure problem) (Maybe ByteString))
 next session = do
     received <- receive (pipes session)
-    pure $ case received of
-        Line value -> Just value
-        Fragment value -> Just value
-        Exhausted -> Nothing
+    case received of
+        Line value -> pure (Right (Just value))
+        Fragment _ -> reject session (Protocol "Worker output ends with an incomplete record")
+        Exhausted -> pure (Right Nothing)
 
 receive :: Pipes -> IO Received
 receive handles@(Pipes _ reader _ recorded state) = do
@@ -112,7 +113,10 @@ settle state write change = mask_ $ do
     modifyIORef' state change
 
 exited :: Pipes -> IO ExitCode
-exited (Pipes _ _ child _ _) = waitForProcess child
+exited (Pipes _ _ child _ state) = do
+    status <- waitForProcess child
+    modifyIORef' state (\current -> current {reaped = True})
+    pure status
 
 response :: Session problem -> Exchange problem -> ([ByteString], Bool) -> IO (Either (Failure problem) ByteString)
 response session exchange state = do
@@ -157,10 +161,12 @@ reject session problem = halt (pipes session) >> pure (Left problem)
 
 halt :: Pipes -> IO ()
 halt handles@(Pipes _ _ child _ state) = do
-    modifyIORef' state (\current -> current {stopped = True})
-    terminateProcess child
-    _ <- waitForProcess child
-    drain handles
+    current <- readIORef state
+    unless (reaped current) $ do
+        modifyIORef' state (\reading -> reading {stopped = True})
+        terminateProcess child
+        _ <- waitForProcess child
+        drain handles
 
 drain :: Pipes -> IO ()
 drain (Pipes _ reader _ recorded state) = do
@@ -192,14 +198,14 @@ remainder = 1048576
 
 finish :: Session problem -> IO (Either (Failure problem) ())
 finish session = do
-    let Pipes writer reader child _ state = pipes session
+    let Pipes writer reader _ _ state = pipes session
     vanished (hClose writer)
     held <- pending <$> readIORef state
     exhausted <- if null held then hIsEOF reader else pure False
     if exhausted
         then do
             modifyIORef' state (\current -> current {ended = True})
-            status <- waitForProcess child
+            status <- exited (pipes session)
             pure $ case status of
                 ExitSuccess -> Right ()
                 _ -> Left (Exit status)

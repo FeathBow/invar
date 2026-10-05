@@ -19,6 +19,7 @@ import Hedgehog
 import Invar.Canonical qualified as Canonical
 import Invar.Infer qualified as I
 import Invar.Infer.Invocation qualified as C
+import Invar.Infer.Result qualified as R
 import Invar.Infer.Session qualified as Session
 import Invar.Infer.Trajectory qualified as Trajectory
 import Invar.Resident.Owner qualified as Owner
@@ -33,7 +34,7 @@ generation =
     Group
         "Generation admission machine"
         [ ("a serial session sends each request after the previous result, refuses a misplaced or widened load or unload record as it arrives, and admits nothing before a clean exit", once ordered)
-        , ("every serial result keeps the zero sign of its behavior values", once signed)
+        , ("every serial result keeps the zero sign of its behavior values, and its behavior doubles are read from the bits", once signed)
         , ("extra fields, untimed measurements, stray stages, output after the final result, an early or unclean exit and an unterminated record are refused", once refused)
         , ("a profile naming another model than the loaded one is refused in serial and batched sessions", once profiled)
         , ("reference scores are admitted only under the declared reference identity", once referenced)
@@ -113,9 +114,12 @@ signed = do
             | "\"result\"" `Bytes.isInfixOf` raw = Session.Line (substitute "[-0.5,-0.25]" text (substitute "[3204448256,3196059648]" ("[" <> word <> ",3196059648]") raw))
         replace _ _ supplied = supplied
         admitted text word = feed (Session.start Session.Serial) (Session.Dispatched (Session.Declaration [fst first] Nothing) : spelled text word)
-    forM_ [("[-0.0,-0.25]", "2147483648"), ("[0.0,-0.25]", "0")] $ \(text, word) -> do
+    forM_ [("[-0.0,-0.25]", "2147483648", True), ("[0.0,-0.25]", "0", False)] $ \(text, word, negative) -> do
         (_, produced) <- evalEither (admitted text word)
         map describe (drop 3 produced) === ["admitted [0]"]
+        forM_ [trajectory | Session.Admitted [trajectory] <- produced] $ \trajectory -> do
+            map isNegativeZero (Trajectory.behavior trajectory) === [negative, False]
+            map isNegativeZero (R.behavior (Trajectory.result trajectory)) === [negative, False]
     forM_ [("[0.0,-0.25]", "2147483648"), ("[-0.0,-0.25]", "0")] $ \(text, word) -> assert (isLeft (admitted text word))
 
 refused :: PropertyT IO ()

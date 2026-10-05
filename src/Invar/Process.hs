@@ -43,8 +43,9 @@ consume :: (Session problem, Maybe (ByteString -> IO (Either problem ByteString)
 consume context@(session, _) collected granted = do
     received <- next session
     case received of
-        Nothing -> complete (pipes session) collected granted
-        Just value -> handled context (collected, granted) value
+        Right Nothing -> complete (pipes session) collected granted
+        Right (Just value) -> handled context (collected, granted) value
+        Left problem -> pure (Left problem)
 
 handled :: (Session problem, Maybe (ByteString -> IO (Either problem ByteString))) -> ([ByteString], Bool) -> ByteString -> IO (Either (Failure problem) ByteString)
 handled context@(session, replying) (collected, granted) line = do

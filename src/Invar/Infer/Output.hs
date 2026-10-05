@@ -7,7 +7,7 @@ import Data.Aeson (Object, withObject, (.:), (.:?))
 import Data.Aeson.Types (Parser)
 import Data.ByteString (ByteString)
 import Data.Word (Word32)
-import GHC.Float (castDoubleToWord64, castWord32ToFloat, float2Double)
+import GHC.Float (castDoubleToWord64)
 import Invar.Float32 qualified as Float32
 import Invar.Json qualified as Json
 import Numeric.Natural (Natural)
@@ -45,7 +45,7 @@ validate limit body = do
     unless (all (\scored -> length (scores scored) == length (bits body) && all Float32.logProbability (scores scored)) (reference body)) (Left "Reference scores must be log probabilities of every response token")
   where
     validProbability value = not (isNaN value || isInfinite value) && value <= 0
-    corresponds value word = value == float2Double (castWord32ToFloat word)
+    corresponds value word = value == Float32.double word
 
 rawBehavior :: ByteString -> [Word32] -> Either String ()
 rawBehavior encoded bitWords = do

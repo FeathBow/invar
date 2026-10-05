@@ -10,6 +10,7 @@ import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as Bytes
 import Data.Word (Word32)
+import Invar.Float32 qualified as Float32
 import Invar.Infer qualified as I
 import Invar.Infer.Output qualified as Output
 import Invar.Infer.Wire qualified as Wire
@@ -115,7 +116,7 @@ tokens :: Result -> [Natural]
 tokens (Result reported) = Output.tokens (body reported)
 
 behavior :: Result -> [Double]
-behavior (Result reported) = Output.probabilities (body reported)
+behavior (Result reported) = map Float32.double (Output.bits (body reported))
 
 behaviorBits :: Result -> [Word32]
 behaviorBits (Result reported) = Output.bits (body reported)

@@ -33,6 +33,7 @@ import Data.Word (Word32)
 import GHC.Float (castDoubleToWord64)
 import Invar.Artifact qualified as Artifact
 import Invar.Canonical qualified as Canonical
+import Invar.Float32 qualified as Float32
 import Invar.Infer qualified as I
 import Invar.Infer.Output qualified as Output
 import Invar.Infer.Result qualified as R
@@ -80,7 +81,7 @@ behaviorBits :: Trajectory -> [Word32]
 behaviorBits = R.behaviorBits . result
 
 behavior :: Trajectory -> [Double]
-behavior = R.behavior . result
+behavior = map Float32.double . behaviorBits
 
 reference :: Trajectory -> Maybe Output.Scored
 reference = R.referenceScores . result

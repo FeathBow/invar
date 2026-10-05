@@ -59,9 +59,7 @@ exchange :: Process.Channel -> (Session.Request -> ByteString) -> Session.Sessio
 exchange channel encode = step Nothing
   where
     step owned session supplied = case Session.step session supplied of
-        Left problem -> case supplied of
-            Session.Ended _ -> pure (Left problem)
-            _ -> Process.halt channel >> pure (Left problem)
+        Left problem -> Process.halt channel >> pure (Left problem)
         Right (following, products) -> do
             (admitted, held) <- foldM perform (Nothing, owned) products
             case admitted of

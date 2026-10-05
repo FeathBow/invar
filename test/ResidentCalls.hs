@@ -2,6 +2,7 @@
 
 module ResidentCalls (residentCalls) where
 
+import BatchCalls qualified as Serial
 import Calls qualified as Fixture
 import Control.Monad (forM_, (>=>))
 import Data.Aeson (Value (..), object, toJSON, withObject, (.:), (.=))
@@ -23,6 +24,7 @@ import Invar.Worker qualified as Worker
 import ResidentFixture qualified as F
 import Store (workspace)
 import System.Directory (doesFileExist)
+import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
 
 residentCalls :: Group
@@ -34,6 +36,7 @@ residentCalls =
         , ("retired activation identities remain unavailable for replay", once replay)
         , ("initial load and subsequent activation observations remain distinct", once loading)
         , ("resident owner completion requires exact final close and child exit, and output after the close is recorded", once closing)
+        , ("a close acknowledgement without a final newline is refused, and a worker that exits before its release keeps its exit status", once ended)
         , ("a transcript write that fails ends the transcript: nothing more is written, the output is cut and the original error surfaces", once unwritten)
         ]
   where
@@ -92,6 +95,26 @@ closing = do
     (outcome, emitted) <- F.run root original {F.ending = "printf '%s\\n' trailing\nexit 0"}
     rejected outcome
     last (Bytes.lines emitted) === "trailing"
+
+ended :: PropertyT IO ()
+ended = do
+    root <- workspace
+    group <- F.prepare root 0 [0, 1]
+    let original = F.scenario [group]
+        bare = original {F.ending = "exit 0"}
+        acknowledgement = Serial.quote (Bytes.unpack (Bytes.init (Fixture.wire [F.closed original])))
+        cut = Text.unpack (Text.replace (Text.pack ("printf '%s\\n' " ++ acknowledgement)) (Text.pack ("printf '%s' " ++ acknowledgement)) (Text.pack (F.script root bare)))
+        early = Text.unpack (Text.replace "IFS= read -r release" "exit 7\nIFS= read -r release" (Text.pack (F.script root original)))
+    (refused, stopped) <- F.concluded root cut bare
+    case refused of
+        Left (Worker.ProtocolFailure _) -> success
+        _ -> failure
+    stopped === Just (Transcript.Stopped Transcript.Complete)
+    (exited, status) <- F.concluded root early original
+    case exited of
+        Left (Worker.WorkerExit (ExitFailure 7)) -> success
+        _ -> failure
+    status === Just (Transcript.Exited (ExitFailure 7) Transcript.Complete)
 
 without :: Text -> Value -> Value
 without key (Object fields) = Object (Fields.delete (Key.fromText key) fields)
