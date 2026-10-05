@@ -39,6 +39,7 @@ import Invar.Infer.Framing qualified as Framing
 import Invar.Infer.Model (Model (..))
 import Invar.Infer.Model qualified as Model
 import Invar.Infer.Result qualified as Result
+import Invar.Infer.Trajectory qualified as Trajectory
 import Invar.Infer.Wire qualified as Wire
 import Invar.Json qualified as Json
 import Invar.Resident.Inference qualified as Resident
@@ -223,7 +224,7 @@ cohortValue index selected batch = do
         let actual = Rollout.observation sample
             reward = Rollout.reward sample
         unless (reward == 0 || reward == 1) (Left "Expected the binary decimal-answer reward profile")
-        pure (Sample index (Rollout.name sample) (Rollout.group sample) (Infer.seed (Result.consumed actual)) (if reward == 0 then 0 else 1) (fromIntegral (length (Result.behaviorBits actual))) (Result.truncated actual) (Invocation.completedBinding (Rollout.completion sample)))
+        pure (Sample index (Rollout.name sample) (Rollout.group sample) (Infer.seed (Result.consumed actual)) (if reward == 0 then 0 else 1) (fromIntegral (length (Result.behaviorBits actual))) (Result.truncated actual) (Trajectory.binding (Rollout.trajectory sample)))
 
 describe :: Report -> Value
 describe report = object ["format" .= String "invar-evaluation-report-v1", "tasks_sha256" .= inputDigest report, "log_sha256" .= logDigest report, "policy" .= policy report, "model" .= Model.value (model report), "samples" .= map sampleValue (samples report)]

@@ -1,6 +1,6 @@
 {-# LANGUAGE RoleAnnotations #-}
 
-module Invar.Rollout (Driver, Mode (..), Options (..), Observer (..), Batch, Sample, Error (..), withDriver, withConfiguredDriver, withRecordedDriver, run, runObserved, silent, samples, delivered, name, group, observation, reward, scored, completion, loaded) where
+module Invar.Rollout (Driver, Mode (..), Options (..), Observer (..), Batch, Sample, Error (..), withDriver, withConfiguredDriver, withRecordedDriver, run, runObserved, silent, samples, delivered, name, group, observation, trajectory, reward, scored) where
 
 import Control.Concurrent (forkIOWithUnmask, killThread)
 import Control.Concurrent.MVar (newEmptyMVar, newMVar, putMVar, readMVar, withMVar)
@@ -12,13 +12,13 @@ import Invar.Cohort qualified as C
 import Invar.Infer.Batch qualified as Batch
 import Invar.Infer.Invocation qualified as I
 import Invar.Infer.Result qualified as R
+import Invar.Infer.Trajectory (Trajectory)
+import Invar.Infer.Trajectory qualified as Trajectory
 import Invar.Reward qualified as Reward
 import Invar.Rollout.Internal (Driver (..), reserve)
-import Invar.Rollout.Observation qualified as Observed
 import Invar.Rollout.Resident qualified as Resident
 import Invar.Schedule qualified as S
 import Invar.Spec.Invocation qualified as V
-import Invar.Spec.Load qualified as Load
 import Invar.Transcript qualified as Transcript
 import Invar.Worker qualified as W
 import Numeric.Natural (Natural)
@@ -27,15 +27,15 @@ data Mode = Serial | Batched | Resident | Shared deriving (Eq, Show)
 
 data Options = Options {worker :: W.Worker, mode :: Mode, sessions :: [[(String, String)]], definition :: C.Definition, order :: [Natural], delivery :: [Natural], reference :: Maybe Batch.Reference}
 
-data Observer = Observer {dispatched :: Natural -> [(Natural, V.Binding)] -> IO (), checked :: Natural -> V.Binding -> R.Result -> IO ()}
+data Observer = Observer {dispatched :: Natural -> [(Natural, V.Binding)] -> IO (), checked :: Natural -> Trajectory -> IO ()}
 
 silent :: Observer
-silent = Observer (\_ _ -> pure ()) (\_ _ _ -> pure ())
+silent = Observer (\_ _ -> pure ()) (\_ _ -> pure ())
 
 type role Batch nominal
 data Batch scope = Batch [Sample] [V.Binding]
 
-data Sample = Sample C.Task Observed.Observation Reward.Scored
+data Sample = Sample C.Task Trajectory Reward.Scored
 
 data Error = Declaration C.Error | Scheduling S.Error | Dispatch String | Preparation I.Error | Execution W.Failure | Admission C.Error
     deriving (Eq, Show)
@@ -88,7 +88,7 @@ collect driver@(Driver lock _ _ _) observer options cohort = case planning of
         selected <- first Scheduling (S.execute plan members)
         pure (plan, selected)
 
-execute :: Driver driver -> Observer -> Options -> (Natural, [(Natural, C.Member scope)]) -> IO (Either Error [(Natural, C.Observation scope, Observed.Observation)])
+execute :: Driver driver -> Observer -> Options -> (Natural, [(Natural, C.Member scope)]) -> IO (Either Error [(Natural, C.Observation scope, Trajectory)])
 execute driver@(Driver _ _ pool recorded) observer options (base, selected) = case prepared of
     Left problem -> pure (Left problem)
     Right (calls, workers) -> dispatch calls workers `finally` mapM_ Resident.flush pool
@@ -120,17 +120,17 @@ execute driver@(Driver _ _ pool recorded) observer options (base, selected) = ca
         dispatched observer slot [(index, I.binding call) | ((index, _), call) <- members]
         launch (map snd members)
     report finished = do
-        mapM_ (mapM_ (\(index, _, executed) -> checked observer index (V.completedBinding (Observed.completion executed)) (Observed.report executed))) finished
+        mapM_ (mapM_ (\(index, _, executed) -> checked observer index executed)) finished
         pure finished
 
-data Runner = Finite (Transcript.Transcript -> [I.Call] -> IO (Either W.Failure [Observed.Observation])) | Owned ([I.Call] -> IO (Either W.Failure [Observed.Observation]))
+data Runner = Finite (Transcript.Transcript -> [I.Call] -> IO (Either W.Failure [Trajectory])) | Owned ([I.Call] -> IO (Either W.Failure [Trajectory]))
 
 runners :: Driver scope -> Options -> Either Error [Runner]
 runners (Driver _ _ pool _) options = case (mode options, pool) of
     (selected, Just owned)
         | selected `elem` [Resident, Shared] ->
             if Resident.matches owned (worker options, sessions options)
-                then Right [Owned (fmap (fmap (map Observed.Acknowledged)) . launch (W.adapter (worker options)) (reference options)) | launch <- Resident.sessions owned]
+                then Right [Owned (launch (W.adapter (worker options)) (reference options)) | launch <- Resident.sessions owned]
                 else Left (Dispatch "Resident launch configuration differs from its owning driver")
     (Resident, Nothing) -> Left (Dispatch "Resident execution requires a configured owning driver")
     (Shared, Nothing) -> Left (Dispatch "Shared execution requires a joint inference and learning owner")
@@ -138,7 +138,7 @@ runners (Driver _ _ pool _) options = case (mode options, pool) of
     (Serial, Nothing) -> Right [finite (W.runSession, overlay) | overlay <- sessions options]
     (Batched, Nothing) -> Right [finite (W.runBatchedSession, overlay) | overlay <- sessions options]
   where
-    finite (launch, overlay) = Finite (\transcript calls -> fmap (map Observed.Terminated) <$> launch ((worker options) {W.environment = overlay}) (reference options) transcript calls)
+    finite (launch, overlay) = Finite (launch ((worker options) {W.environment = overlay}) (reference options))
 
 prepareCall :: Natural -> (Natural, C.Member scope) -> Either Error I.Call
 prepareCall base (index, member) =
@@ -146,7 +146,7 @@ prepareCall base (index, member) =
         bound = V.ordinal identity
      in first Preparation (I.prepare bound (C.planned member))
 
-finishSession :: [(Natural, C.Member scope)] -> Either W.Failure [Observed.Observation] -> Either Error [(Natural, C.Observation scope, Observed.Observation)]
+finishSession :: [(Natural, C.Member scope)] -> Either W.Failure [Trajectory] -> Either Error [(Natural, C.Observation scope, Trajectory)]
 finishSession selected returned = do
     completed <- first Execution returned
     if length completed == length selected
@@ -154,7 +154,7 @@ finishSession selected returned = do
         else Left (Execution (W.ProtocolFailure "Batch response count differs from selected requests"))
   where
     record ((index, member), completed) = do
-        observed <- first Admission (C.record member (Observed.report completed))
+        observed <- first Admission (C.record member (Trajectory.result completed))
         pure (index, observed, completed)
 
 partition :: Int -> [value] -> [[value]]
@@ -174,11 +174,11 @@ concurrently actions = mask $ \restore -> do
     attempt = try
     recall launched = uninterruptibleMask_ (mapM_ (killThread . fst) launched >> mapM_ (readMVar . snd) launched)
 
-finish :: C.Definition -> C.Cohort cohort -> [(Natural, C.Observation cohort, Observed.Observation)] -> Either Error (Batch scope)
+finish :: C.Definition -> C.Cohort cohort -> [(Natural, C.Observation cohort, Trajectory)] -> Either Error (Batch scope)
 finish definition cohort completed = do
     _ <- first Admission (C.admit cohort [observed | (_, observed, _) <- completed])
     let logical = zipWith sample (C.tasks definition) (sortOn (\(index, _, _) -> index) completed)
-        arrival = [V.completedBinding (Observed.completion executed) | (_, _, executed) <- completed]
+        arrival = [Trajectory.binding executed | (_, _, executed) <- completed]
     pure (Batch logical arrival)
   where
     sample task (_, observed, executed) = Sample task executed (C.scored observed)
@@ -196,7 +196,7 @@ group :: Sample -> String
 group (Sample task _ _) = C.group task
 
 observation :: Sample -> R.Result
-observation (Sample _ executed _) = Observed.report executed
+observation (Sample _ executed _) = Trajectory.result executed
 
 reward :: Sample -> Rational
 reward = Reward.value . scored
@@ -204,8 +204,5 @@ reward = Reward.value . scored
 scored :: Sample -> Reward.Scored
 scored (Sample _ _ evaluated) = evaluated
 
-completion :: Sample -> V.Completion
-completion (Sample _ executed _) = Observed.completion executed
-
-loaded :: Sample -> Load.Fact
-loaded (Sample _ executed _) = Observed.loaded executed
+trajectory :: Sample -> Trajectory
+trajectory (Sample _ executed _) = executed

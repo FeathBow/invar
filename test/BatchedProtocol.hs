@@ -17,7 +17,8 @@ import Hedgehog
 import Invar.Cohort qualified as Cohort
 import Invar.Infer qualified as Infer
 import Invar.Infer.Invocation qualified as Call
-import Invar.Infer.Result qualified as Result
+import Invar.Infer.Trajectory (Trajectory)
+import Invar.Infer.Trajectory qualified as Trajectory
 import Invar.Reward qualified as Reward
 import Invar.Rollout qualified as Rollout
 import Invar.Spec.Invocation qualified as Invocation
@@ -97,7 +98,7 @@ script root calls (before, after, ending) =
 clean :: String
 clean = "IFS= read -r extra && exit 25\nexit 0"
 
-run :: [(Call.Call, [Value])] -> ([Value], [Value], String) -> PropertyT IO (Either Worker.Failure [Worker.Execution], Bool, (ByteString, Maybe Transcript.Outcome))
+run :: [(Call.Call, [Value])] -> ([Value], [Value], String) -> PropertyT IO (Either Worker.Failure [Trajectory], Bool, (ByteString, Maybe Transcript.Outcome))
 run requests observations = do
     root <- workspace
     let path = root </> "finite.sh"
@@ -122,10 +123,10 @@ completed = do
     emitted === Fixture.wire (prefix requests ++ suffix requests)
     closing === Just (Transcript.Exited ExitSuccess Transcript.Complete)
     values <- evalEither outcome
-    map (Invocation.completedBinding . Worker.completion) values === map (Call.binding . fst) requests
-    forM_ (zip values requests) $ \(executed, (_, events)) -> do
-        Invocation.completedOutput (Worker.completion executed) === Lazy.toStrict (encode (last events))
-        Result.behaviorBits (Worker.report executed) === [0xbf000000, 0xbe800000]
+    map Trajectory.binding values === map (Call.binding . fst) requests
+    forM_ values $ \executed -> do
+        Trajectory.text executed === "#### 12"
+        Trajectory.behaviorBits executed === [0xbf000000, 0xbe800000]
 
 readiness :: PropertyT IO ()
 readiness = do
@@ -174,7 +175,7 @@ zeroSign = do
         if negative
             then do
                 values <- evalEither outcome
-                map (Result.behaviorBits . Worker.report) values === [[0x80000000, 0xbe800000]]
+                map Trajectory.behaviorBits values === [[0x80000000, 0xbe800000]]
             else rejected outcome
 terminal :: PropertyT IO ()
 terminal = do
@@ -199,9 +200,9 @@ terminal = do
     cut === Just (Transcript.Stopped Transcript.Complete)
     let result = Lazy.toStrict (encode (frame "result" (map (Fixture.wire . pure . last . snd) requests)))
     (bare, _, (kept, whole)) <- run requests (prefix requests, [duration "inference"], "printf '%s' " ++ Serial.quote (Bytes.unpack result) ++ "\nexit 0")
-    _ <- evalEither bare
+    rejected bare
     kept === Fixture.wire (prefix requests ++ [duration "inference"]) <> result
-    whole === Just (Transcript.Exited ExitSuccess Transcript.Complete)
+    whole === Just (Transcript.Stopped Transcript.Complete)
     (undecoded, _, (raw, binary)) <- run requests (prefix requests, suffix requests, "IFS= read -r extra\nprintf '\\377\\376tail'\nexit 0")
     rejected undecoded
     raw === expected <> Bytes.pack "\xff\xfe" <> "tail"

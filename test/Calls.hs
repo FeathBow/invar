@@ -53,7 +53,7 @@ setup = do
     let program = field "program" envelope
         loading = field "load" envelope
         image = I.image request
-        loaded = object ["stage" .= String "loaded_adapter", "binding" .= binding, "load" .= loading, "image" .= object ["artifact" .= Bytes.unpack (L.artifact image), "profile" .= Bytes.unpack (L.profile image)], "requested" .= identity, "consumed" .= identity, "tokenizer" .= replicate 64 'c', "base" .= replicate 64 'e', "assembly" .= replicate 64 'f']
+        loaded = object ["stage" .= String "loaded_adapter", "binding" .= binding, "load" .= loading, "image" .= object ["artifact" .= Bytes.unpack (L.artifact image), "profile" .= Bytes.unpack (L.profile image)], "requested" .= identity, "consumed" .= identity, "tokenizer" .= replicate 64 'c', "base" .= replicate 64 'e', "assembly" .= replicate 64 'f', "model" .= String "test-model", "revision" .= String "test-revision"]
         consumption = object ["stage" .= String "consumed", "binding" .= binding, "program" .= program, "load" .= loading, "adapter" .= identity, "tokenizer" .= replicate 64 'c', "base" .= replicate 64 'e', "assembly" .= replicate 64 'f', "request" .= requestValue]
         result = object ["stage" .= String "result", "binding" .= binding, "adapter" .= identity, "tokenizer" .= replicate 64 'c', "base" .= replicate 64 'e', "assembly" .= replicate 64 'f', "request" .= requestValue, "tokens" .= [1, 2, 3 :: Int], "prompt_length" .= Number 1, "behavior" .= [-0.5, -0.25 :: Double], "behavior_bits" .= [0xbf000000, 0xbe800000 :: Word32], "text" .= String "#### 12", "truncated" .= True]
     field "binding" envelope === binding
@@ -177,7 +177,7 @@ handshake = do
         let script = root </> "handshake.sh"
             marker = root </> "approved"
             configuration = root </> "native config.json"
-            body = unlines ["test \"$3\" = " ++ quote ("--config=" ++ configuration) ++ " || exit 20", "IFS= read -r invocation || exit 21", "printf '%s\\n' " ++ unwords (map (quote . Bytes.unpack) (Bytes.lines (wire reported))), "IFS= read -r permission || exit 22", "test \"$permission\" = " ++ quote (Bytes.unpack (permissionInput call)) ++ " || exit 23", "printf '%s' \"$permission\" > " ++ quote marker, "exit 7"]
+            body = unlines ["test \"$3\" = " ++ quote ("--config=" ++ configuration) ++ " || exit 20", "IFS= read -r invocation || exit 21", "printf '%s\\n' " ++ unwords (map (quote . Bytes.unpack) (Bytes.lines (wire (object ["stage" .= String "load", "cpu_seconds" .= Number 0.25] : reported)))), "IFS= read -r permission || exit 22", "test \"$permission\" = " ++ quote (Bytes.unpack (permissionInput call)) ++ " || exit 23", "printf '%s' \"$permission\" > " ++ quote marker, "exit 7"]
         evalIO (writeFile script body)
         outcome <- evalIO (W.run (W.Worker "/bin/sh" script root root [] (Just configuration)) call)
         case (valid, outcome) of

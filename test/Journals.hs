@@ -34,7 +34,6 @@ journals =
     Group
         "Durable run journal"
         [ ("a journal starts with its declaration, is created once, keeps appended entries in order and refuses entries once closed", withTests 1 (property ordered))
-        , ("a stored file holds exactly its contents and is never replaced", withTests 1 (property stored))
         , ("a resumed journal drops an unterminated final line before appending and needs a complete declaration", withTests 1 (property resumed))
         , ("resuming a run keeps the caller's working directory when it refuses or fails", withTests 1 (property directories))
         , ("only an unterminated final line is dropped; any other malformed line is refused", withTests 1 (property damaged))
@@ -64,18 +63,6 @@ ordered = do
     encoded <- evalIO (Bytes.readFile path)
     decoded <- evalEither (Journal.entries encoded)
     map Object decoded === declaration : map entry [0 .. 4]
-
-stored :: PropertyT IO ()
-stored = do
-    root <- workspace
-    let path = root </> "request0.json"
-        contents = Bytes.concat (replicate 4096 "{\"result\":true}")
-    evalIO (Journal.store path contents)
-    again <- evalIO (tryIOError (Journal.store path "{}"))
-    case again of
-        Left problem -> assert (isAlreadyExistsError problem)
-        Right () -> annotate "a stored file was replaced" >> failure
-    evalIO (Bytes.readFile path) >>= (=== contents)
 
 resumed :: PropertyT IO ()
 resumed = do

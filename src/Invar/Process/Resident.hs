@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RoleAnnotations #-}
 
-module Invar.Process.Resident (Resident, Handshake (..), Transaction (..), withResident, exchange, groups) where
+module Invar.Process.Resident (Resident, Handshake (..), Transaction (..), withResident, exchange, hosted, initial) where
 
 import Control.Concurrent.MVar (MVar, newMVar, withMVar)
 import Control.Exception (mask, onException)
@@ -9,26 +9,26 @@ import Data.ByteString (ByteString)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.Kind (Type)
 import Invar.Process.Internal qualified as Process
-import Numeric.Natural (Natural)
+import Invar.Resident qualified as Boundary
+import Invar.Resident.Owner qualified as Owner
 
-data Handshake problem = Handshake {message :: ByteString, admit :: ByteString -> IO (Either problem ())}
-data Transaction problem = Transaction {invocation :: Process.Exchange problem, retirement :: ByteString -> IO (Either problem (Handshake problem))}
-data State = Idle Natural | Failed | Closed
+data Handshake problem value = Handshake {message :: ByteString, admit :: ByteString -> IO (Either problem value)}
+data Transaction problem = Transaction {invocation :: Process.Exchange problem, retirement :: ByteString -> IO (Either problem (Handshake problem Owner.Released))}
+data State = Idle Owner.State | Failed | Closed
 
 type role Resident nominal
 data Resident (scope :: Type) = Resident Process.Pipes (MVar ()) (IORef State)
 
-withResident :: Process.Launch -> (forall scope. Resident scope -> Handshake problem) -> (forall scope. Resident scope -> IO (Either (Process.Failure problem) value)) -> IO (Either (Process.Failure problem) value)
-withResident launch closing action = Process.withLaunch launch $ \handles -> do
-    resident <- Resident handles <$> newMVar () <*> newIORef (Idle 0)
+withResident :: Process.Launch -> Boundary.Owner -> (forall scope. Resident scope -> IO (Either problem ())) -> (forall scope. Resident scope -> IO (Either (Process.Failure problem) value)) -> IO (Either (Process.Failure problem) value)
+withResident launch selected ready action = Process.withLaunch launch $ \handles -> do
+    resident <- Resident handles <$> newMVar () <*> newIORef (Idle (Owner.start selected))
     returned <- action resident `onException` poison resident (Process.Protocol "Resident owner was interrupted")
     case returned of
         Left problem -> poison resident problem
-        Right value -> fmap (value <$) (close resident (closing resident))
+        Right value -> fmap (value <$) (close resident (ready resident))
 
 exchange :: Resident scope -> Transaction problem -> IO (Either (Process.Failure problem) (ByteString, ByteString))
-exchange resident@(Resident _ _ state) transaction = serialized resident $ do
-    count <- groups resident
+exchange resident transaction = serialized resident $ \current -> do
     let session = channel resident
         selected = invocation transaction
         active = session {Process.review = Process.permission selected}
@@ -44,19 +44,24 @@ exchange resident@(Resident _ _ state) transaction = serialized resident $ do
                     acknowledged <- handshake session expected
                     case acknowledged of
                         Left problem -> pure (Left problem)
-                        Right encoded -> writeIORef state (Idle (count + 1)) >> pure (Right (output, encoded))
+                        Right (encoded, released) -> case Owner.release current released of
+                            Left problem -> Process.reject session (Process.Protocol problem)
+                            Right following -> pure (Right ((output, encoded), Idle following))
+
+hosted :: Resident scope -> (Process.Pipes -> Owner.State -> IO (Either (Process.Failure problem) (value, Owner.State))) -> IO (Either (Process.Failure problem) value)
+hosted resident@(Resident pipes _ _) action = serialized resident (fmap (fmap (fmap Idle)) . action pipes)
+
+initial :: Resident scope -> IO Bool
+initial (Resident _ _ state) = do
+    current <- readIORef state
+    case current of
+        Idle physical -> pure (Owner.initial physical)
+        _ -> ioError (userError "Resident group count requested outside an active owner")
 
 channel :: Resident scope -> Process.Session problem
 channel (Resident pipes _ _) = Process.Session pipes (const (pure (Right "")))
 
-groups :: Resident scope -> IO Natural
-groups (Resident _ _ state) = do
-    current <- readIORef state
-    case current of
-        Idle count -> pure count
-        _ -> ioError (userError "Resident group count requested outside an active owner")
-
-handshake :: Process.Session problem -> Handshake problem -> IO (Either (Process.Failure problem) ByteString)
+handshake :: Process.Session problem -> Handshake problem value -> IO (Either (Process.Failure problem) (ByteString, value))
 handshake session expected = do
     Process.send (Process.pipes session) (message expected)
     returned <- Process.line session
@@ -66,32 +71,37 @@ handshake session expected = do
             accepted <- admit expected observed
             case accepted of
                 Left problem -> Process.reject session (Process.Rejected problem)
-                Right () -> pure (Right observed)
+                Right value -> pure (Right (observed, value))
 
-serialized :: Resident scope -> IO (Either (Process.Failure problem) value) -> IO (Either (Process.Failure problem) value)
+serialized :: Resident scope -> (Owner.State -> IO (Either (Process.Failure problem) (value, State))) -> IO (Either (Process.Failure problem) value)
 serialized resident@(Resident _ gate state) action = withMVar gate $ \() -> mask $ \restore -> do
     current <- readIORef state
     case current of
         Failed -> pure (Left (Process.Protocol "Resident worker previously failed"))
         Closed -> pure (Left (Process.Protocol "Resident worker is already closed"))
-        Idle _ -> do
-            returned <- restore action `onException` poison resident (Process.Protocol "Resident exchange was interrupted")
+        Idle physical -> do
+            returned <- restore (action physical) `onException` poison resident (Process.Protocol "Resident exchange was interrupted")
             case returned of
-                Left _ -> writeIORef state Failed
-                Right _ -> pure ()
-            pure returned
+                Left problem -> writeIORef state Failed >> pure (Left problem)
+                Right (value, following) -> writeIORef state following >> pure (Right value)
 
-close :: Resident scope -> Handshake problem -> IO (Either (Process.Failure problem) ())
-close resident@(Resident _ _ state) closing = serialized resident $ do
+close :: Resident scope -> IO (Either problem ()) -> IO (Either (Process.Failure problem) ())
+close resident ready = serialized resident $ \current -> do
     let session = channel resident
-    received <- handshake session closing
-    case received of
-        Left problem -> pure (Left problem)
-        Right _ -> do
-            finished <- Process.finish session
-            case finished of
+    checked <- ready
+    case checked of
+        Left problem -> Process.reject session (Process.Rejected problem)
+        Right () -> do
+            received <- handshake session (Handshake (Boundary.close (Owner.owner current)) (const (pure (Right ()))))
+            case received of
                 Left problem -> pure (Left problem)
-                Right () -> writeIORef state Closed >> pure (Right ())
+                Right (encoded, ()) -> case Owner.close current encoded of
+                    Left problem -> Process.reject session (Process.Protocol problem)
+                    Right () -> do
+                        finished <- Process.finish session
+                        case finished of
+                            Left problem -> pure (Left problem)
+                            Right () -> pure (Right ((), Closed))
 
 poison :: Resident scope -> Process.Failure problem -> IO (Either (Process.Failure problem) value)
 poison resident@(Resident _ _ state) problem = do

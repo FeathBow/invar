@@ -1,6 +1,6 @@
 module Invar.Loop.Owner (validate, withShared) where
 
-import Control.Monad (unless, void)
+import Control.Monad (unless)
 import Data.Bifunctor (first)
 import Invar.Learn.Worker qualified as Learn
 import Invar.Learn.Worker.Owner qualified as Learner
@@ -23,15 +23,12 @@ validate (inference, learning, overlays) = first Learn.ProtocolFailure $ do
 withShared :: Configuration -> (Rollout.Pool -> Learner.Runner -> IO value) -> IO (Either Learn.Failure value)
 withShared configuration@(inference, learning, overlays) action = case validate configuration of
     Left problem -> pure (Left problem)
-    Right () -> first failure <$> Transport.withResident launch closing execute
+    Right () -> first failure <$> Transport.withResident launch owner (const (pure (Right ()))) execute
   where
     owner = Boundary.Owner Boundary.Shared 0
     arguments = [Infer.script inference, "--cache=" ++ Infer.cache inference, "--reference=" ++ Learn.reference learning, "--session=0", "--shared"] ++ maybe [] (\path -> ["--config=" ++ path]) (Infer.configuration inference)
     launch = Process.Launch (Infer.executable inference) arguments (concat overlays) Transcript.standard
-    closing process = Transport.Handshake (Boundary.close owner) $ \encoded -> do
-        count <- Transport.groups process
-        pure (first Learn.ProtocolFailure (void (Boundary.closed owner count encoded)))
-    execute process = Inference.withBorrowed process owner $ \collector ->
+    execute process = Inference.withBorrowed process $ \collector ->
         Update.withBorrowed process owner $ \updater ->
             Right <$> action (Rollout.borrowed (inference, overlays) collector) (Learner.borrowed updater)
     failure (Process.Exit status) = Learn.WorkerExit status

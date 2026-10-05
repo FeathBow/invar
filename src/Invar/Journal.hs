@@ -1,4 +1,4 @@
-module Invar.Journal (Journal, with, resume, append, store, transcript, entries) where
+module Invar.Journal (Journal, with, resume, append, transcript, entries) where
 
 import Control.Concurrent.MVar (MVar, modifyMVar, modifyMVar_, newMVar, readMVar, withMVar)
 import Control.Exception (bracket, finally, mask_, onException)
@@ -75,11 +75,6 @@ transcript journal@(Journal _ open) path ending = mask_ $ do
 
 shut :: Maybe (Fd, Bool) -> IO (Maybe (Fd, Bool))
 shut held = mapM_ (Posix.closeFd . fst) held >> pure Nothing
-
-store :: FilePath -> ByteString -> IO ()
-store path encoded = bracket (exclusive path) Posix.closeFd $ \file -> do
-    write file encoded
-    synchronizeEntry path file
 
 exclusive :: FilePath -> IO Fd
 exclusive path = Posix.openFd path Posix.WriteOnly Posix.defaultFileFlags {Posix.append = True, Posix.exclusive = True, Posix.creat = Just 0o644}

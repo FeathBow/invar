@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module ResidentFixture (Exchange (..), Scenario (..), owner, adapter, timer, prepare, prepareWith, scenario, scenarioWith, scriptWith, run, interrupted) where
+module ResidentFixture (Exchange (..), Scenario (..), owner, adapter, timer, prepare, prepareWith, scenario, scenarioWith, script, scriptWith, run, concluded, interrupted) where
 
 import BatchCalls qualified as Serial
 import BatchedProtocol qualified as Batch
@@ -15,6 +15,7 @@ import Data.Text.Encoding (decodeUtf8)
 import Hedgehog
 import Invar.Artifact qualified as Artifact
 import Invar.Infer.Invocation qualified as Call
+import Invar.Infer.Trajectory (Trajectory)
 import Invar.Transcript qualified as Transcript
 import Invar.Worker qualified as Worker
 import Invar.Worker.Resident qualified as Resident
@@ -104,7 +105,7 @@ scriptWith (physical, paths) root selected =
     receive variable expected = "IFS= read -r " ++ variable ++ " || exit 21\ntest \"$" ++ variable ++ "\" = " ++ Serial.quote (Bytes.unpack expected) ++ " || exit 22"
     emit values = "printf '%s\\n' " ++ unwords (map (Serial.quote . Bytes.unpack) (Bytes.lines (Fixture.wire values)))
 
-run :: FilePath -> Scenario -> PropertyT IO (Either Worker.Failure [Resident.Receipt], ByteString)
+run :: FilePath -> Scenario -> PropertyT IO (Either Worker.Failure [Trajectory], ByteString)
 run root selected = do
     let path = root </> "resident.sh"
         worker = Worker.Worker "/bin/sh" path root adapter [] Nothing
@@ -114,6 +115,17 @@ run root selected = do
     returned <- evalIO (Resident.withResident options (\resident -> executeGroups resident (groups selected)))
     emitted <- evalIO (Bytes.unlines . reverse <$> readIORef buffer)
     pure (returned, emitted)
+
+concluded :: FilePath -> String -> Scenario -> PropertyT IO (Either Worker.Failure [Trajectory], Maybe Transcript.Outcome)
+concluded root body selected = do
+    let path = root </> "resident.sh"
+        worker = Worker.Worker "/bin/sh" path root adapter [] Nothing
+    evalIO (writeFile path body)
+    closing <- evalIO (newIORef Nothing)
+    let transcript = Transcript.Transcript (const (pure ())) (const (pure ())) (writeIORef closing . Just)
+    returned <- evalIO (Resident.withResident (Resident.Options worker owner transcript) (\resident -> executeGroups resident (groups selected)))
+    ending <- evalIO (readIORef closing)
+    pure (returned, ending)
 
 interrupted :: FilePath -> Scenario -> ByteString -> PropertyT IO (Maybe String, ByteString, Maybe Transcript.Outcome)
 interrupted root selected refused = do
@@ -135,7 +147,7 @@ interrupted root selected refused = do
     ending <- evalIO (readIORef closing)
     pure (either (Just . ioeGetErrorString) (const Nothing) thrown, emitted, ending)
 
-executeGroups :: Resident.Resident scope -> [Exchange] -> IO (Either Worker.Failure [Resident.Receipt])
+executeGroups :: Resident.Resident scope -> [Exchange] -> IO (Either Worker.Failure [Trajectory])
 executeGroups _ [] = pure (Right [])
 executeGroups resident (group : remaining) = do
     returned <- Resident.run resident adapter Nothing (calls group)

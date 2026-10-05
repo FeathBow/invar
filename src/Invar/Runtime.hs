@@ -7,7 +7,6 @@ import Control.Concurrent.Chan (Chan, newChan, readChan, writeChan)
 import Control.Concurrent.MVar (MVar, modifyMVar, modifyMVar_, newEmptyMVar, newMVar, putMVar, readMVar, tryPutMVar)
 import Control.Exception (SomeAsyncException, bracket, finally, fromException, throwIO, try)
 import Control.Monad (foldM, forM_, forever, unless, void, when)
-import Crypto.Hash.SHA256 qualified as SHA256
 import Data.Aeson (Object, Value, encode, object, (.=))
 import Data.Aeson.KeyMap qualified as Fields
 import Data.Aeson.Types (Pair, parseEither)
@@ -30,8 +29,7 @@ import Invar.Async.Plan (Declared (..), Request (..), Update (..), Version (..))
 import Invar.Async.Plan qualified as Plan
 import Invar.Async.Record qualified as Record
 import Invar.Cohort qualified as C
-import Invar.Infer.Result qualified as Result
-import Invar.Infer.Wire qualified as Wire
+import Invar.Infer.Trajectory qualified as Trajectory
 import Invar.Journal qualified as Journal
 import Invar.Learn qualified as L
 import Invar.Learn.Protocol qualified as P
@@ -100,7 +98,6 @@ run selected@(Run chosen _ _ _) declared = do
         Right (planned, initial) -> do
             started <- getCurrentDirectory
             createDirectory (Loop.root chosen)
-            createDirectory (Loop.root chosen </> "results")
             createDirectory (Loop.root chosen </> "transcripts")
             Journal.with (Loop.root chosen </> "journal.jsonl") (Record.encode (Record.Declared started (Fields.fromList declared))) $ \recorded -> do
                 let (state, commands) = Core.start planned
@@ -336,15 +333,11 @@ collect shared (update, version) = do
             atomicModifyIORef' slots (\held -> (Map.insert index slot held, ()))
             Journal.append (journal shared) (Record.encode (Record.Dispatched (offset + index) slot (epoch shared) binding))
         forM_ requests $ \(index, _) -> void (transition shared (Started (Worker slot) (Epoch (epoch shared)) (Request (offset + index))))
-    checked slots offset index binding result = do
+    checked slots offset index admitted = do
         slot <- maybe (ioError (userError "Checked result was never dispatched")) pure . Map.lookup index =<< readIORef slots
         let request = offset + index
-            V.Binding (V.CallId call) _ _ = binding
-            encoded = Lazy.toStrict (encode (object ["binding" .= Wire.bindingValue binding, "result" .= Result.record result]))
-            path = Loop.root (config shared) </> "results" </> ("call" ++ show call ++ ".json")
-        Journal.store path encoded
-        let digest = Artifact.hex (SHA256.hash encoded)
-        Journal.append (journal shared) (Record.encode (Record.Stored request binding digest))
+            digest = Trajectory.digest admitted
+        Journal.append (journal shared) (Record.encode (Record.Stored request (Trajectory.binding admitted) digest))
         void (transition shared (Completed (Worker slot) (Epoch (epoch shared)) (Request request) digest))
 
 learn :: Shared scope -> (Natural, Attempt) -> IO ()
