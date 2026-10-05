@@ -46,7 +46,7 @@ run ("inference" : supplied) = do
             bound <- either die pure (InferenceInput.binding fields)
             (Session.Single,) . pure <$> either (die . show) pure (Call.prepare bound planned)
     admitted <- either (die . show) pure (Replay.standalone protocol (Session.Declaration declared Nothing) (Replay.declared status) encoded)
-    let observed = map (Observation.view encoded) admitted
+    let observed = map Observation.view admitted
     case O.optional fields "log-digest" of
         Nothing -> pure ()
         Just digest -> unless (all ((== digest) . Observation.logDigest) observed) (die "Inference log identity changed after inspection")

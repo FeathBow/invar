@@ -103,7 +103,7 @@ independent declared generations output = do
     call <- either (invalid . show) pure (Call.prepare bound planned)
     admitted <- either (invalid . show) pure (Replay.standalone Session.Single (Session.Declaration [call] Nothing) (Replay.declared (finalExit declared)) output)
     case admitted of
-        [single] -> pure (Inference.view output single)
+        [single] -> pure (Inference.view single)
         _ -> invalid "Expected one admitted final independent inference"
 
 rng :: Value -> Either String Value

@@ -246,8 +246,8 @@ checked group (callBytes, logBytes) status = do
     member admitted (input, call) = do
         let binding = V.Binding (V.CallId call) (V.AttemptId call) (V.Instance call)
             named = label group ++ " input " ++ show (U.cohort (U.inputKey input), U.task (U.inputKey input))
-        report <- case filter ((== binding) . Trajectory.binding) admitted of
-            [single] -> pure (Inference.view logBytes single)
+        report <- case filter ((== binding) . Trajectory.binding . Replay.trajectory) admitted of
+            [single] -> pure (Inference.view single)
             _ -> Left (Problem "execution-failed" (located group) ("The log does not carry the declared observation for " ++ named))
         reported <- first (Problem "identity-mismatch" (located group) . (("The worker's report for " ++ named ++ " names no policy: ") ++)) (Inference.policyDescription report)
         unless (reported == policy group) (Left (Problem "identity-mismatch" (located group) ("The worker reported " ++ show reported ++ " for " ++ named ++ ", not the contract's " ++ sideName group ++ " policy")))

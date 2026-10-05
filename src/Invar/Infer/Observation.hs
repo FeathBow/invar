@@ -15,8 +15,8 @@ import Invar.Infer.Framing qualified as Framing
 import Invar.Infer.Invocation qualified as Invocation
 import Invar.Infer.Output qualified as Output
 import Invar.Infer.Records qualified as Records
+import Invar.Infer.Replay qualified as Replay
 import Invar.Infer.Result qualified as Result
-import Invar.Infer.Trajectory (Trajectory)
 import Invar.Infer.Trajectory qualified as Trajectory
 import Invar.Infer.Wire qualified as Wire
 import Invar.Json qualified as Json
@@ -26,8 +26,10 @@ import Invar.Spec.Invocation qualified as V
 data Report = Report String V.Binding Result.Result (String, String)
     deriving (Eq, Show)
 
-view :: ByteString -> Trajectory -> Report
-view encoded admitted = Report (Artifact.hex (SHA256.hash encoded)) (Trajectory.binding admitted) (Trajectory.result admitted) (Trajectory.model admitted, Trajectory.revision admitted)
+view :: Replay.Logged -> Report
+view logged = Report (Replay.source logged) (Trajectory.binding admitted) (Trajectory.result admitted) (Trajectory.model admitted, Trajectory.revision admitted)
+  where
+    admitted = Replay.trajectory logged
 
 admitFrames :: Infer.Plan -> V.Binding -> [Framing.Frame] -> Either String Report
 admitFrames planned bound records = admitWith planned bound (Framing.encode records) records

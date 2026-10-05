@@ -52,7 +52,7 @@ admitted planned selected encoded = do
     call <- either (Left . show) Right (Call.prepare selected planned)
     trajectories <- either (Left . show) Right (Replay.standalone Session.Single (Session.Declaration [call] Nothing) ExitSuccess encoded)
     case trajectories of
-        [single] -> pure (Observation.view encoded single)
+        [single] -> pure (Observation.view single)
         _ -> Left "Expected one admitted inference"
 
 observe :: ByteString -> Either String Observation.Report
@@ -61,7 +61,7 @@ observe encoded = do
     admitted planned bound encoded
 
 batched :: [Call.Call] -> ByteString -> Either String [Observation.Report]
-batched declared encoded = either (Left . show) (Right . map (Observation.view encoded)) (Replay.standalone Session.Batched (Session.Declaration declared Nothing) ExitSuccess encoded)
+batched declared encoded = either (Left . show) (Right . map Observation.view) (Replay.standalone Session.Batched (Session.Declaration declared Nothing) ExitSuccess encoded)
 
 matching :: PropertyT IO ()
 matching = do
@@ -141,8 +141,8 @@ described = do
     other <- evalEither (description "other-model" >>= either (Left . show) Right . (`Infer.bindPolicy` plain))
     underPolicy <- evalEither (replayed declaredPlan)
     underMaterialization <- evalEither (replayed plain)
-    map Trajectory.binding underPolicy === [bound]
-    assert (map Trajectory.digest underPolicy /= map Trajectory.digest underMaterialization)
+    map (Trajectory.binding . Replay.trajectory) underPolicy === [bound]
+    assert (map (Trajectory.digest . Replay.trajectory) underPolicy /= map (Trajectory.digest . Replay.trajectory) underMaterialization)
     assert (isLeft (replayed other))
 
 batchFixture :: PropertyT IO ([Value], [Value], [Call.Call])

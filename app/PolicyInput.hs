@@ -35,7 +35,7 @@ run supplied = do
     encoded <- Bytes.readFile path
     admitted <- either (die . show) pure (Replay.standalone Session.Single (Session.Declaration [call] Nothing) (Replay.declared status) encoded)
     observed <- case admitted of
-        [single] -> pure (Observation.view encoded single)
+        [single] -> pure (Observation.view single)
         _ -> die "Expected one admitted inference"
     selected <- either die pure (Observation.policyDescription observed)
     checkpoint <- either die pure (O.required fields "checkpoint")
@@ -50,8 +50,8 @@ checkAdapter checkpoint selected = do
 
 plan :: O.Fields -> IO (FilePath, Infer.Plan)
 plan fields = do
-    (adapter, _) <- selection "digest" fields
-    planned <- InferenceInput.declaredWith "" fields
+    (adapter, selected) <- selection "digest" fields
+    planned <- either die pure (InferenceInput.plannedWith "" selected fields)
     pure (adapter, planned)
 
 selection :: String -> O.Fields -> IO (FilePath, Maybe Policy.Description)

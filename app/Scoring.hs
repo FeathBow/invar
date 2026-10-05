@@ -74,7 +74,7 @@ standalone fields = do
     encoded <- Bytes.readFile sourcePath
     admitted <- either (die . show) pure (Replay.standalone Session.Single (Session.Declaration [call] Nothing) (Replay.declared sourceStatus) encoded)
     case admitted of
-        [single] -> pure (sourceStatus, Inference.view encoded single)
+        [single] -> pure (sourceStatus, Inference.view single)
         _ -> die "Expected one admitted source inference"
 
 rollout :: O.Fields -> IO (Int, Inference.Report)

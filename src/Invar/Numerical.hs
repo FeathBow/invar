@@ -208,8 +208,8 @@ admit side run = do
             unless (any (\member -> (Call.binding member, Call.plan member) == (binding run, planned run)) calls) (Left (InvalidRun side "The run's declaration is not a member of its declared batch"))
             pure (Session.Batched, calls)
     admitted <- first failed (Replay.standalone protocol (Session.Declaration declared Nothing) (Replay.declared (exitCode run)) (logBytes run))
-    case filter ((== binding run) . Trajectory.binding) admitted of
-        [single] -> pure (Inference.view (logBytes run) single)
+    case filter ((== binding run) . Trajectory.binding . Replay.trajectory) admitted of
+        [single] -> pure (Inference.view single)
         _ -> Left (InvalidRun side "Expected one admitted inference for the run's binding")
   where
     failed (Session.Exited (ExitFailure code)) = ProcessFailed side code
