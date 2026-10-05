@@ -9,7 +9,6 @@ import Data.Aeson (Value (..))
 import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.List (nub)
 import Hedgehog
-import Invar.Infer.Result qualified as Result
 import Invar.Infer.Trajectory qualified as Trajectory
 import Invar.Rollout qualified as Rollout
 import Invar.Spec.Invocation qualified as Invocation
@@ -65,7 +64,7 @@ sustained = forM_ [1, 2, 4] $ \count -> do
     length (nub pids) === count
     forM_ (F.owners fixture) $ \(path, _) -> evalIO (doesFileExist (path </> "closed")) >>= (=== True)
   where
-    project batch = (map Rollout.name values, map Rollout.reward values, map (Result.behaviorBits . Rollout.observation) values, Rollout.delivered batch, map (Invocation.completedBinding . Load.report . Trajectory.loaded . Rollout.trajectory) values, map (Result.truncated . Rollout.observation) values)
+    project batch = (map Rollout.name values, map Rollout.reward values, map (Trajectory.behaviorBits . Rollout.trajectory) values, Rollout.delivered batch, map (Invocation.completedBinding . Load.report . Trajectory.loaded . Rollout.trajectory) values, map (Trajectory.truncated . Rollout.trajectory) values)
       where
         values = Rollout.samples batch
 

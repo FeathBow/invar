@@ -14,6 +14,7 @@ import Hedgehog
 import Invar.Artifact qualified as Artifact
 import Invar.Evaluation qualified as Evaluation
 import Invar.Infer qualified as Infer
+import Invar.Rollout qualified as Rollout
 import Invar.Workload qualified as Workload
 import Store (workspace)
 import Streams qualified
@@ -38,7 +39,7 @@ cohortCount = 3
 membersPerCohort = 2
 
 run :: Evaluation.Run
-run = Evaluation.Run (Infer.artifact request) 0
+run = Evaluation.Run (Infer.artifact request) 0 Rollout.Resident Nothing
 
 fixture :: Int -> PropertyT IO (Workload.Document, [Value])
 fixture owners = do

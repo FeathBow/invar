@@ -29,29 +29,36 @@ import Data.Aeson (Object, Value (..), object, toJSON, withObject, (.:), (.=))
 import Data.Aeson.Key (Key)
 import Data.Aeson.KeyMap qualified as Fields
 import Data.Aeson.Types (Pair, Parser, parseEither)
+import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as Bytes
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Invar.Artifact qualified as Artifact
+import Invar.Cohort qualified as Cohort
 import Invar.Infer qualified as Infer
 import Invar.Infer.Framing qualified as Framing
+import Invar.Infer.Invocation qualified as Call
 import Invar.Infer.Model (Model (..))
 import Invar.Infer.Model qualified as Model
-import Invar.Infer.Result qualified as Result
+import Invar.Infer.Replay qualified as Replay
+import Invar.Infer.Session qualified as Session
 import Invar.Infer.Trajectory qualified as Trajectory
 import Invar.Infer.Wire qualified as Wire
 import Invar.Json qualified as Json
-import Invar.Resident.Inference qualified as Resident
+import Invar.Policy qualified as Policy
+import Invar.Resident qualified as Boundary
+import Invar.Resident.Group qualified as Group
+import Invar.Resident.Owner qualified as Owner
 import Invar.Rollout qualified as Rollout
 import Invar.Spec.Invocation qualified as Invocation
 import Invar.Workload qualified as Workload
 import Numeric.Natural (Natural)
 
-data Run = Run {expectedPolicy :: String, exitCode :: Int}
+data Run = Run {expectedPolicy :: String, exitCode :: Int, workerMode :: Rollout.Mode, description :: Maybe Policy.Description}
     deriving (Eq, Show)
 
-data Report = Report String String Run Model [Sample] (Maybe Resident.Ledger)
+data Report = Report String String Run Model [Sample] (Maybe [Group.Group])
     deriving (Eq, Show)
 
 data Sample = Sample
@@ -66,8 +73,7 @@ data Sample = Sample
     }
     deriving (Eq, Show)
 
-workerStages :: [Value]
-workerStages = map String ["loading", "profile", "load", "unloaded_adapter", "loaded_adapter", "consumed", "inference", "result"]
+data Waiting = Waiting Natural [Cohort.Task] [Replay.Pending] [Replay.Logged] [Sample]
 
 admit :: Workload.Document -> Run -> ByteString -> Either String Report
 admit expected selected encoded = do
@@ -75,75 +81,93 @@ admit expected selected encoded = do
     unless (exitCode selected == 0) (Left "Evaluation process did not exit successfully")
     unless ("\n" `Bytes.isSuffixOf` encoded) (Left "Incomplete final evaluation line")
     frames <- Framing.decode encoded
-    grouped <- Framing.groups frames
-    case reverse frames of
+    (completed, records) <- case reverse frames of
+        final : previous -> pure (Framing.fields final, reverse previous)
         [] -> Left "Missing evaluation records"
-        completedFrame : previous -> do
-            let completed = Framing.fields completedFrame
-            (selectedModel, observed) <- parseEither (const (document (expected, selected) (map Framing.fields (reverse previous)) completed)) Null
-            resident <- parseEither residentMode completed
-            physical <-
-                if resident
-                    then do
-                        owners <- parseEither (.: "sessions") completed
-                        Just <$> Resident.admit (expected, expectedPolicy selected, selectedModel) owners (reverse previous)
-                    else pure Nothing
-            mapM_ (parseEither (checkModel selectedModel) . Framing.fields) [record | group <- grouped, member <- Framing.members group, record <- [Framing.loaded member, Framing.consumed member, Framing.result member]]
-            pure (Report (Workload.digest expected) (Artifact.hex (SHA256.hash encoded)) selected selectedModel observed physical)
-
-document :: (Workload.Document, Run) -> [Object] -> Object -> Parser (Model, [Sample])
-document (expected, selected) records completed = do
-    selectedModel <- Model.binding completed
-    mapM_ (checkModel selectedModel) (completed : records)
-    resident <- residentMode completed
-    (cohorts, loads, pending) <- foldM (collect resident) ([], [], 0) records
-    unless (pending == 0) (fail "Model load recorded outside every evaluation cohort")
-    let declared = Workload.cycles expected
-        ordered = reverse cohorts
-    unless (length ordered == length declared) (fail "Incomplete or trailing evaluation records")
-    checkComplete (expected, selected, selectedModel) (reverse loads) completed
-    observed <- concat <$> traverse (parseCohort selected) (zip3 [0 ..] declared ordered)
+    (selectedModel, count) <- parseEither (completion (expected, selected)) completed
+    identities <- case selectedModel of
+        Model.Materialized tokenizer base assembly -> pure (expectedPolicy selected, tokenizer, base, assembly)
+        _ -> Left "Evaluation requires complete model materialization"
+    let initial = [if workerMode selected == Rollout.Resident then Just (Session.start Session.Resident, Owner.start (Boundary.Owner Boundary.Inference slot)) else Nothing | slot <- [0 .. count - 1]]
+    (_, owners, waiting, groups, remaining) <- foldM (cohort identities) (0, initial, [], [], records) (zip [0 ..] (Workload.cycles expected))
+    rest <- foldM close remaining (reverse owners)
+    unless (null rest) (Left "Output follows the final evaluation cohort or physical inference close")
+    observed <- concat <$> traverse joined (reverse waiting)
     let bindings = map observedBinding observed
         distinct values = length values == Set.size (Set.fromList values)
-    unless (distinct (map Invocation.boundCall bindings) && distinct (map Invocation.boundAttempt bindings) && distinct (map Invocation.boundInstance bindings)) (fail "Evaluation reused a call, attempt or instance identity")
-    pure (selectedModel, observed)
+    unless (distinct (map Invocation.boundCall bindings) && distinct (map Invocation.boundAttempt bindings) && distinct (map Invocation.boundInstance bindings)) (Left "Evaluation reused a call, attempt or instance identity")
+    pure (Report (Workload.digest expected) (Artifact.hex (SHA256.hash encoded)) selected selectedModel observed (if workerMode selected == Rollout.Resident then Just (reverse groups) else Nothing))
+  where
+    protocol = if workerMode selected == Rollout.Batched then Session.Batched else Session.Serial
+    cohort identities (offset, owners, waiting, groups, remaining) (index, workload) = do
+        tasks <- traverse (task identities) (Workload.tasks workload)
+        calls <- traverse (\(position, chosen) -> first show (Call.prepare (Invocation.ordinal (offset + position)) (Cohort.plan chosen))) (zip [0 ..] tasks)
+        let count = length owners
+            partitions = [[position | (order, position) <- zip [0 :: Int ..] (Workload.order workload), order `mod` count == slot] | slot <- [0 .. count - 1]]
+        (next, pending, logged, observedGroups, rest) <- foldM (session calls) ([], [], [], [], remaining) (zip owners partitions)
+        (phaseRecord, following) <- case rest of
+            record : following | Fields.lookup "phase" (Framing.fields record) == Just (String "evaluation") -> pure (Framing.fields record, following)
+            _ -> Left "Evaluation sessions do not end at their declared evaluation cohort"
+        reported <- parseEither (parseCohort selected) (index, workload, phaseRecord)
+        pure (offset + fromIntegral (length tasks), reverse next, Waiting offset tasks pending logged reported : waiting, observedGroups ++ groups, following)
+    session calls (owners, pending, logged, observedGroups, remaining) (owner, selectedPositions)
+        | null selectedPositions = pure (owner : owners, pending, logged, observedGroups, remaining)
+        | otherwise = do
+            let declaration = Session.Declaration [chosen | position <- selectedPositions, chosen <- take 1 (drop (fromIntegral position) calls)] Nothing
+            case owner of
+                Nothing -> do
+                    (waiting, _, rest) <- first show (Replay.session protocol declaration remaining)
+                    pure (Nothing : owners, pending ++ [waiting], logged, observedGroups, rest)
+                Just (current, physical) -> do
+                    (next, admitted, consumed, rest) <- first show (Replay.group (current, physical) declaration remaining)
+                    (groupRecords, acknowledged) <- case reverse consumed of
+                        final : reversed -> pure (reverse reversed, final)
+                        [] -> Left "Resident group has no release acknowledgement"
+                    observedGroup <- Group.observe (Owner.owner physical, Owner.groups physical, [Call.binding chosen | Session.Declaration chosenCalls _ <- [declaration], chosen <- chosenCalls]) groupRecords acknowledged
+                    pure (Just next : owners, pending, logged ++ admitted, observedGroup : observedGroups, rest)
+    close remaining owner = case (owner, remaining) of
+        (Nothing, _) -> pure remaining
+        (Just (current, physical), record : rest) -> do
+            unless (Session.settled current) (Left "Resident process closes with active invocation loads")
+            Owner.close physical (Framing.raw record)
+            pure rest
+        (Just _, []) -> Left "Missing final resident process close"
+    task (policyIdentity, tokenizer, base, assembly) chosen = do
+        planned <- first show (Infer.prepare (Infer.Request policyIdentity tokenizer base assembly (Workload.prompt chosen) (Workload.tokens chosen) (Workload.temperature chosen) (Workload.seed chosen)) >>= maybe Right Infer.bindPolicy (description selected))
+        pure (Cohort.Task (Workload.name chosen) (Workload.group chosen) planned (Workload.rule chosen))
+    joined (Waiting offset tasks pending logged reported) = do
+        delimited <- first show (concat <$> traverse Replay.delimit pending)
+        let admitted = map Replay.trajectory (delimited ++ logged)
+            matching position = [trajectory | trajectory <- admitted, Trajectory.binding trajectory == Invocation.ordinal (offset + position)]
+        ordered <- traverse (\position -> case matching position of [single] -> Right single; _ -> Left "Expected one admitted inference for each declared evaluation task") [0 .. fromIntegral (length tasks) - 1]
+        scored <- either (Left . show) id (Cohort.withCohort (Cohort.Definition (expectedPolicy selected) tasks) (\declared -> first show (traverse (uncurry Cohort.record) (zip (Cohort.members declared) ordered) >>= fmap (map Cohort.reward . Cohort.observations) . Cohort.admit declared)))
+        traverse check (zip3 tasks ordered scored)
+      where
+        check (chosen, trajectory, reward) = case [sample | sample <- reported, observedName sample == Cohort.name chosen] of
+            [sample] -> do
+                unless (reward == 0 || reward == 1) (Left "Expected the binary decimal-answer reward profile")
+                let actual = (if reward == 0 then 0 else 1, fromIntegral (length (Trajectory.behaviorBits trajectory)), Trajectory.truncated trajectory, Infer.seed (Trajectory.request trajectory), Trajectory.binding trajectory)
+                unless ((observedReward sample, observedTokens sample, observedTruncated sample, observedSeed sample, observedBinding sample) == actual) (Left "Evaluation sample differs from its admitted inference")
+                pure sample
+            _ -> Left "Expected one evaluation sample for each declared task"
 
-collect :: Bool -> ([Object], [Natural], Natural) -> Object -> Parser ([Object], [Natural], Natural)
-collect resident (cohorts, loads, current) record
-    | Fields.member "phase" record = do
-        unless (Fields.lookup "phase" record == Just (String "evaluation") && not (Fields.member "stage" record)) (fail "Unexpected evaluation record")
-        pure (record : cohorts, current : loads, 0)
-    | otherwise = do
-        stage <- record .: "stage"
-        unless (stage `elem` (workerStages ++ [String extra | resident, extra <- ["activation", "released", "closed"]])) (fail "Unknown worker record in evaluation output")
-        pure (cohorts, loads, current + if stage == String "load" then 1 else 0)
-
-checkModel :: Model -> Object -> Parser ()
-checkModel expected record = when (not (Framing.grouped (Framing.Frame "" record)) && Fields.lookup "stage" record `elem` map (Just . String) ["loaded_adapter", "consumed", "result"]) $ do
-    actual <- Model.binding record
-    unless (actual == expected) (fail "Evaluation model and tokenizer bindings disagree")
-
-checkComplete :: (Workload.Document, Run, Model) -> [Natural] -> Object -> Parser ()
-checkComplete (expected, selected, selectedModel) loads fields = do
-    resident <- residentMode fields
-    let declaredSessions = Fields.member "sessions" fields
-    when (resident && not declaredSessions) (fail "Resident evaluation requires declared physical owners")
-    Json.fields (["phase", "policy", "cohorts", "tasks_sha256"] ++ Model.fields selectedModel ++ ["sessions" | declaredSessions] ++ ["worker_mode" | resident]) fields
+completion :: (Workload.Document, Run) -> Object -> Parser (Model, Natural)
+completion (expected, selected) fields = do
+    selectedModel <- Model.binding fields
+    let resident = workerMode selected == Rollout.Resident
+    Json.fields (["phase", "policy", "cohorts", "tasks_sha256", "sessions"] ++ Model.fields selectedModel ++ ["worker_mode" | resident]) fields
+    when resident $ do
+        mode <- fields .: "worker_mode"
+        unless (mode == ("resident" :: String)) (fail "Evaluation completion differs from the declared worker mode")
     phase <- fields .: "phase"
     reportedPolicy <- fields .: "policy"
     cohorts <- fields .: "cohorts" :: Parser Natural
     unless (phase == ("evaluation_complete" :: String) && reportedPolicy == expectedPolicy selected && cohorts == fromIntegral (length (Workload.cycles expected))) (fail "Missing or mismatched evaluation completion")
     identity <- fields .: "tasks_sha256"
     unless (identity == Workload.digest expected) (fail "Evaluation input identity differs from the supplied frozen bytes")
-    when declaredSessions $ do
-        sessions <- fields .: "sessions"
-        unless (sessions > 0 && (resident || all (== sessions) loads)) (fail "Declared session count differs from the recorded model loads of a cohort")
-
-residentMode :: Object -> Parser Bool
-residentMode fields = case Fields.lookup "worker_mode" fields of
-    Nothing -> pure False
-    Just (String "resident") -> pure True
-    _ -> fail "Unsupported declared evaluation worker mode"
+    sessions <- fields .: "sessions"
+    unless (sessions > 0) (fail "Evaluation requires at least one declared session")
+    pure (selectedModel, sessions)
 
 parseCohort :: Run -> (Natural, Workload.Cycle, Object) -> Parser [Sample]
 parseCohort selected (index, expected, fields) = do
@@ -221,10 +245,10 @@ cohortValue index selected batch = do
     pure (object ["phase" .= String "evaluation", "cohort" .= index, "policy" .= selected, "summary" .= object [key .= value | (key, value) <- summary observed], "samples" .= map (object . sampleFields) observed])
   where
     capture sample = do
-        let actual = Rollout.observation sample
+        let actual = Rollout.trajectory sample
             reward = Rollout.reward sample
         unless (reward == 0 || reward == 1) (Left "Expected the binary decimal-answer reward profile")
-        pure (Sample index (Rollout.name sample) (Rollout.group sample) (Infer.seed (Result.consumed actual)) (if reward == 0 then 0 else 1) (fromIntegral (length (Result.behaviorBits actual))) (Result.truncated actual) (Trajectory.binding (Rollout.trajectory sample)))
+        pure (Sample index (Rollout.name sample) (Rollout.group sample) (Infer.seed (Trajectory.request actual)) (if reward == 0 then 0 else 1) (fromIntegral (length (Trajectory.behaviorBits actual))) (Trajectory.truncated actual) (Trajectory.binding actual))
 
 describe :: Report -> Value
 describe report = object ["format" .= String "invar-evaluation-report-v1", "tasks_sha256" .= inputDigest report, "log_sha256" .= logDigest report, "policy" .= policy report, "model" .= Model.value (model report), "samples" .= map sampleValue (samples report)]
@@ -265,5 +289,5 @@ sampleTokens = observedTokens
 sampleTruncated :: Sample -> Bool
 sampleTruncated = observedTruncated
 
-residence :: Report -> Maybe Resident.Ledger
+residence :: Report -> Maybe [Group.Group]
 residence (Report _ _ _ _ _ physical) = physical

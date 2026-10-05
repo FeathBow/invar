@@ -38,6 +38,7 @@ generation =
         , ("extra fields, untimed measurements, stray stages, output after the final result, an early or unclean exit and an unterminated record are refused", once refused)
         , ("a profile naming another model than the loaded one is refused in serial and batched sessions", once profiled)
         , ("reference scores are admitted only under the declared reference identity", once referenced)
+        , ("a history segment is admitted only when delimited after its final response, and never in a resident session", once delimited)
         , ("one release acknowledgement admits a resident group, and a later interrupted group leaves it admitted", once resident)
         , ("a physical owner refuses reused identities, another model, mixed clocks and a wrong close count", once owned)
         , ("the canonical encoding sorts keys by their bytes and escapes only quotes, backslashes and control characters", once canonical)
@@ -173,6 +174,24 @@ referenced = do
     assert (isLeft (attempt (Just declared) (scored (replicate 64 'd'))))
     assert (isLeft (attempt Nothing (scored declared)))
     assert (isLeft (attempt (Just declared) events))
+
+delimited :: PropertyT IO ()
+delimited = do
+    (first, second) <- serial
+    let inputs = session [first, second]
+        opened = Session.step (Session.start Session.Serial) (Session.Dispatched (Session.Declaration [fst first, fst second] Nothing))
+        replayed supplied = opened >>= \(started, _) -> feed started supplied
+    (_, produced) <- evalEither (replayed (inputs ++ [Session.Delimited]))
+    map describe (filter admittedProduct produced) === ["admitted [0,1]"]
+    assert (isLeft (replayed (take (length inputs - 1) inputs ++ [Session.Delimited])))
+    assert (isLeft (replayed (take 5 inputs ++ [Session.Delimited])))
+    root <- workspace
+    group <- F.prepare root 0 [0, 1]
+    (hosted, _) <- evalEither (Session.step (Session.start Session.Resident) (Session.Hosted (Owner.start (Owner.Owner Owner.Inference F.owner)) (Session.Declaration (F.calls group) Nothing)))
+    assert (isLeft (feed hosted (records (F.before group ++ F.after group) ++ [Session.Delimited])))
+  where
+    admittedProduct (Session.Admitted _) = True
+    admittedProduct _ = False
 
 resident :: PropertyT IO ()
 resident = do

@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Sessions (sessions) where
+module Sessions (sessions, options) where
 
 import BatchCalls (prepared, quote, session)
 import Calls qualified as Fixture
@@ -15,7 +15,6 @@ import Hedgehog
 import Invar.Cohort qualified as C
 import Invar.Infer qualified as I
 import Invar.Infer.Invocation qualified as V
-import Invar.Infer.Result qualified as Result
 import Invar.Infer.Trajectory qualified as Trajectory
 import Invar.Reward qualified as Reward
 import Invar.Rollout qualified as R
@@ -95,7 +94,7 @@ identical = do
     launched <- evalIO (readFile (root </> "launched"))
     length (lines launched) === 4
   where
-    project batch = (map R.name (R.samples batch), map R.reward (R.samples batch), map (Result.behaviorBits . R.observation) (R.samples batch), map bindingOf (R.delivered batch))
+    project batch = (map R.name (R.samples batch), map R.reward (R.samples batch), map (Trajectory.behaviorBits . R.trajectory) (R.samples batch), map bindingOf (R.delivered batch))
     bindingOf (B.Binding (B.CallId call) (B.AttemptId attempt) (B.Instance instanceId)) = (call, attempt, instanceId)
 
 failing :: PropertyT IO ()
@@ -169,7 +168,7 @@ observed = do
             assert (position (Dispatched slot index sent) < position (Checked index binding words32))
         [words32 | index <- [0 .. members - 1], Just (_, words32) <- [lookup index checked]] === batch
   where
-    project result = [map fromIntegral (Result.behaviorBits (R.observation sample)) | sample <- R.samples result]
+    project result = [map fromIntegral (Trajectory.behaviorBits (R.trajectory sample)) | sample <- R.samples result]
 
 transcribed :: PropertyT IO ()
 transcribed = do

@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Infer.Framing (Frame (..), Group, Member (..), stageName, format, decode, encode, grouped, readiness, activationReadiness, completion, takeGroup, groups, members, duration, source, memberBytes) where
+module Invar.Infer.Framing (Frame (..), stageName, format, decode, encode, grouped, readiness, activationReadiness, completion) where
 
 import Control.Monad (unless, void, when)
 import Data.Aeson (Object, Value (..), withObject, (.:))
@@ -8,18 +8,13 @@ import Data.Aeson.KeyMap qualified as Fields
 import Data.Aeson.Types (parseEither)
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as Bytes
-import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text.Encoding (encodeUtf8)
-import Invar.Infer.Wire qualified as Wire
 import Invar.Json qualified as Json
 import Invar.Measurement.Duration qualified as Duration
-import Invar.Spec.Invocation qualified as Invocation
 
 data Frame = Frame {raw :: ByteString, fields :: Object}
     deriving (Eq, Show)
-data Member = Member {loaded :: Frame, consumed :: Frame, result :: Frame}
-data Group = Group {members :: [Member], duration :: Frame, source :: ByteString}
 
 format :: Text
 format = "invar-inference-batch-v1"
@@ -99,36 +94,3 @@ stage :: Text -> Frame -> Either String ()
 stage expected (Frame _ fields) = do
     actual <- parseEither (.: "stage") fields
     unless (actual == expected && not (Fields.member "phase" fields)) (Left "Missing or reordered finite batch observation stage")
-
-takeGroup :: [Frame] -> Either String (Group, [Frame])
-takeGroup (first : timed : lastFrame : rest) = do
-    prefix <- payload "consumed" (fields first)
-    (measured, outputs) <- completion [timed, lastFrame]
-    unless (length prefix == length outputs) (Left "Batch completion inventory differs from consumption")
-    values <- traverse pair (zip prefix outputs)
-    bindings <- traverse (parseEither Wire.binding . fields . consumed) values
-    unless (distinct (map Invocation.boundCall bindings) && distinct (map Invocation.boundAttempt bindings) && distinct (map Invocation.boundInstance bindings)) (Left "Batch observation reuses a call, attempt or activation instance")
-    pure (Group values measured (encode [first, timed, lastFrame]), rest)
-  where
-    pair (prefix, output) = do
-        inputs <- member ["loaded_adapter", "consumed"] prefix
-        outputs <- member ["result"] output
-        case (inputs, outputs) of
-            ([loaded, consumed], [result]) -> do
-                mapM_ (parseEither Wire.binding . fields) [loaded, consumed, result]
-                unless (all ((== Fields.lookup "binding" (fields consumed)) . Fields.lookup "binding" . fields) [loaded, result]) (Left "Batch member observations have mismatched bindings")
-                pure (Member loaded consumed result)
-            _ -> Left "Incomplete batch member observations"
-    distinct values = length values == Set.size (Set.fromList values)
-takeGroup _ = Left "Incomplete finite batch observations"
-
-groups :: [Frame] -> Either String [Group]
-groups [] = pure []
-groups records@(first : rest)
-    | grouped first = do
-        (observed, remaining) <- takeGroup records
-        (observed :) <$> groups remaining
-    | otherwise = groups rest
-
-memberBytes :: Member -> ByteString
-memberBytes value = encode [loaded value, consumed value, result value]

@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Infer.Result (Result, Error (..), observe, observeObjects, ready, consumed, response, tokens, behavior, behaviorBits, referenceScores, promptLength, truncated) where
+module Invar.Infer.Result (Result, Error (..), observe, ready, consumed, response, tokens, behavior, behaviorBits, referenceScores, promptLength, truncated) where
 
 import Control.Monad (foldM, unless)
 import Data.Aeson (FromJSON (parseJSON), Object, eitherDecodeStrict, withObject, (.:))

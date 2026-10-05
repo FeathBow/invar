@@ -25,7 +25,8 @@ import Control.Monad (foldM, unless, when)
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Invar.Infer qualified as I
-import Invar.Infer.Result qualified as R
+import Invar.Infer.Trajectory (Trajectory)
+import Invar.Infer.Trajectory qualified as Trajectory
 import Invar.Reward qualified as Reward
 import Numeric.Natural (Natural)
 
@@ -40,7 +41,7 @@ type role Member nominal
 data Member scope = Member Natural Task
 
 type role Observation nominal
-data Observation scope = Observation (Member scope) R.Result Reward.Scored
+data Observation scope = Observation (Member scope) Trajectory Reward.Scored
 
 type role Batch nominal
 newtype Batch scope = Batch [Observation scope]
@@ -86,10 +87,10 @@ members (Cohort entries) = entries
 planned :: Member scope -> I.Plan
 planned (Member _ task) = plan task
 
-record :: Member scope -> R.Result -> Either Error (Observation scope)
+record :: Member scope -> Trajectory -> Either Error (Observation scope)
 record member@(Member _ task) output = do
-    unless (R.consumed output == I.requested (plan task)) (Left (RequestMismatch (name task)))
-    evaluated <- either (Left . RewardError) Right (Reward.score (rule task) (R.response output) (R.truncated output))
+    unless (Trajectory.request output == I.requested (plan task)) (Left (RequestMismatch (name task)))
+    evaluated <- either (Left . RewardError) Right (Reward.score (rule task) (Trajectory.text output) (Trajectory.truncated output))
     pure (Observation member output evaluated)
 
 admit :: Cohort scope -> [Observation scope] -> Either Error (Batch scope)
@@ -106,7 +107,7 @@ admit (Cohort entries) delivered = do
 observations :: Batch scope -> [Observation scope]
 observations (Batch entries) = entries
 
-observed :: Observation scope -> R.Result
+observed :: Observation scope -> Trajectory
 observed (Observation _ output _) = output
 
 source :: Observation scope -> Task
