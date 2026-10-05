@@ -122,7 +122,7 @@ implementation = do
         first : remaining -> do
             let run = N.candidate (U.paired first)
             events <- evalEither (traverse eitherDecodeStrict (Bytes.lines (N.logBytes run)))
-            let changed = case events of loaded : rest -> change "revision" (String "other-model-revision") loaded : rest; rest -> rest
+            let changed = [if field "stage" event == String "loaded_adapter" then change "revision" (String "other-model-revision") event else event | event <- events]
                 candidate = run {N.logBytes = wire changed}
                 pair = N.BoundRun (N.reference (U.paired first)) candidate
             case U.observe supplied {U.cases = first {U.paired = pair} : remaining} of

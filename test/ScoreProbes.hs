@@ -11,7 +11,6 @@ import Data.Word (Word32)
 import Hedgehog
 import InferenceObservations qualified as Source
 import Invar.Infer qualified as Infer
-import Invar.Infer.Observation qualified as Inference
 import Invar.Score qualified as Score
 import Invar.Spec.Load qualified as Load
 import Numeric.Natural (Natural)
@@ -77,7 +76,7 @@ selection :: PropertyT IO ()
 selection = do
     original <- Source.fixture
     planned <- evalEither (Infer.prepare request)
-    source <- evalEither (Inference.admit planned Source.bound (wire original))
+    source <- evalEither (Source.admitted planned Source.bound (wire original))
     base <- evalEither (Score.prepare 0 source planned)
     forM_ [[], [0, 0], [1, 0], [2], [0, 2]] $ \steps -> case Score.withProbe steps base of
         Left (Score.Incompatible _) -> success

@@ -3,27 +3,27 @@
 module Inspection (run) where
 
 import Comparison qualified
-import Control.Monad (unless)
-import Data.Aeson (Value, encode, object, (.=))
+import Control.Monad (unless, when)
+import Data.Aeson (Value, encode, object, toJSON, (.=))
 import Data.ByteString qualified as Bytes
 import Data.ByteString.Lazy.Char8 qualified as Lazy
+import Data.Maybe (isJust)
 import HistoryInput qualified
 import InferenceInput qualified
 import Invar.Evaluation qualified as Evaluation
-import Invar.History.Cohort qualified as Cohort
 import Invar.History.Trace qualified as Trace
-import Invar.Infer qualified as Infer
+import Invar.Infer.Invocation qualified as Call
 import Invar.Infer.Observation qualified as Observation
+import Invar.Infer.Replay qualified as Replay
+import Invar.Infer.Session qualified as Session
 import Invar.Workload qualified as Workload
 import Options qualified as O
-import System.Console.GetOpt (OptDescr, usageInfo)
+import System.Console.GetOpt (OptDescr (Option), usageInfo)
 import System.Exit (die)
-import Training qualified
 
 run :: [String] -> IO ()
 run ["--help"] = putStrLn usage
 run ["inference", "--help"] = putStrLn (usageInfo "Usage: invar inspect inference OPTIONS" inferenceOptions)
-run ["cohort", "--help"] = putStrLn (usageInfo "Usage: invar inspect cohort OPTIONS" cohortOptions)
 run ["trace", "--help"] = putStrLn (usageInfo "Usage: invar inspect trace OPTIONS" HistoryInput.traceOptions)
 run ("history" : supplied) = HistoryInput.inspect supplied
 run ("initial" : supplied) = HistoryInput.inspectInitial supplied
@@ -32,33 +32,27 @@ run ("trace" : supplied) = do
     (declaredRun, declared, encoded) <- HistoryInput.trace fields
     observed <- either die pure (Trace.admit declaredRun declared encoded)
     emit (object ["tasks_sha256" .= Workload.digest declared, "observation" .= Trace.describe observed])
-run ("cohort" : supplied) = do
-    fields <- either die pure (O.parse cohortOptions supplied)
-    settings <- either die pure (Training.settings fields)
-    path <- either die pure (O.required fields "tasks")
-    declared <- readTasks path
-    index <- either die pure (O.numeric fields "cohort")
-    unless (index >= (0 :: Int)) (die "Expected a nonnegative cohort index")
-    selected <- case drop index (Workload.cycles declared) of
-        workload : _ -> pure workload
-        [] -> die "Selected cohort is outside the declared workload"
-    call <- either die pure (O.numeric fields "call")
-    logPath <- either die pure (O.required fields "log")
-    observed <- Bytes.readFile logPath >>= either die pure . Cohort.admitLog settings (selected, call)
-    emit (object ["tasks_sha256" .= Workload.digest declared, "cohort" .= index, "observation" .= Cohort.describe observed])
 run ("inference" : supplied) = do
     fields <- either die pure (O.parse inferenceOptions supplied)
-    requested <- either die pure (InferenceInput.request fields)
-    planned <- either (die . show) pure (Infer.prepare requested)
-    bound <- either die pure (InferenceInput.binding fields)
     path <- either die pure (O.required fields "log")
     status <- either die pure (O.numeric fields "exit-code")
-    unless (status == (0 :: Int)) (die "Inference process did not exit successfully")
-    observed <- Bytes.readFile path >>= either die pure . Observation.admit planned bound
+    encoded <- Bytes.readFile path
+    (protocol, declared) <- case O.optional fields "calls" of
+        Just batch -> do
+            when (any (isJust . O.optional fields) [name | Option _ names _ _ <- InferenceInput.declarationWith "", name <- names]) (die "--calls declares every member of the batch; request and binding options are invalid")
+            (Session.Batched,) <$> InferenceInput.readCalls batch
+        Nothing -> do
+            planned <- InferenceInput.declaredWith "" fields
+            bound <- either die pure (InferenceInput.binding fields)
+            (Session.Single,) . pure <$> either (die . show) pure (Call.prepare bound planned)
+    admitted <- either (die . show) pure (Replay.standalone protocol (Session.Declaration declared Nothing) (Replay.declared status) encoded)
+    let observed = map Observation.view admitted
     case O.optional fields "log-digest" of
         Nothing -> pure ()
-        Just digest -> unless (digest == Observation.logDigest observed) (die "Inference log identity changed after inspection")
-    emit (Observation.describe observed)
+        Just digest -> unless (all ((== digest) . Observation.logDigest) observed) (die "Inference log identity changed after inspection")
+    case (protocol, observed) of
+        (Session.Single, [single]) -> emit (Observation.describe single)
+        _ -> emit (toJSON (map Observation.describe observed))
 run (kind : supplied) | kind `elem` ["update", "updates", "probabilities"] = Comparison.inspect kind supplied
 run ("tasks" : supplied) = do
     fields <- either die pure (O.parse taskOptions supplied)
@@ -92,10 +86,7 @@ evaluationOptions :: [OptDescr (String, String)]
 evaluationOptions = O.descriptions [("tasks", "Frozen workload file"), ("tasks-digest", "Expected identity from a prior task inspection, when supplied"), ("log", "Complete invar evaluate stdout"), ("policy", "Expected canonical adapter identity"), ("exit-code", "Independently observed evaluation process exit status")]
 
 inferenceOptions :: [OptDescr (String, String)]
-inferenceOptions = InferenceInput.options ++ O.descriptions [("log", "Complete standalone inference stdout"), ("exit-code", "Independently observed inference process exit status"), ("log-digest", "Expected prior log snapshot identity")]
-
-cohortOptions :: [OptDescr (String, String)]
-cohortOptions = Training.settingsOptions ++ O.descriptions [("tasks", "Frozen workload file"), ("cohort", "Zero-based declared cohort index"), ("call", "Selected update call"), ("log", "Training log snapshot")]
+inferenceOptions = InferenceInput.declarationWith "" ++ O.descriptions [("calls", "Calls array given to invar infer batch, declaring every member of a batch log in place of the request options"), ("log", "Complete standalone inference stdout"), ("exit-code", "Independently observed inference process exit status"), ("log-digest", "Expected prior log snapshot identity")]
 
 usage :: String
-usage = usageInfo "Usage: invar inspect tasks --input FILE\n       invar inspect evaluation OPTIONS\n       invar inspect inference OPTIONS\n       invar inspect cohort OPTIONS\n       invar inspect trace OPTIONS\n       invar inspect history OPTIONS\n       invar inspect initial OPTIONS\nValidate complete input snapshots and emit their checked observations." evaluationOptions
+usage = usageInfo "Usage: invar inspect tasks --input FILE\n       invar inspect evaluation OPTIONS\n       invar inspect inference OPTIONS\n       invar inspect trace OPTIONS\n       invar inspect history OPTIONS\n       invar inspect initial OPTIONS\nValidate complete input snapshots and emit their checked observations." evaluationOptions

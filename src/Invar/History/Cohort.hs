@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.History.Cohort (Checked, admit, admitLog, admitFrames, describe, inferences, update, rewards) where
+module Invar.History.Cohort (Checked, admit, admitFrames, describe, inferences, update, rewards) where
 
 import Control.Monad (unless)
 import Data.Aeson (Value (..), object, toJSON, withObject, (.:), (.=))
@@ -23,9 +23,6 @@ import Invar.Workload qualified as Workload
 import Numeric.Natural (Natural)
 
 data Checked = Checked [Observation.Report] Report.Report [Rational]
-
-admitLog :: Learn.Settings -> (Workload.Cycle, Natural) -> ByteString -> Either String Checked
-admitLog settings selection encoded = Framing.decode encoded >>= admitFrames settings selection
 
 admitFrames :: Learn.Settings -> (Workload.Cycle, Natural) -> [Framing.Frame] -> Either String Checked
 admitFrames settings (workload, selected) frames = do

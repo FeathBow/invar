@@ -1,11 +1,20 @@
-module InferenceInput (request, requestFor, binding, options, requestWith, bindingWith, optionsWith, mode) where
+module InferenceInput (request, binding, options, requestWith, bindingWith, optionsWith, declaredWith, plannedWith, declarationWith, calls, readCalls, mode) where
 
+import Control.Monad (when, (>=>))
+import Data.Aeson (eitherDecodeStrict)
+import Data.Bifunctor (first)
+import Data.ByteString (ByteString)
+import Data.ByteString qualified as Bytes
+import Data.Maybe (isJust)
 import Invar.Infer qualified as Infer
+import Invar.Infer.Invocation qualified as Call
 import Invar.Policy qualified as Policy
 import Invar.Rollout qualified as Rollout
 import Invar.Spec.Invocation qualified as V
 import Options qualified as O
 import System.Console.GetOpt (OptDescr)
+import System.Exit (die)
+import System.FilePath ((</>))
 
 mode :: Maybe String -> Either String Rollout.Mode
 mode Nothing = Right Rollout.Serial
@@ -28,9 +37,6 @@ requestWith prefix fields = do
   where
     string key = O.required fields (prefix ++ key)
 
-requestFor :: Policy.Description -> O.Fields -> Either String Infer.Request
-requestFor selected = inputs "" (Policy.bindings selected)
-
 inputs :: String -> (String, String, String, String) -> O.Fields -> Either String Infer.Request
 inputs prefix (artifact, tokenizer, base, assembly) fields = do
     prompt <- string "prompt"
@@ -52,3 +58,35 @@ options = optionsWith ""
 
 optionsWith :: String -> [OptDescr (String, String)]
 optionsWith prefix = O.descriptions [(prefix ++ key, description) | (key, description) <- [("digest", "Canonical adapter tensor SHA-256"), ("tokenizer-digest", "Tokenizer operation SHA-256"), ("base-digest", "Frozen model tensor SHA-256"), ("assembly-digest", "Model assembly SHA-256"), ("prompt", "Input prompt"), ("tokens", "Positive token limit"), ("temperature", "Positive sampling temperature"), ("seed", "Logical sample seed"), ("call", "Logical call identity"), ("attempt", "Dispatch attempt identity"), ("instance", "Executor load-instance identity")]]
+
+declaredWith :: String -> O.Fields -> IO Infer.Plan
+declaredWith prefix fields = do
+    selected <- case O.optional fields (prefix ++ "checkpoint") of
+        Nothing -> pure Nothing
+        Just checkpoint -> do
+            when (any (isJust . O.optional fields . (prefix ++)) ["digest", "tokenizer-digest", "base-digest", "assembly-digest"]) (die ("--" ++ prefix ++ "checkpoint derives the adapter and materialization digests from policy.json; separate digest options are invalid"))
+            Just <$> Policy.readDescription (checkpoint </> "policy.json")
+    either die pure (plannedWith prefix selected fields)
+
+plannedWith :: String -> Maybe Policy.Description -> O.Fields -> Either String Infer.Plan
+plannedWith prefix Nothing fields = requestWith prefix fields >>= first show . Infer.prepare
+plannedWith prefix (Just selected) fields = inputs prefix (Policy.bindings selected) fields >>= first show . (Infer.prepare >=> Infer.bindPolicy selected)
+
+declarationWith :: String -> [OptDescr (String, String)]
+declarationWith prefix = optionsWith prefix ++ O.descriptions [(prefix ++ "checkpoint", "Checkpoint whose policy.json declared the inference, in place of the four digests")]
+
+calls :: ByteString -> Either String [Call.Call]
+calls encoded = do
+    arguments <- eitherDecodeStrict encoded
+    when (null arguments) (Left "A finite inference batch requires at least one call")
+    traverse call arguments
+  where
+    call supplied = do
+        fields <- O.parse options supplied
+        requested <- request fields
+        planned <- first show (Infer.prepare requested)
+        bound <- binding fields
+        first show (Call.prepare bound planned)
+
+readCalls :: FilePath -> IO [Call.Call]
+readCalls path = Bytes.readFile path >>= either die pure . calls

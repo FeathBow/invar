@@ -46,7 +46,7 @@ fixtureFor = fixtureWith Right
 fixtureWith :: (Score.Plan -> Either Score.Error Score.Plan) -> [Value] -> Infer.Request -> PropertyT IO (Score.Call, [Value])
 fixtureWith configure original target = do
     sourcePlan <- evalEither (Infer.prepare request)
-    source <- evalEither (Inference.admit sourcePlan Source.bound (wire original))
+    source <- evalEither (Source.admitted sourcePlan Source.bound (wire original))
     targetPlan <- evalEither (Infer.prepare target)
     planned <- evalEither (Score.prepare 0 source targetPlan >>= configure)
     call <- evalEither (Score.bind (V.Binding (V.CallId 20) (V.AttemptId 21) (V.Instance 22)) planned)
@@ -87,7 +87,7 @@ sourceInputs :: PropertyT IO ()
 sourceInputs = do
     original <- Source.fixture
     planned <- evalEither (Infer.prepare request)
-    source <- evalEither (Inference.admit planned Source.bound (wire original))
+    source <- evalEither (Source.admitted planned Source.bound (wire original))
     case Score.prepare 3 source planned of
         Left (Score.SourceProcessFailed 3) -> success
         _ -> failure

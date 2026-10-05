@@ -18,6 +18,7 @@ module Invar.Numerical (
     observe,
     observeWith,
     admit,
+    consistent,
     establish,
     finding,
     scope,
@@ -39,8 +40,12 @@ import Data.Ratio (denominator, numerator)
 import Invar.Artifact qualified as Artifact
 import Invar.Evidence.Encoding qualified as EvidenceEncoding
 import Invar.Infer qualified as Infer
+import Invar.Infer.Invocation qualified as Call
 import Invar.Infer.Observation qualified as Inference
+import Invar.Infer.Replay qualified as Replay
 import Invar.Infer.Result qualified as Result
+import Invar.Infer.Session qualified as Session
+import Invar.Infer.Trajectory qualified as Trajectory
 import Invar.Numerical.Distribution qualified as KL
 import Invar.Policy qualified as Policy
 import Invar.Score qualified as Score
@@ -51,12 +56,14 @@ import Invar.Spec.Numerical (Claim (..), Direction (..), Observed, Path (..), Pr
 import Invar.Spec.Numerical qualified as N
 import Invar.Spec.Score qualified as S
 import Numeric.Natural (Natural)
+import System.Exit (ExitCode (..))
 
 data Run = Run
     { planned :: Infer.Plan
     , binding :: Invocation.Binding
     , exitCode :: Int
     , logBytes :: ByteString
+    , batch :: Maybe [Call.Call]
     }
 
 data BoundRun
@@ -186,10 +193,27 @@ compareProbes measured side = case (select Reference, select Candidate) of
         (forward, backward) <- first (InvalidProbe side) (KL.enclose (S.massWords left) (S.massWords right))
         pure (N.Distribution (S.step left) forward backward)
 
+consistent :: [(FilePath, (Maybe FilePath, Int))] -> Either String ()
+consistent supplied = mapM_ agreed (Map.elems (Map.fromListWith (++) [(located, [declared]) | (located, declared) <- supplied]))
+  where
+    agreed (selected : rest) = unless (all (== selected) rest) (Left "Runs that name the same log declare different batches or outcomes")
+    agreed [] = pure ()
+
 admit :: Side -> Run -> Either ObservationError Inference.Report
 admit side run = do
-    unless (exitCode run == 0) (Left (ProcessFailed side (exitCode run)))
-    first (InvalidRun side) (Inference.admit (planned run) (binding run) (logBytes run))
+    own <- first (InvalidRun side . show) (Call.prepare (binding run) (planned run))
+    (protocol, declared) <- case batch run of
+        Nothing -> pure (Session.Single, [own])
+        Just calls -> do
+            unless (any (\member -> (Call.binding member, Call.plan member) == (binding run, planned run)) calls) (Left (InvalidRun side "The run's declaration is not a member of its declared batch"))
+            pure (Session.Batched, calls)
+    admitted <- first failed (Replay.standalone protocol (Session.Declaration declared Nothing) (Replay.declared (exitCode run)) (logBytes run))
+    case filter ((== binding run) . Trajectory.binding . Replay.trajectory) admitted of
+        [single] -> pure (Inference.view single)
+        _ -> Left (InvalidRun side "Expected one admitted inference for the run's binding")
+  where
+    failed (Session.Exited (ExitFailure code)) = ProcessFailed side code
+    failed problem = InvalidRun side (show problem)
 
 source :: Side -> Inference.Report -> Either ObservationError N.Source
 source side report = do

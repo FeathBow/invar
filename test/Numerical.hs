@@ -4,8 +4,9 @@ module Numerical (numerical) where
 
 import Calls (change, field, request, wire)
 import Control.Monad (forM_)
-import Data.Aeson (Value (..), object, toJSON, (.=))
+import Data.Aeson (Value (..), toJSON)
 import Data.ByteString.Char8 qualified as Bytes
+import Data.Either (isLeft)
 import Data.List (nub)
 import Data.Map.Strict qualified as Map
 import Data.Word (Word32)
@@ -26,6 +27,7 @@ numerical =
         , ("raw signed zero survives observation even when the log ratio is zero", once signedZero)
         , ("invalid execution and prefix mismatches do not produce observations", once invalid)
         , ("individually valid runs must still share the declared paired inputs", once comparable)
+        , ("references to one log must declare one batch and one outcome", once references)
         , ("finite findings retain individual external observation premises", once findings)
         , ("missing cross-scoring distributions and derivations are unknown", once insufficient)
         , ("graph rules cannot relabel scopes or discharge another scope", once scopes)
@@ -38,13 +40,16 @@ inputs :: PropertyT IO (N.Run, [Value])
 inputs = do
     events <- fixture
     planned <- evalEither (Infer.prepare request)
-    pure (N.Run planned bound 0 (wire events), events)
+    pure (N.Run planned bound 0 (wire events) Nothing, events)
 
 pair :: N.Run -> [Value] -> Either N.ObservationError N.Observed
 pair before events = N.observe (N.BoundRun before before {N.logBytes = wire events})
 
 alterResult :: (Value -> Value) -> [Value] -> [Value]
-alterResult f = zipWith (\index event -> if index == (3 :: Int) then f event else event) [0 ..]
+alterResult = alterStage "result"
+
+alterStage :: String -> (Value -> Value) -> [Value] -> [Value]
+alterStage stage modify = map (\event -> if field "stage" event == toJSON stage then modify event else event)
 
 identities :: PropertyT IO ()
 identities = do
@@ -55,7 +60,7 @@ identities = do
     N.firstDivergence (N.path first) === Nothing
     N.matchingSteps (N.path first) === 2
     N.prefixLogRatio (N.path first) === 0
-    second <- evalEither (pair run (object ["stage" .= String "load"] : events))
+    second <- evalEither (pair run (alterStage "load" (change "cpu_seconds" (Number 3)) events))
     assert (N.scope first /= N.scope second)
     assert (N.scopeId (N.scope first) /= N.scopeId (N.scope second))
     N.path first === N.path second
@@ -121,9 +126,17 @@ comparable = do
             ]
     forM_ variants $ \(axis, key, requested, value) -> do
         planned <- evalEither (Infer.prepare requested)
-        let changed = zipWith (\index event -> if index `elem` [1, 3 :: Int] then change "request" (change key value (field "request" event)) event else event) [0 ..] events
+        let rerequest event = change "request" (change key value (field "request" event)) event
+            changed = alterStage "consumed" rerequest (alterStage "result" rerequest events)
             candidate = run {N.planned = planned, N.logBytes = wire (alterResult (change "truncated" (Bool False)) changed)}
         N.observe (N.BoundRun run candidate) === Left (N.IncomparableInputs axis)
+
+references :: PropertyT IO ()
+references = do
+    let declared = ("group.jsonl", (Just "group-calls.json", 0))
+    N.consistent [declared, declared, ("single.jsonl", (Nothing, 3))] === Right ()
+    forM_ [("group.jsonl", (Just "group-calls.json", 7)), ("group.jsonl", (Just "other-calls.json", 0)), ("group.jsonl", (Nothing, 0))] $ \conflicting ->
+        assert (isLeft (N.consistent [declared, conflicting]))
 
 judge :: N.Relation -> N.Observed -> E.Verdict
 judge relation observed = N.finding (N.establish (N.Claim (N.scope observed) relation) observed)
@@ -166,7 +179,7 @@ scopes :: PropertyT IO ()
 scopes = do
     (run, events) <- inputs
     first <- evalEither (pair run events)
-    second <- evalEither (pair run (object ["stage" .= String "load"] : events))
+    second <- evalEither (pair run (alterStage "load" (change "cpu_seconds" (Number 3)) events))
     let claim observed = E.Numerical (N.Claim (N.scope observed) N.SameTokens)
         a = E.EvidenceId 0
         b = E.EvidenceId 1
