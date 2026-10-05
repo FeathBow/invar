@@ -8,7 +8,6 @@ import Evaluations qualified
 import Hedgehog
 import Invar.Evaluation qualified as Evaluation
 import Invar.Quality qualified as Quality
-import Invar.Rollout qualified as Rollout
 import Invar.Workload qualified as Workload
 import Reports qualified
 import Updates (change, field)
@@ -37,7 +36,7 @@ fixture = do
     pure (expected, initial, trained)
 
 admit :: Workload.Document -> String -> [Value] -> PropertyT IO Evaluation.Report
-admit expected policy records = evalEither (Evaluation.admit expected (Evaluation.Run policy 0 Rollout.Serial Nothing) (Reports.stream records))
+admit expected policy records = evalEither (Evaluation.admit expected (Evaluation.Run policy 0 Evaluation.Serial Nothing) (Reports.stream records))
 
 compareReports :: Workload.Document -> [Value] -> [Value] -> PropertyT IO Value
 compareReports expected before after = do

@@ -1,4 +1,4 @@
-module HistoryInput (trace, traceOptions, inspect, inspectInitial, compareHistories, options, inputOptions, load, select) where
+module HistoryInput (trace, initialPolicy, traceOptions, inspect, inspectInitial, compareHistories, options, inputOptions, load, select) where
 
 import Control.Monad (unless)
 import Data.Aeson (encode)
@@ -34,9 +34,12 @@ trace fields = do
     encoded <- Bytes.readFile logPath
     inference <- either die pure (lifetimeMode fields ("inference-mode", [("serial", Trace.Finite), ("batch", Trace.Batched)]))
     learning <- either die pure (lifetimeMode fields ("learning-mode", [("process", Trace.Finite)]))
+    pure (Trace.Run {Trace.settings = settings, Trace.sessions = sessions, Trace.output = output, Trace.method = method, Trace.exitCode = status, Trace.inferenceMode = inference, Trace.learningMode = learning}, tasks, encoded)
+
+initialPolicy :: O.Fields -> IO Policy.Description
+initialPolicy fields = do
     checkpoint <- either die pure (O.required fields "checkpoint")
-    initial <- Policy.readDescription (checkpoint </> "policy.json")
-    pure (Trace.Run {Trace.settings = settings, Trace.sessions = sessions, Trace.output = output, Trace.method = method, Trace.exitCode = status, Trace.inferenceMode = inference, Trace.learningMode = learning, Trace.initialPolicy = initial}, tasks, encoded)
+    Policy.readDescription (checkpoint </> "policy.json")
 
 lifetimeMode :: O.Fields -> (String, [(String, Trace.Mode)]) -> Either String Trace.Mode
 lifetimeMode fields (key, finite) = case O.optional fields key of

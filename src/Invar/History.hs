@@ -29,11 +29,13 @@ import Invar.Learn.Codec (Decoder)
 import Invar.Learn.Gradient qualified as Gradient
 import Invar.Learn.Report qualified as Report
 import Invar.Learn.State qualified as State
+import Invar.Policy qualified as Policy
 import Invar.Policy.File qualified as File
 import Invar.Resident qualified as Resident
 import Invar.Spec.Invocation qualified as V
 import Invar.Workload qualified as Workload
 import Numeric.Natural (Natural)
+import System.FilePath ((</>))
 import Prelude hiding (compare)
 
 data Declaration = Declaration
@@ -65,7 +67,8 @@ data Generation = Generation {generationTrace :: Trace.Generation, generationArt
 
 admit :: Decoder -> Declaration -> (ByteString, ByteString) -> IO Checked
 admit decoder declared (trainingOutput, finalOutput) = do
-    trace <- either invalid pure (Trace.admit (training declared) (tasks declared) trainingOutput)
+    initialPolicy <- Policy.readDescription (checkpoint declared </> "policy.json")
+    trace <- either invalid pure (Trace.admit (training declared) initialPolicy (tasks declared) trainingOutput)
     let selected = Trace.generations trace
         settings = Trace.settings (training declared)
     final <- independent declared trace finalOutput

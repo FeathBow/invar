@@ -31,7 +31,8 @@ run ("initial" : supplied) = HistoryInput.inspectInitial supplied
 run ("trace" : supplied) = do
     fields <- either die pure (O.parse HistoryInput.traceOptions supplied)
     (declaredRun, declared, encoded) <- HistoryInput.trace fields
-    observed <- either die pure (Trace.admit declaredRun declared encoded)
+    initial <- HistoryInput.initialPolicy fields
+    observed <- either die pure (Trace.admit declaredRun initial declared encoded)
     emit (object ["tasks_sha256" .= Workload.digest declared, "observation" .= Trace.describe observed])
 run ("inference" : supplied) = do
     fields <- either die pure (O.parse inferenceOptions supplied)

@@ -2,10 +2,8 @@ module EvaluationInput (declared, options) where
 
 import Control.Monad (when)
 import Data.Maybe (isJust)
-import InferenceInput qualified
 import Invar.Evaluation qualified as Evaluation
 import Invar.Policy qualified as Policy
-import Invar.Rollout qualified as Rollout
 import Options qualified as O
 import System.Console.GetOpt (OptDescr)
 import System.Exit (die)
@@ -14,8 +12,12 @@ import System.FilePath ((</>))
 declared :: String -> O.Fields -> IO Evaluation.Run
 declared prefix fields = do
     status <- either (die . ("Evaluation process: " ++)) pure (O.numeric fields (prefix ++ "exit-code"))
-    mode <- either die pure (InferenceInput.mode (O.optional fields (prefix ++ "worker-mode")))
-    when (mode == Rollout.Shared) (die "An evaluation runs serial, batch or resident")
+    mode <- case O.optional fields (prefix ++ "worker-mode") of
+        Nothing -> pure Evaluation.Serial
+        Just "serial" -> pure Evaluation.Serial
+        Just "batch" -> pure Evaluation.Batched
+        Just "resident" -> pure Evaluation.Resident
+        Just _ -> die "An evaluation runs serial, batch or resident"
     case O.optional fields (prefix ++ "checkpoint") of
         Just checkpoint -> do
             when (isJust (O.optional fields (prefix ++ "policy"))) (die ("--" ++ prefix ++ "checkpoint derives the policy identity from policy.json; --" ++ prefix ++ "policy is invalid with it"))

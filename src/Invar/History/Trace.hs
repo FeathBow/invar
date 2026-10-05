@@ -34,23 +34,23 @@ import Invar.Workload qualified as Workload
 import Numeric.Natural (Natural)
 import System.FilePath ((</>))
 
-data Run = Run {settings :: Learn.Settings, sessions :: Natural, output :: FilePath, method :: String, exitCode :: Int, inferenceMode :: Mode, learningMode :: Mode, initialPolicy :: Policy.Description}
+data Run = Run {settings :: Learn.Settings, sessions :: Natural, output :: FilePath, method :: String, exitCode :: Int, inferenceMode :: Mode, learningMode :: Mode}
 
 data Checked = Checked String [Generation] [Frame] Policy.Description
 data Generation = Generation Cohort.Checked Object Object [Frame] [Group.Group] [Profile.Observation]
 data Waiting = Waiting Learn.Settings [C.Task] Natural Execution.Cycle Report.Report Object Object [Frame]
 
-admit :: Run -> Workload.Document -> ByteString -> Either String Checked
-admit run declared encoded = do
+admit :: Run -> Policy.Description -> Workload.Document -> ByteString -> Either String Checked
+admit run initial declared encoded = do
     first show (Learn.validate (settings run))
     unless (exitCode run == 0) (Left "Training process did not exit successfully")
     unless (sessions run > 0 && method run `elem` ["rename", "reference"] && not (null (output run))) (Left "Invalid declared training sessions, publication method or output directory")
     let chosen = settings run
-    unless (Policy.bindings (initialPolicy run) == (Learn.policy chosen, Learn.tokenizer chosen, Learn.behaviorBase chosen, Learn.behaviorAssembly chosen)) (Left "Initial policy description differs from the declared inference materialization")
+    unless (Policy.bindings initial == (Learn.policy chosen, Learn.tokenizer chosen, Learn.behaviorBase chosen, Learn.behaviorAssembly chosen)) (Left "Initial policy description differs from the declared inference materialization")
     unless ("\n" `Bytes.isSuffixOf` encoded) (Left "Incomplete final training observation line")
     frames <- traverse frame (Bytes.lines encoded)
-    initial <- Execution.start (inferenceMode run, learningMode run) (sessions run)
-    (_, final, _, waiting, state, remaining) <- foldM (advance run) (chosen, initialPolicy run, 0, [], initial, frames) (zip [0 ..] (Workload.cycles declared))
+    started <- Execution.start (inferenceMode run, learningMode run) (sessions run)
+    (_, final, _, waiting, state, remaining) <- foldM (advance run) (chosen, initial, 0, [], started, frames) (zip [0 ..] (Workload.cycles declared))
     closed <- Execution.finish state remaining
     accepted <- traverse admitted (reverse waiting)
     pure (Checked (Artifact.hex (SHA256.hash encoded)) accepted closed final)

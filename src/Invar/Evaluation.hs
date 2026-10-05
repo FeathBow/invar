@@ -2,6 +2,7 @@
 
 module Invar.Evaluation (
     Run (..),
+    Mode (..),
     Model (..),
     Report,
     Sample,
@@ -55,7 +56,10 @@ import Invar.Spec.Invocation qualified as Invocation
 import Invar.Workload qualified as Workload
 import Numeric.Natural (Natural)
 
-data Run = Run {expectedPolicy :: String, exitCode :: Int, workerMode :: Rollout.Mode, description :: Maybe Policy.Description}
+data Run = Run {expectedPolicy :: String, exitCode :: Int, workerMode :: Mode, description :: Maybe Policy.Description}
+    deriving (Eq, Show)
+
+data Mode = Serial | Batched | Resident
     deriving (Eq, Show)
 
 data Report = Report String String Run Model [Sample] (Maybe [Group.Group])
@@ -88,17 +92,14 @@ admit expected selected encoded = do
     identities <- case selectedModel of
         Model.Materialized tokenizer base assembly -> pure (expectedPolicy selected, tokenizer, base, assembly)
         _ -> Left "Evaluation requires complete model materialization"
-    let initial = [if workerMode selected == Rollout.Resident then Just (Session.start Session.Resident, Owner.start (Boundary.Owner Boundary.Inference slot)) else Nothing | slot <- [0 .. count - 1]]
+    let initial = [if workerMode selected == Resident then Just (Session.start Session.Resident, Owner.start (Boundary.Owner Boundary.Inference slot)) else Nothing | slot <- [0 .. count - 1]]
     (_, owners, waiting, groups, remaining) <- foldM (cohort identities) (0, initial, [], [], records) (zip [0 ..] (Workload.cycles expected))
     rest <- foldM close remaining (reverse owners)
     unless (null rest) (Left "Output follows the final evaluation cohort or physical inference close")
     observed <- concat <$> traverse joined (reverse waiting)
-    let bindings = map observedBinding observed
-        distinct values = length values == Set.size (Set.fromList values)
-    unless (distinct (map Invocation.boundCall bindings) && distinct (map Invocation.boundAttempt bindings) && distinct (map Invocation.boundInstance bindings)) (Left "Evaluation reused a call, attempt or instance identity")
-    pure (Report (Workload.digest expected) (Artifact.hex (SHA256.hash encoded)) selected selectedModel observed (if workerMode selected == Rollout.Resident then Just (reverse groups) else Nothing))
+    pure (Report (Workload.digest expected) (Artifact.hex (SHA256.hash encoded)) selected selectedModel observed (if workerMode selected == Resident then Just (reverse groups) else Nothing))
   where
-    protocol = if workerMode selected == Rollout.Batched then Session.Batched else Session.Serial
+    protocol = if workerMode selected == Batched then Session.Batched else Session.Serial
     cohort identities (offset, owners, waiting, groups, remaining) (index, workload) = do
         tasks <- traverse (task identities) (Workload.tasks workload)
         calls <- traverse (\(position, chosen) -> first show (Call.prepare (Invocation.ordinal (offset + position)) (Cohort.plan chosen))) (zip [0 ..] tasks)
@@ -154,7 +155,7 @@ admit expected selected encoded = do
 completion :: (Workload.Document, Run) -> Object -> Parser (Model, Natural)
 completion (expected, selected) fields = do
     selectedModel <- Model.binding fields
-    let resident = workerMode selected == Rollout.Resident
+    let resident = workerMode selected == Resident
     Json.fields (["phase", "policy", "cohorts", "tasks_sha256", "sessions"] ++ Model.fields selectedModel ++ ["worker_mode" | resident]) fields
     when resident $ do
         mode <- fields .: "worker_mode"

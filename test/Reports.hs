@@ -11,7 +11,6 @@ import Data.Text qualified as Text
 import Evaluations qualified
 import Hedgehog
 import Invar.Evaluation qualified as Evaluation
-import Invar.Rollout qualified as Rollout
 import Invar.Workload qualified as Workload
 import Updates (alter, change, field)
 import Workloads (array, declared, encoded, replace)
@@ -43,7 +42,7 @@ fixture = do
     pure (expected, values)
 
 run :: Evaluation.Run
-run = Evaluation.Run policy 0 Rollout.Serial Nothing
+run = Evaluation.Run policy 0 Evaluation.Serial Nothing
 
 accepted :: (Workload.Document, [Value]) -> PropertyT IO Evaluation.Report
 accepted (expected, values) = evalEither (Evaluation.admit expected run (stream values))
@@ -118,7 +117,7 @@ process = do
     (expected, values) <- fixture
     forM_ [1, -9] $ \status -> rejected (Evaluation.admit expected run {Evaluation.exitCode = status} (stream values))
     rejected (Evaluation.admit expected run {Evaluation.expectedPolicy = "invalid"} (stream values))
-    rejected (Evaluation.admit expected run {Evaluation.workerMode = Rollout.Batched} (stream values))
+    rejected (Evaluation.admit expected run {Evaluation.workerMode = Evaluation.Batched} (stream values))
 
 inputs :: PropertyT IO ()
 inputs = do

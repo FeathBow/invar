@@ -43,7 +43,7 @@ traces =
   where
     once = withTests 1 . property
 
-data History = History {run :: Trace.Run, document :: Workload.Document, inference :: [ByteString], learning :: [Value], closing :: [Value], published :: Value, finished :: Value}
+data History = History {run :: Trace.Run, initial :: Policy.Description, document :: Workload.Document, inference :: [ByteString], learning :: [Value], closing :: [Value], published :: Value, finished :: Value}
 
 members :: Natural
 members = 5
@@ -55,7 +55,7 @@ line :: Value -> ByteString
 line = Lazy.toStrict . encode
 
 admit :: History -> Either String Trace.Checked
-admit history = Trace.admit (run history) (document history) (assembled history)
+admit history = Trace.admit (run history) (initial history) (document history) (assembled history)
 
 built :: Int -> Bool -> PropertyT IO History
 built count resident = do
@@ -87,7 +87,8 @@ built count resident = do
     decoded <- evalEither (Workload.decode (line workload))
     pure
         History
-            { run = Trace.Run settings (fromIntegral count) output "rename" 0 Trace.Finite (if resident then Trace.Resident else Trace.Finite) description
+            { run = Trace.Run settings (fromIntegral count) output "rename" 0 Trace.Finite (if resident then Trace.Resident else Trace.Finite)
+            , initial = description
             , document = decoded
             , inference = concat (Map.elems sessions)
             , learning = prefix ++ steps ++ after ++ [acknowledged | resident]
@@ -109,8 +110,8 @@ declared :: PropertyT IO ()
 declared = do
     history <- built 1 False
     let settings = Trace.settings (run history)
-    other <- evalEither (Policy.describe ("other-model", "test-revision") (Policy.bindings (Trace.initialPolicy (run history))))
-    assert (isLeft (admit history {run = (run history) {Trace.initialPolicy = other}}))
+    other <- evalEither (Policy.describe ("other-model", "test-revision") (Policy.bindings (initial history)))
+    assert (isLeft (admit history {initial = other}))
     case admit history {run = (run history) {Trace.settings = settings {L.reference = replicate 64 'd'}}} of
         Left problem -> assert ("Reference scores differ from the declared reference" `isInfixOf` problem)
         Right _ -> failure

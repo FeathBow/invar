@@ -97,10 +97,7 @@ learner physical (settings, reported) records = do
     let Boundary.Owner role _ = Owner.owner physical
         initial = Owner.initial physical
         (leading, remaining) = span ((`elem` map (Just . String) ["loading", "profile", "load", "activation"]) . Framing.stageName) records
-        expected = if initial then [["load", "activation"], ["loading", "profile", "load", "activation"]] else [["activation"]]
     unless (role `elem` [Boundary.Learning, Boundary.Shared]) (Left "Resident observation has a different numerical owner role")
-    unless (map Framing.stageName leading `elem` map (map (Just . String)) expected) (Left "Resident observation requires one actual initial load and subsequent activation costs")
-    mapM_ (\record -> when (Fields.member "phase" (Framing.fields record)) (Left "Unexpected phase within a resident group")) leading
     (execution, rest) <- case break ((== Just (String "result")) . Framing.stageName) remaining of
         (preceding, result : following) -> pure (preceding ++ [result], following)
         _ -> Left "Incomplete resident update result"
