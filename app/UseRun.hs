@@ -15,9 +15,12 @@ import Data.List (genericLength, mapAccumL)
 import Data.Map.Strict qualified as Map
 import Envelope (Problem (..), command, refuse, succeed)
 import Envelope qualified
+import InferenceInput qualified
 import Invar.Artifact qualified as Artifact
-import Invar.Infer qualified as Infer
 import Invar.Infer.Observation qualified as Inference
+import Invar.Infer.Replay qualified as Replay
+import Invar.Infer.Session qualified as Session
+import Invar.Infer.Trajectory qualified as Trajectory
 import Invar.Numerical qualified as N
 import Invar.Policy qualified as Policy
 import Invar.Spec.Invocation qualified as V
@@ -172,6 +175,9 @@ flags pairs = concat [["--" ++ name, entry] | (name, entry) <- pairs]
 logPath :: Group -> FilePath
 logPath group = "logs" </> (label group ++ ".jsonl")
 
+callsPath :: Group -> FilePath
+callsPath group = "logs" </> (label group ++ "-calls.json")
+
 execute :: FilePath -> FilePath -> Execution.Execution -> [Group] -> IO [Value]
 execute executable output plan = go []
   where
@@ -182,7 +188,7 @@ execute executable output plan = go []
         Lazy.writeFile (output </> "records.json") (encode kept)
         either (\found -> refuse format [found {message = message found ++ "; every record so far is kept in " ++ (output </> "records.json")}]) (const (go kept rest)) outcome
     once group = do
-        let calls = "logs" </> (label group ++ "-calls.json")
+        let calls = callsPath group
             errors = "logs" </> (label group ++ ".stderr")
         Lazy.writeFile (output </> calls) (encode [flags (request (policy group) input call) | (input, call) <- members group])
         status <- launch group calls errors (["infer", "batch"] ++ worker group)
@@ -202,7 +208,7 @@ execute executable output plan = go []
                     , "stderr" .= errors
                     , "exit_code" .= either (either (const Nothing) Just) Just status
                     ]
-        pure (checked group logBytes =<< first (failure group errors) status, record)
+        pure (checked group (callBytes, logBytes) =<< first (failure group errors) status, record)
     worker group =
         flags
             [ ("python", Execution.python plan)
@@ -230,16 +236,19 @@ execute executable output plan = go []
         Right code -> "Group " ++ label group ++ " exited with " ++ show code ++ " on inputs " ++ keys group ++ "; see " ++ (output </> errors)
     readIfPresent path = doesFileExist path >>= \found -> if found then Bytes.readFile path else pure Bytes.empty
 
-checked :: Group -> Bytes.ByteString -> Int -> Either Problem Int
-checked group logBytes status = mapM_ member (members group) >> pure status
+checked :: Group -> (Bytes.ByteString, Bytes.ByteString) -> Int -> Either Problem Int
+checked group (callBytes, logBytes) status = do
+    declared <- first (Problem "internal-error" (located group) . ("The group's calls could not be read back: " ++)) (InferenceInput.calls callBytes)
+    admitted <- first (Problem "execution-failed" (located group) . (("The log of group " ++ label group ++ " does not carry its declared batch: ") ++) . show) (Replay.standalone Session.Batched (Session.Declaration declared Nothing) (Replay.declared status) logBytes)
+    mapM_ (member admitted) (members group)
+    pure status
   where
-    member (input, call) = do
-        let (adapter, tokenizer, base, assembly) = Policy.bindings (policy group)
-            requested = Infer.Request adapter tokenizer base assembly (U.prompt input) (U.tokens input) (U.temperature input) (U.seed input)
-            binding = V.Binding (V.CallId call) (V.AttemptId call) (V.Instance call)
+    member admitted (input, call) = do
+        let binding = V.Binding (V.CallId call) (V.AttemptId call) (V.Instance call)
             named = label group ++ " input " ++ show (U.cohort (U.inputKey input), U.task (U.inputKey input))
-        planned <- first (Problem "internal-error" (located group) . (("The request for " ++ named ++ " could not be prepared: ") ++) . show) (Infer.prepare requested)
-        report <- first (Problem "execution-failed" (located group) . (("The log does not carry the declared observation for " ++ named ++ ": ") ++) . show) (N.admit (if sideName group == "reference" then N.Reference else N.Candidate) (N.Run planned binding status logBytes))
+        report <- case filter ((== binding) . Trajectory.binding) admitted of
+            [single] -> pure (Inference.view logBytes single)
+            _ -> Left (Problem "execution-failed" (located group) ("The log does not carry the declared observation for " ++ named))
         reported <- first (Problem "identity-mismatch" (located group) . (("The worker's report for " ++ named ++ " names no policy: ") ++)) (Inference.policyDescription report)
         unless (reported == policy group) (Left (Problem "identity-mismatch" (located group) ("The worker reported " ++ show reported ++ " for " ++ named ++ ", not the contract's " ++ sideName group ++ " policy")))
 
@@ -277,7 +286,7 @@ rows contract plan planned =
   where
     placed = Map.fromList [((schedule group, sideName group, U.inputKey input), (group, call)) | group <- planned, (input, call) <- members group]
     lookupRun scheduled owner input = placed Map.! (scheduled, owner, U.inputKey input)
-    record (group, call) input = request (policy group) input call ++ [("log", logPath group), ("exit-code", "0")]
+    record (group, call) input = request (policy group) input call ++ [("log", logPath group), ("calls", callsPath group), ("exit-code", "0")]
     paired input = flags ([("reference-" ++ name, entry) | (name, entry) <- record (lookupRun "paired" "reference" input) input] ++ [("candidate-" ++ name, entry) | (name, entry) <- record (lookupRun "paired" "candidate" input) input])
     executed scheduled input = flags (record (lookupRun scheduled "candidate" input) input)
     encodeRow key pairedFlags repeats = toJSON (U.cohort key, U.task key, pairedFlags, repeats)

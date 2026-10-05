@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Numerical (run, readPair, readRun) where
+module Numerical (run, readPair, readRun, pairReferences, runReferences, consistent) where
 
 import Control.Monad (unless, when)
 import Data.Aeson (Value (..), eitherDecodeStrict, encode, object, (.=))
@@ -9,13 +9,13 @@ import Data.ByteString.Char8 qualified as TextBytes
 import Data.ByteString.Lazy.Char8 qualified as Lazy
 import Data.Maybe (isJust, isNothing)
 import InferenceInput qualified
-import Invar.Infer qualified as Infer
 import Invar.Infer.Observation qualified as Inference
 import Invar.Numerical qualified as N
 import Invar.Score qualified as Score
 import Numeric.Natural (Natural)
 import Options qualified as O
 import System.Console.GetOpt (OptDescr, usageInfo)
+import System.Directory (canonicalizePath)
 import System.Exit (die)
 
 run :: [String] -> IO ()
@@ -35,10 +35,36 @@ readRun :: [String] -> IO N.Run
 readRun supplied = either die pure (O.parse runOptions supplied) >>= (`input` "")
 
 runOptions :: [OptDescr (String, String)]
-runOptions = InferenceInput.options ++ O.descriptions [("log", "Complete standalone or finite-batch inference stdout"), ("exit-code", "Independently recorded process exit status")]
+runOptions = inferenceRun ""
+
+type Reference = (FilePath, (Maybe FilePath, Int))
+
+pairReferences :: [String] -> Either String [Reference]
+pairReferences supplied = do
+    fields <- O.parse pairOptions supplied
+    traverse (`reference` fields) ["reference-", "candidate-"]
+
+runReferences :: [String] -> Either String [Reference]
+runReferences supplied = O.parse runOptions supplied >>= fmap pure . reference ""
+
+reference :: String -> O.Fields -> Either String Reference
+reference prefix fields = do
+    path <- O.required fields (prefix ++ "log")
+    status <- O.numeric fields (prefix ++ "exit-code")
+    pure (path, (O.optional fields (prefix ++ "calls"), status))
+
+consistent :: [Reference] -> IO (Either String ())
+consistent supplied = N.consistent <$> traverse canonical supplied
+  where
+    canonical (path, (batch, status)) = do
+        located <- canonicalizePath path
+        declared <- traverse canonicalizePath batch
+        pure (located, (declared, status))
 
 pair :: O.Fields -> IO (N.BoundRun, (Inference.Report, Inference.Report))
 pair fields = do
+    references <- either die pure (traverse (`reference` fields) ["reference-", "candidate-"])
+    consistent references >>= either die pure
     left <- input fields "reference-"
     right <- input fields "candidate-"
     leftReport <- either (die . show) pure (N.admit N.Reference left)
@@ -50,13 +76,13 @@ pair fields = do
 
 input :: O.Fields -> String -> IO N.Run
 input fields prefix = do
-    requested <- either die pure (InferenceInput.requestWith prefix fields)
-    planned <- either (die . show) pure (Infer.prepare requested)
+    planned <- InferenceInput.declaredWith prefix fields
     binding <- either die pure (InferenceInput.bindingWith prefix fields)
     status <- either die pure (O.numeric fields (prefix ++ "exit-code"))
     path <- either die pure (O.required fields (prefix ++ "log"))
     bytes <- Bytes.readFile path
-    pure (N.Run planned binding status bytes)
+    batch <- traverse InferenceInput.readCalls (O.optional fields (prefix ++ "calls"))
+    pure (N.Run planned binding status bytes batch)
 
 score :: O.Fields -> N.Side -> ((N.Run, Inference.Report), N.Run) -> IO [(N.Side, Score.Report)]
 score fields side (source, target) = do
@@ -140,7 +166,7 @@ options =
 
 pairOptions :: [OptDescr (String, String)]
 pairOptions =
-    concatMap side ["reference-", "candidate-"]
+    concatMap inferenceRun ["reference-", "candidate-"]
         ++ concatMap scored ["reference-score-", "candidate-score-"]
         ++ concatMap probed ["reference-probe-", "candidate-probe-"]
         ++ O.descriptions
@@ -148,12 +174,6 @@ pairOptions =
             , ("probe-steps", "Frozen increasing JSON array of response steps, required when supplying probe logs")
             ]
   where
-    side prefix =
-        InferenceInput.optionsWith prefix
-            ++ O.descriptions
-                [ (prefix ++ "log", "Complete standalone or finite-batch inference stdout")
-                , (prefix ++ "exit-code", "Independently recorded process exit status")
-                ]
     scored prefix =
         O.descriptions
             ( [ (prefix ++ "log", "Complete score of this side's path through the opposite implementation")
@@ -169,6 +189,15 @@ pairOptions =
         , (prefix ++ "attempt", "Actual score attempt identity")
         , (prefix ++ "instance", "Actual score activation instance")
         ]
+
+inferenceRun :: String -> [OptDescr (String, String)]
+inferenceRun prefix =
+    InferenceInput.declarationWith prefix
+        ++ O.descriptions
+            [ (prefix ++ "log", "Complete standalone or finite-batch inference stdout")
+            , (prefix ++ "exit-code", "Independently recorded process exit status")
+            , (prefix ++ "calls", "Calls array given to invar infer batch, declaring the whole batch this run's log records; the run takes its member by binding")
+            ]
 
 usage :: String
 usage = usageInfo "Usage: invar compare numerical OPTIONS\nCompare finite paired inference observations using declared calls and actual log snapshots.\nOptional reference-score-* and candidate-score-* inputs admit full-path cross-scores.\nDeclare each full-vocabulary score's own steps with its score-probe-steps option; omission declares a plain score.\nEach selected-path ratio is source minus opposite target on that source's path.\nKL requires --probe-path; reference-probe-* and candidate-probe-* bind full vectors at --probe-steps.\nScore attachments and KL probes are supplied independently; neither supplies the other implicitly.\nEvery selected-step KL upper bound must meet the budget; an unresolved interval is unknown.\nUse run argument arrays accept these paired-observation options without --relation or --budget.\nA successful command reports accept, refute or unknown; it does not grant use admission.\nModel substitution remains unknown." options

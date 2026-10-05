@@ -18,7 +18,10 @@ import Invar.History.Profile qualified as Profile
 import Invar.History.Publication qualified as Publication
 import Invar.History.Trace qualified as Trace
 import Invar.Infer qualified as Infer
+import Invar.Infer.Invocation qualified as Call
 import Invar.Infer.Observation qualified as Inference
+import Invar.Infer.Replay qualified as Replay
+import Invar.Infer.Session qualified as Session
 import Invar.Json qualified as Json
 import Invar.Learn qualified as Learn
 import Invar.Learn.Adapter qualified as Adapter
@@ -93,12 +96,15 @@ independent declared generations output = do
     let requested = finalRequest declared
         bound = finalBinding declared
         next = sum [fromIntegral (length (Workload.tasks workload)) + 1 | workload <- Workload.cycles (tasks declared)]
-    unless (finalExit declared == 0) (invalid "Final independent inference did not exit successfully")
     unless (Infer.artifact requested == expected) (invalid "Final independent inference does not load the last published policy")
     either (invalid . show) pure (Learn.materialization (Trace.settings (training declared)) requested)
     unless (V.boundCall bound >= V.CallId next && V.boundAttempt bound >= V.AttemptId next && V.boundInstance bound >= V.Instance next) (invalid "Final independent inference reuses a training invocation identity")
     planned <- either (invalid . show) pure (Infer.prepare requested)
-    either invalid pure (Inference.admit planned bound output)
+    call <- either (invalid . show) pure (Call.prepare bound planned)
+    admitted <- either (invalid . show) pure (Replay.standalone Session.Single (Session.Declaration [call] Nothing) (Replay.declared (finalExit declared)) output)
+    case admitted of
+        [single] -> pure (Inference.view output single)
+        _ -> invalid "Expected one admitted final independent inference"
 
 rng :: Value -> Either String Value
 rng = parseEither (withObject "checkpoint observation" (\fields -> fields .: "state" >>= \state -> pure (Object (Fields.delete "steps" state))))

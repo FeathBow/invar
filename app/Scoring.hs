@@ -8,8 +8,11 @@ import HistoryInput qualified
 import InferenceInput qualified
 import Invar.History qualified as History
 import Invar.Infer qualified as Infer
+import Invar.Infer.Invocation qualified as Call
 import Invar.Infer.Observation qualified as Inference
+import Invar.Infer.Replay qualified as Replay
 import Invar.Infer.Result qualified as Result
+import Invar.Infer.Session qualified as Session
 import Invar.Score qualified as Score
 import Invar.Score.Worker qualified as Execution
 import Invar.Worker qualified as Worker
@@ -63,13 +66,16 @@ prepare fields = do
 
 standalone :: O.Fields -> IO (Int, Inference.Report)
 standalone fields = do
-    original <- either die pure (InferenceInput.requestWith "source-" fields)
-    sourcePlan <- either (die . show) pure (Infer.prepare original)
+    sourcePlan <- InferenceInput.declaredWith "source-" fields
     sourceBinding <- either die pure (InferenceInput.bindingWith "source-" fields)
     sourcePath <- either die pure (O.required fields "source-log")
     sourceStatus <- either die pure (O.numeric fields "source-exit-code")
+    call <- either (die . show) pure (Call.prepare sourceBinding sourcePlan)
     encoded <- Bytes.readFile sourcePath
-    (,) sourceStatus <$> either die pure (Inference.admit sourcePlan sourceBinding encoded)
+    admitted <- either (die . show) pure (Replay.standalone Session.Single (Session.Declaration [call] Nothing) (Replay.declared sourceStatus) encoded)
+    case admitted of
+        [single] -> pure (sourceStatus, Inference.view encoded single)
+        _ -> die "Expected one admitted source inference"
 
 rollout :: O.Fields -> IO (Int, Inference.Report)
 rollout fields = do
@@ -84,7 +90,7 @@ rollout fields = do
 
 common :: [OptDescr (String, String)]
 common =
-    InferenceInput.optionsWith "source-"
+    InferenceInput.declarationWith "source-"
         ++ O.descriptions
             [ ("source-log", "Complete source free-generation log")
             , ("source-exit-code", "Independently recorded source process exit status")

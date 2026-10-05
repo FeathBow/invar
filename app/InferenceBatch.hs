@@ -1,12 +1,7 @@
 module InferenceBatch (run) where
 
-import Control.Monad (when)
-import Data.Aeson (eitherDecodeStrict)
-import Data.Bifunctor (first)
 import Data.ByteString qualified as Bytes
 import InferenceInput qualified
-import Invar.Infer qualified as Infer
-import Invar.Infer.Invocation qualified as Call
 import Invar.Transcript qualified as Transcript
 import Invar.Worker qualified as Worker
 import Options qualified as O
@@ -18,19 +13,8 @@ run ["--help"] = putStrLn usage
 run supplied = do
     fields <- either die pure (O.parse options supplied)
     worker <- either die pure (selected fields)
-    encoded <- Bytes.getContents
-    arguments <- either die pure (eitherDecodeStrict encoded)
-    when (null arguments) (die "A finite inference batch requires at least one call")
-    calls <- either die pure (traverse prepare arguments)
+    calls <- Bytes.getContents >>= either die pure . InferenceInput.calls
     Worker.runBatchedSession worker Nothing Transcript.standard calls >>= either (die . show) (const (pure ()))
-
-prepare :: [String] -> Either String Call.Call
-prepare supplied = do
-    fields <- O.parse InferenceInput.options supplied
-    requested <- InferenceInput.request fields
-    planned <- first show (Infer.prepare requested)
-    bound <- InferenceInput.binding fields
-    first show (Call.prepare bound planned)
 
 selected :: O.Fields -> Either String Worker.Worker
 selected fields = Worker.Worker <$> string "python" <*> string "worker" <*> string "cache" <*> string "adapter" <*> pure [] <*> pure (O.optional fields "worker-config")

@@ -35,7 +35,7 @@ fixture = do
     original <- Source.fixture
     planned <- evalEither (Infer.prepare request)
     let other = alterResult (change "tokens" (toJSON [1, 9, 3 :: Int])) original
-        run events = N.Run planned Source.bound 0 (wire events)
+        run events = N.Run planned Source.bound 0 (wire events) Nothing
     pure (run original, run other, original, other)
 
 alterResult :: (Value -> Value) -> [Value] -> [Value]
@@ -101,7 +101,7 @@ correspondence = do
     (left, right, original, _) <- fixture
     forward <- measured original [0xbf800000, 0xc0000000]
     N.observe (N.ScoredRun left right [(N.Candidate, forward)]) === Left (N.InvalidScore N.Candidate "source execution")
-    let changedSource = left {N.logBytes = wire (object ["stage" .= String "load"] : original)}
+    let changedSource = left {N.logBytes = wire (map (\event -> if field "stage" event == String "load" then change "cpu_seconds" (Number 3) event else event) original)}
     N.observe (N.ScoredRun changedSource right [(N.Reference, forward)]) === Left (N.InvalidScore N.Reference "source execution")
     (wrongCall, wrongEvents) <- Scores.fixtureFor original request {Infer.base = replicate 64 '0'}
     wrongTarget <- evalEither (Score.admit wrongCall 0 (wire wrongEvents))

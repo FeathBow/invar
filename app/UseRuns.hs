@@ -14,8 +14,12 @@ observe path contract = do
         Right entries -> case traverse shape entries of
             Left problem -> pure (Left problem)
             Right shaped -> do
-                cases <- traverse build shaped
-                pure (either (Left . show) Right (U.observe (U.BoundRun (U.declaredDomain contract) (U.declaredMeasurement contract) cases)))
+                agreed <- either (pure . Left) (Numerical.consistent . concat) (traverse references shaped)
+                case agreed of
+                    Left problem -> pure (Left problem)
+                    Right () -> do
+                        cases <- traverse build shaped
+                        pure (either (Left . show) Right (U.observe (U.BoundRun (U.declaredDomain contract) (U.declaredMeasurement contract) cases)))
   where
     shape :: [Value] -> Either String (U.Key, Value, Value)
     shape entry = case entry of
@@ -29,5 +33,9 @@ observe path contract = do
         paired <- either fail pure (decode arguments) >>= Numerical.readPair
         repeats <- either fail pure (decode repeated) >>= traverse Numerical.readRun
         pure (U.Case key paired repeats)
+    references (_, arguments, repeated) = do
+        paired <- decode arguments >>= Numerical.pairReferences
+        repeats <- (decode repeated :: Either String [[String]]) >>= traverse Numerical.runReferences
+        pure (paired ++ concat repeats)
     decode :: (FromJSON value) => Value -> Either String value
     decode = parseEither parseJSON

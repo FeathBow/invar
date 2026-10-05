@@ -39,7 +39,7 @@ fixture = do
     original <- Source.fixture
     planned <- evalEither (Infer.prepare request)
     let other = map (\value -> if field "stage" value == String "result" then change "tokens" (toJSON [1, 3, 2 :: Int]) value else value) original
-        run events = N.Run planned Source.bound 0 (wire events)
+        run events = N.Run planned Source.bound 0 (wire events) Nothing
     pure (run original, run other, original, other)
 
 measured :: [Value] -> [(Natural, [Float])] -> PropertyT IO Score.Report

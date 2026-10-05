@@ -72,7 +72,7 @@ invar use inspect --contract contract.json --runs runs.json
 invar use admit --contract contract.json --runs runs.json
 ```
 
-`runs.json` has one entry per input: `[cohort, key, pair, repeats]`, where the pair holds `invar compare numerical` arguments and each repeat describes one further candidate execution.
+`runs.json` has one entry per input: `[cohort, key, pair, repeats]`, where the pair holds `invar compare numerical` arguments and each repeat describes one further candidate execution. A run recorded in a batch log names the batch's calls file with `--calls`, and admission replays the whole batch under that declaration before it takes the run's member by binding. Runs that name the same log must name the same calls file and exit status.
 
 The certificate records each confidence bound it used as part of its method, so `invar use admit` reports the reference and increase bounds from the decision itself. Beside them it puts other common tests on the same paired losses, at the contract's regression alpha and ceiling, without changing the decision: `Invar.Use.Statistics` gives the population bound the contract did not use, a paired Wald interval with the equivalence and noninferiority verdicts it implies against the ceiling, and, when every loss is zero or one, the exact one sided McNemar tail for the units that got worse. The Wald interval uses an upper enclosure of the normal quantile computed from an alternating series with a bounded remainder and an upper rational bound on pi.
 

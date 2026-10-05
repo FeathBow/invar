@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Infer.Observation (Report, admit, admitFrames, admitGroup, result, binding, logDigest, policyDescription, describe) where
+module Invar.Infer.Observation (Report, view, admitFrames, admitGroup, result, binding, logDigest, policyDescription, describe) where
 
 import Control.Monad (unless, when)
 import Crypto.Hash.SHA256 qualified as SHA256
@@ -8,7 +8,6 @@ import Data.Aeson (Object, Value (..), object, withObject, (.:), (.=))
 import Data.Aeson.KeyMap qualified as Fields
 import Data.Aeson.Types (parseEither)
 import Data.ByteString (ByteString)
-import Data.ByteString.Char8 qualified as Bytes
 import Data.Text (Text)
 import Invar.Artifact qualified as Artifact
 import Invar.Infer qualified as Infer
@@ -17,18 +16,18 @@ import Invar.Infer.Invocation qualified as Invocation
 import Invar.Infer.Output qualified as Output
 import Invar.Infer.Records qualified as Records
 import Invar.Infer.Result qualified as Result
+import Invar.Infer.Trajectory (Trajectory)
+import Invar.Infer.Trajectory qualified as Trajectory
 import Invar.Infer.Wire qualified as Wire
 import Invar.Json qualified as Json
 import Invar.Policy qualified as Policy
 import Invar.Spec.Invocation qualified as V
 
-data Report = Report String V.Binding Result.Result Object
+data Report = Report String V.Binding Result.Result (String, String)
     deriving (Eq, Show)
 
-admit :: Infer.Plan -> V.Binding -> ByteString -> Either String Report
-admit planned bound encoded = do
-    unless ("\n" `Bytes.isSuffixOf` encoded) (Left "Incomplete final inference observation line")
-    Framing.decode encoded >>= admitWith planned bound encoded
+view :: ByteString -> Trajectory -> Report
+view encoded admitted = Report (Artifact.hex (SHA256.hash encoded)) (Trajectory.binding admitted) (Trajectory.result admitted) (Trajectory.model admitted, Trajectory.revision admitted)
 
 admitFrames :: Infer.Plan -> V.Binding -> [Framing.Frame] -> Either String Report
 admitFrames planned bound records = admitWith planned bound (Framing.encode records) records
@@ -64,12 +63,12 @@ check planned bound (source, values) (loaded, consumed, output, rawOutput) = do
     call <- either (Left . show) Right (Invocation.prepare bound planned)
     expected <- Json.decode (Invocation.batchInput call) >>= parseEither (withObject "expected inference consumption" pure)
     Records.consumed expected consumed
-    _ <- Records.loaded (planned, bound, expected) loaded
+    found <- Records.loaded (planned, bound, expected) loaded
     Records.result bound output
     observed <- either (Left . show) Right (Result.observeObjects planned values)
     Output.rawBehavior rawOutput (Result.behaviorBits observed)
     let digest = Artifact.hex (SHA256.hash source)
-    length digest `seq` pure (Report digest bound observed loaded)
+    length digest `seq` pure (Report digest bound observed (Records.model found, Records.revision found))
 
 trace :: [(ByteString, Object)] -> Either String (Object, Object, Object, ByteString)
 trace records = do
@@ -95,13 +94,12 @@ logDigest :: Report -> String
 logDigest (Report digest _ _ _) = digest
 
 policyDescription :: Report -> Either String Policy.Description
-policyDescription (Report _ _ observed loaded) = do
-    source <- parseEither (\fields -> (,) <$> fields .: "model" <*> fields .: "revision") loaded
+policyDescription (Report _ _ observed source) = do
     let requested = Result.consumed observed
     Policy.describe source (Infer.artifact requested, Infer.tokenizer requested, Infer.base requested, Infer.assembly requested)
 
 describe :: Report -> Value
-describe report@(Report _ _ observed loaded) =
+describe report@(Report _ _ observed (model, revision)) =
     object
         [ "log_sha256" .= logDigest report
         , "binding" .= Wire.bindingValue (binding report)
@@ -110,8 +108,8 @@ describe report@(Report _ _ observed loaded) =
         , "prompt_length" .= Result.promptLength observed
         , "text" .= Result.response observed
         , "truncated" .= Result.truncated observed
-        , "model" .= Fields.lookup "model" loaded
-        , "revision" .= Fields.lookup "revision" loaded
+        , "model" .= model
+        , "revision" .= revision
         , "adapter" .= Infer.artifact requested
         , "tokenizer" .= Infer.tokenizer requested
         , "base" .= Infer.base requested
