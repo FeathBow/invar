@@ -4,15 +4,14 @@
 module Cohorts (cohorts) where
 
 import Control.Monad (forM_, join)
-import Data.Aeson (Value (..), encode, object, (.=))
-import Data.ByteString.Char8 qualified as Bytes
-import Data.ByteString.Lazy qualified as Lazy
-import Data.Word (Word32)
 import Hedgehog
 import Invar.Cohort qualified as C
 import Invar.Infer qualified as I
-import Invar.Infer.Result qualified as R
+import Invar.Infer.Trajectory (Trajectory)
+import Invar.Infer.Trajectory qualified as Trajectory
 import Invar.Reward qualified as Reward
+import Invar.Spec.Invocation qualified as V
+import Logs qualified
 
 cohorts :: Group
 cohorts =
@@ -40,13 +39,8 @@ identity = replicate 64 'a'
 plan :: Integer -> PropertyT IO I.Plan
 plan seed = evalEither (I.prepare I.Request {I.artifact = identity, I.tokenizer = replicate 64 'c', I.base = replicate 64 'e', I.assembly = replicate 64 'f', I.prompt = "Compute the answer.", I.tokens = 2, I.temperature = 0.8, I.seed = seed})
 
-report :: I.Plan -> String -> Bool -> PropertyT IO R.Result
-report planned text limited = evalEither (R.observe planned (Bytes.unlines (map (Lazy.toStrict . encode) [loaded, output])))
-  where
-    input = I.requested planned
-    requested = object ["prompt" .= I.prompt input, "tokens" .= I.tokens input, "temperature" .= I.temperature input, "seed" .= I.seed input]
-    loaded = object ["stage" .= String "loaded_adapter", "requested" .= I.artifact input, "consumed" .= I.artifact input, "tokenizer" .= I.tokenizer input, "base" .= I.base input, "assembly" .= I.assembly input]
-    output = object ["stage" .= String "result", "adapter" .= I.artifact input, "tokenizer" .= I.tokenizer input, "base" .= I.base input, "assembly" .= I.assembly input, "request" .= requested, "tokens" .= [1, 2, 3 :: Int], "prompt_length" .= Number 1, "behavior" .= [-0.5, -0.25 :: Double], "behavior_bits" .= [0xbf000000, 0xbe800000 :: Word32], "truncated" .= limited, "text" .= text]
+report :: I.Plan -> String -> Bool -> PropertyT IO Trajectory
+report planned text limited = Logs.admitted planned (V.ordinal 0) (text, limited)
 
 exercise :: C.Definition -> (forall scope. C.Cohort scope -> PropertyT IO ()) -> PropertyT IO ()
 exercise declared action = join (evalEither (C.withCohort declared action))
@@ -60,7 +54,7 @@ ordered = do
     exercise declared $ \cohort -> do
         supplied <- traverse filled (reverse (C.members cohort))
         batch <- evalEither (C.admit cohort supplied)
-        map (I.seed . R.consumed . C.observed) (C.observations batch) === [17, 18]
+        map (I.seed . Trajectory.request . C.observed) (C.observations batch) === [17, 18]
         map C.reward (C.observations batch) === [1, 1]
 
 rejected :: C.Error -> Either C.Error result -> PropertyT IO ()

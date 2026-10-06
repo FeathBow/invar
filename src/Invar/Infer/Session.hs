@@ -35,7 +35,7 @@ data Declaration = Declaration {calls :: [Call.Call], reference :: Maybe String}
 
 newtype Request = Request {requested :: [Call.Call]}
 
-data Input = Dispatched Declaration | Hosted Owner.State Declaration | Line ByteString | Fragment ByteString | Ended Transcript.Outcome
+data Input = Dispatched Declaration | Hosted Owner.State Declaration | Line ByteString | Fragment ByteString | Ended Transcript.Outcome | Delimited
 
 data Product = SendRequest Request | Send ByteString | Close | Admitted [Trajectory] | Owned Owner.State
 
@@ -65,6 +65,9 @@ step session supplied = case supplied of
     Line raw -> protocolError (record raw) >>= receive session
     Fragment _ -> Left (Protocol "Worker output ends with an incomplete record")
     Ended outcome -> end session outcome
+    Delimited -> case phase session of
+        Draining -> pure (session {phase = Idle, completed = []}, [Admitted (completed session)])
+        _ -> Left (Protocol "Session segment ends before a complete response")
 
 dispatch :: Session -> Declaration -> Either Error (Session, [Product])
 dispatch session declaration = case (phase session, protocol session, calls declaration) of

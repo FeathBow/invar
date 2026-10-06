@@ -1,6 +1,6 @@
 {-# LANGUAGE RoleAnnotations #-}
 
-module Invar.Rollout (Driver, Mode (..), Options (..), Observer (..), Batch, Sample, Error (..), withDriver, withConfiguredDriver, withRecordedDriver, run, runObserved, silent, samples, delivered, name, group, observation, trajectory, reward, scored) where
+module Invar.Rollout (Driver, Mode (..), Options (..), Observer (..), Batch, Sample, Error (..), withDriver, withConfiguredDriver, withRecordedDriver, run, runObserved, silent, samples, delivered, name, group, trajectory, reward, scored) where
 
 import Control.Concurrent (forkIOWithUnmask, killThread)
 import Control.Concurrent.MVar (newEmptyMVar, newMVar, putMVar, readMVar, withMVar)
@@ -11,7 +11,6 @@ import Data.List (sortOn)
 import Invar.Cohort qualified as C
 import Invar.Infer.Batch qualified as Batch
 import Invar.Infer.Invocation qualified as I
-import Invar.Infer.Result qualified as R
 import Invar.Infer.Trajectory (Trajectory)
 import Invar.Infer.Trajectory qualified as Trajectory
 import Invar.Reward qualified as Reward
@@ -154,7 +153,7 @@ finishSession selected returned = do
         else Left (Execution (W.ProtocolFailure "Batch response count differs from selected requests"))
   where
     record ((index, member), completed) = do
-        observed <- first Admission (C.record member (Trajectory.result completed))
+        observed <- first Admission (C.record member completed)
         pure (index, observed, completed)
 
 partition :: Int -> [value] -> [[value]]
@@ -194,9 +193,6 @@ name (Sample task _ _) = C.name task
 
 group :: Sample -> String
 group (Sample task _ _) = C.group task
-
-observation :: Sample -> R.Result
-observation (Sample _ executed _) = Trajectory.result executed
 
 reward :: Sample -> Rational
 reward = Reward.value . scored

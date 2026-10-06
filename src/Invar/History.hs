@@ -29,11 +29,13 @@ import Invar.Learn.Codec (Decoder)
 import Invar.Learn.Gradient qualified as Gradient
 import Invar.Learn.Report qualified as Report
 import Invar.Learn.State qualified as State
+import Invar.Policy qualified as Policy
 import Invar.Policy.File qualified as File
 import Invar.Resident qualified as Resident
 import Invar.Spec.Invocation qualified as V
 import Invar.Workload qualified as Workload
 import Numeric.Natural (Natural)
+import System.FilePath ((</>))
 import Prelude hiding (compare)
 
 data Declaration = Declaration
@@ -65,10 +67,11 @@ data Generation = Generation {generationTrace :: Trace.Generation, generationArt
 
 admit :: Decoder -> Declaration -> (ByteString, ByteString) -> IO Checked
 admit decoder declared (trainingOutput, finalOutput) = do
-    trace <- either invalid pure (Trace.admit (training declared) (tasks declared) trainingOutput)
+    initialPolicy <- Policy.readDescription (checkpoint declared </> "policy.json")
+    trace <- either invalid pure (Trace.admit (training declared) initialPolicy (tasks declared) trainingOutput)
     let selected = Trace.generations trace
         settings = Trace.settings (training declared)
-    final <- independent declared selected finalOutput
+    final <- independent declared trace finalOutput
     admittedInitial <- Initial.admit decoder (settings, checkpoint declared, randomProfile declared) (initialSource declared)
     let schema = Initial.schema admittedInitial
         initial = Initial.describe admittedInitial
@@ -87,9 +90,9 @@ admit decoder declared (trainingOutput, finalOutput) = do
         unless (actualRng == expectedRng) (invalid "Successor RNG vector inventory differs from the complete initial state")
         pure (Generation selected observed state gradients)
 
-independent :: Declaration -> [Trace.Generation] -> ByteString -> IO Inference.Report
-independent declared generations output = do
-    lastGeneration <- case reverse generations of
+independent :: Declaration -> Trace.Checked -> ByteString -> IO Inference.Report
+independent declared trace output = do
+    lastGeneration <- case reverse (Trace.generations trace) of
         selected : _ -> pure selected
         [] -> invalid "A complete history requires a training generation"
     expected <- either invalid pure (Report.artifact "adapter" (Cohort.update (Trace.cohort lastGeneration)))
@@ -99,7 +102,7 @@ independent declared generations output = do
     unless (Infer.artifact requested == expected) (invalid "Final independent inference does not load the last published policy")
     either (invalid . show) pure (Learn.materialization (Trace.settings (training declared)) requested)
     unless (V.boundCall bound >= V.CallId next && V.boundAttempt bound >= V.AttemptId next && V.boundInstance bound >= V.Instance next) (invalid "Final independent inference reuses a training invocation identity")
-    planned <- either (invalid . show) pure (Infer.prepare requested)
+    planned <- either (invalid . show) pure (Infer.prepare requested >>= Infer.bindPolicy (Trace.finalPolicy trace))
     call <- either (invalid . show) pure (Call.prepare bound planned)
     admitted <- either (invalid . show) pure (Replay.standalone Session.Single (Session.Declaration [call] Nothing) (Replay.declared (finalExit declared)) output)
     case admitted of

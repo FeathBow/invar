@@ -1,109 +1,158 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.History.Execution (Mode (..), State, Frame (..), start, validate, finish, encoded, modelLoads) where
+module Invar.History.Execution (Mode (..), State, Frame (..), Declared (..), Cycle (..), start, validate, finish, encoded, modelLoads) where
 
 import Control.Monad (foldM, unless, void, when)
 import Data.Aeson (Object, Value (..), (.:))
 import Data.Aeson.KeyMap qualified as Fields
 import Data.Aeson.Types (parseEither)
+import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import Data.Maybe (catMaybes)
-import Invar.History.Cohort qualified as Cohort
 import Invar.History.Profile qualified as Profile
 import Invar.Infer.Framing qualified as Framing
+import Invar.Infer.Invocation qualified as Call
+import Invar.Infer.Replay qualified as Replay
+import Invar.Infer.Session qualified as Session
 import Invar.Infer.Wire qualified as Wire
-import Invar.Json qualified as Json
 import Invar.Learn qualified as Learn
-import Invar.Learn.Trace qualified as Learner
+import Invar.Learn.Framing qualified as Learner
+import Invar.Learn.Report qualified as Report
+import Invar.Learn.Trace qualified as Trace
 import Invar.Measurement.Duration qualified as Duration
 import Invar.Resident qualified as Boundary
-import Invar.Resident.Observation qualified as Resident
-import Invar.Spec.Invocation qualified as V
+import Invar.Resident.Group qualified as Group
+import Invar.Resident.Owner qualified as Owner
 import Invar.Workload qualified as Workload
 import Numeric.Natural (Natural)
 
-data Mode = Finite | Resident | Shared deriving (Eq, Show)
-data State = State [Maybe Resident.State] (Maybe Resident.State) | Joint Resident.State
+data Mode = Finite | Batched | Resident | Shared deriving (Eq, Show)
+data State = State Session.Protocol [Maybe Hosted] (Maybe Owner.State) | Joint Hosted
 data Frame = Frame ByteString Object
+data Declared = Declared {calls :: [Call.Call], reference :: Maybe String, report :: Report.Report}
+data Cycle = Cycle {pending :: [Replay.Pending], admitted :: [Replay.Logged], groups :: [Group.Group], profiles :: [Profile.Observation]}
 
-inferenceRecordCount :: Int
-inferenceRecordCount = 4
+type Hosted = (Session.Session, Owner.State)
 
 start :: (Mode, Mode) -> Natural -> Either String State
-start (Shared, Shared) 1 = Right (Joint (Resident.empty (Boundary.Owner Boundary.Shared 0)))
+start (Shared, Shared) 1 = Right (Joint (hosted (Boundary.Owner Boundary.Shared 0)))
 start modes _ | Shared `elem` [fst modes, snd modes] = Left "Shared history requires both roles and exactly one physical session"
-start (inference, learning) sessions = State <$> traverse (select inference . Boundary.Owner Boundary.Inference) [0 .. sessions - 1] <*> select learning (Boundary.Owner Boundary.Learning 0)
-  where
-    select Finite _ = Right Nothing
-    select Resident owner = Right (Just (Resident.empty owner))
-    select Shared _ = Left "Shared history requires one joint numerical owner"
+start (inference, learning) sessions = do
+    resident <- case learning of
+        Finite -> Right Nothing
+        Resident -> Right (Just (Owner.start (Boundary.Owner Boundary.Learning 0)))
+        _ -> Left "A learner runs as a process, a resident owner or a shared owner"
+    let protocol = if inference == Batched then Session.Batched else Session.Serial
+    pure (State protocol [if inference == Resident then Just (hosted (Boundary.Owner Boundary.Inference index)) else Nothing | index <- [0 .. sessions - 1]] resident)
 
-validate :: (Learn.Settings, State) -> (Workload.Cycle, Natural, Cohort.Checked) -> [Frame] -> Either String (State, [Resident.Group], [Profile.Observation])
-validate (current, Joint owner) (workload, offset, observed) frames = do
-    (afterInference, inference, remaining) <- Resident.inference (offset, owner) (map encoded frames)
-    (batch, _) <- Framing.takeGroup (Resident.body inference)
-    let expected = map (Wire.bindingValue . binding . (offset +)) (Workload.order workload)
-        actual = map (Fields.lookup "binding" . Framing.fields . Framing.consumed) (Framing.members batch)
-    unless (actual == map Just expected) (Left "Shared inference partition differs from the declared execution order")
-    (next, learning, rest) <- Resident.learning afterInference (current, Cohort.update observed) remaining
+hosted :: Boundary.Owner -> Hosted
+hosted selected = (Session.start Session.Resident, Owner.start selected)
+
+validate :: (Learn.Settings, State) -> (Workload.Cycle, Declared) -> [Frame] -> Either String (State, Cycle)
+validate (current, Joint owner) (workload, declared) frames = do
+    (afterInference, logged, inference, remaining) <- group owner (ordered (Workload.order workload) declared) (map encoded frames)
+    (physical, learning, rest) <- learner (snd afterInference) (current, report declared) remaining
     unless (null rest) (Left "Output follows the shared learner release before publication")
-    let groups = [inference, learning]
-        profiles = concatMap (Profile.fromPrefix Boundary.Shared . map Framing.fields . Resident.prefix) groups
-    pure (Joint next, groups, profiles)
-validate (current, State owners learner) (workload, offset, observed) frames = do
+    let observed = [inference, learning]
+        modelProfiles = concatMap (Profile.fromPrefix Boundary.Shared . map Framing.fields . Group.prefix) observed
+    pure (Joint (fst afterInference, physical), Cycle [] logged observed modelProfiles)
+validate (current, State protocol owners learning) (workload, declared) frames = do
     let count = length owners
         partitions = [[index | (position, index) <- zip [0 ..] (Workload.order workload), position `mod` count == slot] | slot <- [0 .. count - 1]]
-    (inferences, groups, profiles, rest) <- foldM session ([], [], [], frames) (zip owners partitions)
-    (next, learningGroups, learningProfiles) <- learn learner rest
-    pure (State (reverse inferences) next, reverse groups ++ learningGroups, reverse profiles ++ learningProfiles)
+    (sessions, collected, rest) <- foldM session ([], Cycle [] [] [] [], map encoded frames) (zip owners partitions)
+    (next, learned) <- learn learning rest
+    pure (State protocol (reverse sessions) next, learned collected)
   where
-    session (accepted, groups, profiles, remaining) (owner, selected) = case owner of
+    session (accepted, collected, remaining) (owner, selected) = case owner of
         Nothing -> do
             when (null selected) (Left "Declared finite training session has no cohort member")
-            (prefix, rest) <- inferenceSession offset remaining selected
-            pure (Nothing : accepted, groups, Profile.fromPrefix Boundary.Inference prefix ++ profiles, rest)
-        Just state | null selected -> pure (Just state : accepted, groups, profiles, remaining)
+            (waiting, consumed, rest) <- first show (Replay.session protocol (ordered selected declared) remaining)
+            pure (Nothing : accepted, collected {pending = pending collected ++ [waiting], profiles = profiles collected ++ Profile.fromPrefix Boundary.Inference (preparation consumed)}, rest)
+        Just state | null selected -> pure (Just state : accepted, collected, remaining)
         Just state -> do
-            (next, group, rest) <- Resident.inference (offset, state) (map encoded remaining)
-            (batch, _) <- Framing.takeGroup (Resident.body group)
-            let expected = map (Wire.bindingValue . binding . (offset +)) selected
-                actual = map (Fields.lookup "binding" . Framing.fields . Framing.consumed) (Framing.members batch)
-            unless (actual == map Just expected) (Left "Resident partition differs from the declared physical owner")
-            pure (Just next : accepted, group : groups, observedProfiles Boundary.Inference group ++ profiles, map decoded rest)
+            (next, logged, observed, rest) <- group state (ordered selected declared) remaining
+            pure (Just next : accepted, collected {admitted = admitted collected ++ logged, groups = groups collected ++ [observed], profiles = profiles collected ++ Profile.fromPrefix Boundary.Inference (map Framing.fields (Group.prefix observed))}, rest)
     learn Nothing remaining = do
-        prefix <- finiteLearning current observed remaining
-        pure (Nothing, [], Profile.fromPrefix Boundary.Learning prefix)
-    learn (Just state) remaining = do
-        (next, group, rest) <- Resident.learning state (current, Cohort.update observed) (map encoded remaining)
+        prefix <- finiteLearning current (report declared) (map decoded remaining)
+        pure (Nothing, \collected -> collected {profiles = profiles collected ++ Profile.fromPrefix Boundary.Learning prefix})
+    learn (Just physical) remaining = do
+        (next, observed, rest) <- learner physical (current, report declared) remaining
         unless (null rest) (Left "Output follows the resident learner release before publication")
-        pure (Just next, [group], observedProfiles Boundary.Learning group)
-    observedProfiles role = Profile.fromPrefix role . map Framing.fields . Resident.prefix
+        pure (Just next, \collected -> collected {groups = groups collected ++ [observed], profiles = profiles collected ++ Profile.fromPrefix Boundary.Learning (map Framing.fields (Group.prefix observed))})
 
-finiteLearning :: Learn.Settings -> Cohort.Checked -> [Frame] -> Either String [Object]
-finiteLearning current observed frames = do
+ordered :: [Natural] -> Declared -> Session.Declaration
+ordered selected declared = Session.Declaration [chosen | index <- selected, chosen <- take 1 (drop (fromIntegral index) (calls declared))] (reference declared)
+
+group :: Hosted -> Session.Declaration -> [Framing.Frame] -> Either String (Hosted, [Replay.Logged], Group.Group, [Framing.Frame])
+group (current, physical) declaration@(Session.Declaration chosen _) frames = do
+    (next, logged, consumed, rest) <- first show (Replay.group (current, physical) declaration frames)
+    (records, acknowledged) <- case reverse consumed of
+        final : reversed -> pure (reverse reversed, final)
+        [] -> Left "Resident group has no release acknowledgement"
+    observed <- Group.observe (Owner.owner physical, Owner.groups physical, map Call.binding chosen) records acknowledged
+    pure (next, logged, observed, rest)
+
+learner :: Owner.State -> (Learn.Settings, Report.Report) -> [Framing.Frame] -> Either String (Owner.State, Group.Group, [Framing.Frame])
+learner physical (settings, reported) records = do
+    let Boundary.Owner role _ = Owner.owner physical
+        initial = Owner.initial physical
+        (leading, remaining) = span ((`elem` map (Just . String) ["loading", "profile", "load", "activation"]) . Framing.stageName) records
+    unless (role `elem` [Boundary.Learning, Boundary.Shared]) (Left "Resident observation has a different numerical owner role")
+    (execution, rest) <- case break ((== Just (String "result")) . Framing.stageName) remaining of
+        (preceding, result : following) -> pure (preceding ++ [result], following)
+        _ -> Left "Incomplete resident update result"
+    let (ready, _) = break ((== Just (String "consumed")) . Framing.stageName) execution
+    consumed <- case drop (length ready) execution of
+        value : _ -> pure value
+        [] -> Left "Missing resident learner consumption"
+    loaded <- case execution of
+        value : _ -> pure value
+        [] -> Left "Missing resident learner execution"
+    Learner.readiness initial (Report.request reported) (Framing.encode (leading ++ ready ++ [consumed]))
+    Learner.completion (Report.checkedRequest reported) (Framing.encode (leading ++ execution))
+    Trace.validate settings reported (map Framing.fields execution)
+    (acknowledged, after) <- case rest of
+        value : following -> pure (value, following)
+        [] -> Left "Resident group has no release acknowledgement"
+    bound <- parseEither Wire.binding (Framing.fields consumed)
+    loads <- parseEither (.: "load") (Framing.fields consumed)
+    void (Boundary.observeRelease (Owner.owner physical, [loads], Framing.encode (leading ++ execution)) (Framing.raw acknowledged))
+    following <- Owner.release physical (Owner.Released (map Framing.raw (leading ++ execution)) [bound] [Framing.fields loaded] (Framing.raw acknowledged))
+    observed <- Group.observe (Owner.owner physical, Owner.groups physical, [bound]) (leading ++ execution) acknowledged
+    pure (following, observed, after)
+
+finiteLearning :: Learn.Settings -> Report.Report -> [Frame] -> Either String [Object]
+finiteLearning current reported frames = do
     (prefix, learning) <- loadingPrefix frames
     case learning of
         Frame _ loaded : _ -> do
             profileCorrespondence prefix loaded
-            Learner.validate current (Cohort.update observed) [fields | Frame _ fields <- learning]
+            Trace.validate current reported [fields | Frame _ fields <- learning]
             mapM_ (\(Frame raw fields) -> timing raw fields) [record | record@(Frame _ fields) <- learning, Fields.lookup "stage" fields `elem` map (Just . String) ["reward_update", "artifacts", "checkpoint"]]
             pure prefix
         [] -> Left "Missing learner execution after the inference sessions"
 
 finish :: State -> [Frame] -> Either String [Frame]
-finish (Joint owner) records = do
-    (closed, _, remaining) <- Resident.finish owner (map encoded records)
+finish (Joint (current, physical)) records = do
+    (closed, remaining) <- close ([], map encoded records) (Just current, physical)
     unless (null remaining) (Left "Output follows the final shared process close")
-    pure [decoded closed]
-finish (State owners learner) records = do
-    let selected = catMaybes (learner : reverse owners)
+    pure (map decoded closed)
+finish (State _ owners learning) records = do
+    let selected = catMaybes (fmap (Nothing,) learning : map (fmap (first Just)) (reverse owners))
     (closed, remaining) <- foldM close ([], map encoded records) selected
     unless (null remaining) (Left "Output follows the final declared training cycle or process close")
-    pure (reverse closed)
-  where
-    close (accepted, remaining) state = do
-        (record, _, rest) <- Resident.finish state remaining
-        pure (decoded record : accepted, rest)
+    pure (map decoded (reverse closed))
+
+close :: ([Framing.Frame], [Framing.Frame]) -> (Maybe Session.Session, Owner.State) -> Either String ([Framing.Frame], [Framing.Frame])
+close (accepted, remaining) (current, physical) = case remaining of
+    record : rest -> do
+        unless (all Session.settled current) (Left "Resident process closes with active invocation loads")
+        Owner.close physical (Framing.raw record)
+        pure (record : accepted, rest)
+    [] -> Left "Missing final resident process close"
+
+preparation :: [Framing.Frame] -> [Object]
+preparation = map Framing.fields . takeWhile ((`elem` map (Just . String) ["loading", "profile", "load"]) . Framing.stageName)
 
 encoded :: Frame -> Framing.Frame
 encoded (Frame raw fields) = Framing.Frame raw fields
@@ -113,44 +162,6 @@ decoded (Framing.Frame raw fields) = Frame raw fields
 
 modelLoads :: [Frame] -> Natural
 modelLoads records = fromIntegral (length [() | Frame _ fields <- records, Fields.lookup "stage" fields == Just (String "load")])
-
-inferenceSession :: Natural -> [Frame] -> [Natural] -> Either String ([Object], [Frame])
-inferenceSession offset frames selected = do
-    (prefix, execution) <- loadingPrefix frames
-    case execution of
-        Frame initialBytes loaded : _ | Framing.grouped (Framing.Frame initialBytes loaded) -> do
-            (group, rest) <- Framing.takeGroup [Framing.Frame raw fields | Frame raw fields <- execution]
-            let expected = map (Wire.bindingValue . binding . (offset +)) selected
-                actual = map (Fields.lookup "binding" . Framing.fields . Framing.consumed) (Framing.members group)
-            unless (actual == map Just expected) (Left "Batch execution partition differs from the declared session order")
-            mapM_ (profileCorrespondence prefix . Framing.fields . Framing.loaded) (Framing.members group)
-            pure (prefix, [Frame (Framing.raw record) (Framing.fields record) | record <- rest])
-        Frame _ loaded : _ -> do
-            profileCorrespondence prefix loaded
-            (_, remaining) <- foldM call (Nothing, execution) selected
-            pure (prefix, remaining)
-        [] -> Left "Missing inference session after its model load"
-  where
-    call (previous, events) index = do
-        remaining <- case previous of
-            Nothing -> Right events
-            Just loading -> case events of
-                Frame _ unloaded : rest -> do
-                    unless (Fields.lookup "stage" unloaded == Just (String "unloaded_adapter")) (Left "Missing adapter unload within inference session")
-                    parseEither (Json.fields ["stage", "binding", "program"]) unloaded
-                    unless (Object (Fields.delete "stage" unloaded) == loading) (Left "Unloaded adapter differs from the preceding invocation")
-                    pure rest
-                [] -> Left "Missing adapter unload within inference session"
-        let (segment, rest) = splitAt inferenceRecordCount remaining
-            expected = binding (offset + index)
-        unless (length segment == inferenceRecordCount) (Left "Incomplete inference session member")
-        loading <- case segment of
-            [Frame _ loaded, _, Frame measuredRaw measured, _] -> do
-                unless (Fields.lookup "binding" loaded == Just (Wire.bindingValue expected)) (Left "Inference execution partition differs from the declared session order")
-                timing measuredRaw measured
-                parseEither (.: "load") loaded
-            _ -> Left "Incomplete inference session member"
-        pure (Just loading, rest)
 
 loadingPrefix :: [Frame] -> Either String ([Object], [Frame])
 loadingPrefix frames = do
@@ -168,6 +179,3 @@ profileCorrespondence prefix loaded = mapM_ match [fields | fields <- prefix, Fi
 
 timing :: ByteString -> Object -> Either String ()
 timing raw = void . Duration.admit raw
-
-binding :: Natural -> V.Binding
-binding = V.ordinal

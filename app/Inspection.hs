@@ -8,6 +8,7 @@ import Data.Aeson (Value, encode, object, toJSON, (.=))
 import Data.ByteString qualified as Bytes
 import Data.ByteString.Lazy.Char8 qualified as Lazy
 import Data.Maybe (isJust)
+import EvaluationInput qualified
 import HistoryInput qualified
 import InferenceInput qualified
 import Invar.Evaluation qualified as Evaluation
@@ -30,7 +31,8 @@ run ("initial" : supplied) = HistoryInput.inspectInitial supplied
 run ("trace" : supplied) = do
     fields <- either die pure (O.parse HistoryInput.traceOptions supplied)
     (declaredRun, declared, encoded) <- HistoryInput.trace fields
-    observed <- either die pure (Trace.admit declaredRun declared encoded)
+    initial <- HistoryInput.initialPolicy fields
+    observed <- either die pure (Trace.admit declaredRun initial declared encoded)
     emit (object ["tasks_sha256" .= Workload.digest declared, "observation" .= Trace.describe observed])
 run ("inference" : supplied) = do
     fields <- either die pure (O.parse inferenceOptions supplied)
@@ -67,10 +69,9 @@ run ("evaluation" : supplied) = do
         Nothing -> pure ()
         Just digest -> unless (digest == Workload.digest expected) (die "Workload input identity changed after inspection")
     reportPath <- either die pure (O.required fields "log")
-    policy <- either die pure (O.required fields "policy")
-    status <- either (die . ("Evaluation process: " ++)) pure (O.numeric fields "exit-code")
+    selected <- EvaluationInput.declared "" fields
     encoded <- Bytes.readFile reportPath
-    either die (emit . Evaluation.describe) (Evaluation.admit expected (Evaluation.Run policy status) encoded)
+    either die (emit . Evaluation.describe) (Evaluation.admit expected selected encoded)
 run _ = die usage
 
 readTasks :: FilePath -> IO Workload.Document
@@ -83,7 +84,7 @@ taskOptions :: [OptDescr (String, String)]
 taskOptions = O.descriptions [("input", "Frozen workload file")]
 
 evaluationOptions :: [OptDescr (String, String)]
-evaluationOptions = O.descriptions [("tasks", "Frozen workload file"), ("tasks-digest", "Expected identity from a prior task inspection, when supplied"), ("log", "Complete invar evaluate stdout"), ("policy", "Expected canonical adapter identity"), ("exit-code", "Independently observed evaluation process exit status")]
+evaluationOptions = O.descriptions [("tasks", "Frozen workload file"), ("tasks-digest", "Expected identity from a prior task inspection, when supplied")] ++ EvaluationInput.options ""
 
 inferenceOptions :: [OptDescr (String, String)]
 inferenceOptions = InferenceInput.declarationWith "" ++ O.descriptions [("calls", "Calls array given to invar infer batch, declaring every member of a batch log in place of the request options"), ("log", "Complete standalone inference stdout"), ("exit-code", "Independently observed inference process exit status"), ("log-digest", "Expected prior log snapshot identity")]

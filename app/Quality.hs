@@ -3,6 +3,7 @@ module Quality (run) where
 import Data.Aeson (encode)
 import Data.ByteString qualified as Bytes
 import Data.ByteString.Lazy.Char8 qualified as Lazy
+import EvaluationInput qualified
 import Invar.Evaluation qualified as Evaluation
 import Invar.Quality qualified as Quality
 import Invar.Workload qualified as Workload
@@ -23,20 +24,13 @@ run supplied = do
 
 readReport :: O.Fields -> Workload.Document -> String -> IO Evaluation.Report
 readReport fields expected side = do
-    (path, selected) <- either die pure configured
+    path <- either die pure (O.required fields (side ++ "-log"))
+    selected <- EvaluationInput.declared (side ++ "-") fields
     encoded <- Bytes.readFile path
     either die pure (Evaluation.admit expected selected encoded)
-  where
-    configured = do
-        path <- O.required fields (side ++ "-log")
-        policy <- O.required fields (side ++ "-policy")
-        status <- either (Left . ("Evaluation process: " ++)) Right (O.numeric fields (side ++ "-exit-code"))
-        pure (path, Evaluation.Run policy status)
 
 options :: [OptDescr (String, String)]
-options = O.descriptions (("tasks", "Identical frozen input used by both evaluations") : concatMap descriptions ["initial", "trained"])
-  where
-    descriptions side = [(side ++ "-log", "Complete invar evaluate stdout"), (side ++ "-policy", "Expected canonical adapter identity"), (side ++ "-exit-code", "Independently observed evaluation process exit status")]
+options = O.descriptions [("tasks", "Identical frozen input used by both evaluations")] ++ concatMap (EvaluationInput.options . (++ "-")) ["initial", "trained"]
 
 usage :: String
 usage = usageInfo "Usage: invar quality OPTIONS\nCompare complete initial and trained-policy evaluation reports." options

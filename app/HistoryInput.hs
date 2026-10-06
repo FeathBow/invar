@@ -1,4 +1,4 @@
-module HistoryInput (trace, traceOptions, inspect, inspectInitial, compareHistories, options, inputOptions, load, select) where
+module HistoryInput (trace, initialPolicy, traceOptions, inspect, inspectInitial, compareHistories, options, inputOptions, load, select) where
 
 import Control.Monad (unless)
 import Data.Aeson (encode)
@@ -12,11 +12,13 @@ import InferenceInput qualified
 import Invar.History qualified as History
 import Invar.History.Initial qualified as Initial
 import Invar.History.Trace qualified as Trace
+import Invar.Policy qualified as Policy
 import Invar.Workload qualified as Workload
 import NativeCodec qualified
 import Options qualified as O
 import System.Console.GetOpt (OptDescr, usageInfo)
 import System.Exit (die)
+import System.FilePath ((</>))
 import Training qualified
 
 trace :: O.Fields -> IO (Trace.Run, Workload.Document, ByteString)
@@ -30,16 +32,21 @@ trace fields = do
     status <- either die pure (O.numeric fields "exit-code")
     logPath <- either die pure (O.required fields "log")
     encoded <- Bytes.readFile logPath
-    inference <- either die pure (lifetimeMode fields ("inference-mode", ["serial", "batch"]))
-    learning <- either die pure (lifetimeMode fields ("learning-mode", ["process"]))
+    inference <- either die pure (lifetimeMode fields ("inference-mode", [("serial", Trace.Finite), ("batch", Trace.Batched)]))
+    learning <- either die pure (lifetimeMode fields ("learning-mode", [("process", Trace.Finite)]))
     pure (Trace.Run {Trace.settings = settings, Trace.sessions = sessions, Trace.output = output, Trace.method = method, Trace.exitCode = status, Trace.inferenceMode = inference, Trace.learningMode = learning}, tasks, encoded)
 
-lifetimeMode :: O.Fields -> (String, [String]) -> Either String Trace.Mode
+initialPolicy :: O.Fields -> IO Policy.Description
+initialPolicy fields = do
+    checkpoint <- either die pure (O.required fields "checkpoint")
+    Policy.readDescription (checkpoint </> "policy.json")
+
+lifetimeMode :: O.Fields -> (String, [(String, Trace.Mode)]) -> Either String Trace.Mode
 lifetimeMode fields (key, finite) = case O.optional fields key of
     Nothing -> Right Trace.Finite
     Just "resident" -> Right Trace.Resident
     Just "shared" -> Right Trace.Shared
-    Just value | value `elem` finite -> Right Trace.Finite
+    Just value | Just selected <- lookup value finite -> Right selected
     _ -> Left ("Unsupported declared --" ++ key)
 
 inspect :: [String] -> IO ()
@@ -124,7 +131,7 @@ pairOptions :: [OptDescr (String, String)]
 pairOptions = NativeCodec.options ++ concatMap (`O.prefixed` inputOptions) ["left-", "right-"]
 
 traceOptions :: [OptDescr (String, String)]
-traceOptions = Training.settingsOptions ++ O.descriptions [("tasks", "Frozen workload file"), ("log", "Complete training stdout"), ("sessions", "Declared physical inference owner count"), ("inference-mode", "Declared serial/batch (finite default), resident or shared inference lifetime"), ("learning-mode", "Declared process (default), resident or shared learner lifetime"), ("output", "Declared training output directory"), ("publication", "Declared rename or reference publication method"), ("exit-code", "Independently observed training process exit status")]
+traceOptions = Training.settingsOptions ++ O.descriptions [("checkpoint", "Complete initial checkpoint directory, whose policy.json declares the first generation"), ("tasks", "Frozen workload file"), ("log", "Complete training stdout"), ("sessions", "Declared physical inference owner count"), ("inference-mode", "Declared serial/batch (finite default), resident or shared inference lifetime"), ("learning-mode", "Declared process (default), resident or shared learner lifetime"), ("output", "Declared training output directory"), ("publication", "Declared rename or reference publication method"), ("exit-code", "Independently observed training process exit status")]
 
 options :: [OptDescr (String, String)]
 options = inputOptions ++ NativeCodec.options
@@ -133,7 +140,7 @@ inputOptions :: [OptDescr (String, String)]
 inputOptions = traceOptions ++ InferenceInput.optionsWith "final-" ++ initialInputOptions ++ O.descriptions [("reference", "Fixed reference adapter file"), ("profile-mode", "unreported, uniform across all processes, or roles with complete profiles uniform within inference, learning and shared owners separately"), ("final-log", "Complete independent final inference stdout"), ("final-exit-code", "Independently observed final inference process exit status")]
 
 initialInputOptions :: [OptDescr (String, String)]
-initialInputOptions = O.descriptions [("checkpoint", "Complete initial checkpoint directory"), ("rng-profile", "torch (default) or native mlx"), ("cuda-rng-vectors", "Declared CUDA RNG vector count in initial and successor learners"), ("initial-source", "provided or initializer"), ("initial-log", "Complete actual initializer stdout"), ("initial-exit-code", "Independently observed initializer process exit status"), ("initial-seed", "Declared initializer seed")]
+initialInputOptions = O.descriptions [("rng-profile", "torch (default) or native mlx"), ("cuda-rng-vectors", "Declared CUDA RNG vector count in initial and successor learners"), ("initial-source", "provided or initializer"), ("initial-log", "Complete actual initializer stdout"), ("initial-exit-code", "Independently observed initializer process exit status"), ("initial-seed", "Declared initializer seed")]
 
 initialOptions :: [OptDescr (String, String)]
-initialOptions = Training.settingsOptions ++ initialInputOptions ++ NativeCodec.options
+initialOptions = Training.settingsOptions ++ O.descriptions [("checkpoint", "Complete initial checkpoint directory")] ++ initialInputOptions ++ NativeCodec.options

@@ -95,7 +95,7 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(len(complete["artifacts"]), 2)
         self.assertTrue(all(item["gradients"]["nonzero_reward_tensors"] == [] for item in complete["artifacts"]))
         self.assertEqual([item["policy"] for item in publications], [observed["policy"]] * 2)
-        trace = {**settings, "inference-mode": "shared", "learning-mode": "shared", "tasks": workload,
+        trace = {**settings, "checkpoint": initial, "inference-mode": "shared", "learning-mode": "shared", "tasks": workload,
                  "log": root / "train.jsonl", "sessions": 1, "exit-code": 0, "output": output, "publication": "reference"}
         admitted = core.invoke(["inspect", "trace", *flags(trace)], executable=CORE)
         initialization = {**settings, "checkpoint": initial, "rng-profile": "mlx", "initial-source": "initializer",

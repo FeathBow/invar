@@ -4,13 +4,13 @@ module Quality (quality) where
 
 import Control.Monad (forM_)
 import Data.Aeson (Value (..), toJSON)
-import Data.Text qualified as Text
+import Evaluations qualified
 import Hedgehog
 import Invar.Evaluation qualified as Evaluation
 import Invar.Quality qualified as Quality
 import Invar.Workload qualified as Workload
 import Reports qualified
-import Updates (alter, change, field)
+import Updates (change, field)
 import Workloads (array, declared, encoded)
 
 quality :: Group
@@ -21,17 +21,22 @@ quality = Group "Core-owned quality comparisons" [("paired sample metrics use co
 trainedPolicy :: String
 trainedPolicy = replicate 64 'b'
 
+hit, miss :: Evaluations.Outcome
+hit = Evaluations.Outcome "#### 2" False
+miss = Evaluations.Outcome "#### 0" False
+
+trainedOutcomes :: [[Evaluations.Outcome]]
+trainedOutcomes = [[hit, hit], [miss, hit, miss, miss]]
+
 fixture :: PropertyT IO (Workload.Document, [Value], [Value])
 fixture = do
     expected <- evalEither (Workload.decode (encoded declared))
-    let initial = Reports.records Reports.policy expected
-        first = change "summary" (change "zero_variance_groups" (Number 1) . change "reward_sum" (Number 2) $ field "summary" (at 0 initial)) . modifySample 0 (change "reward" (Number 1))
-        second = change "summary" (change "zero_variance_groups" (Number 0) . change "reward_sum" (Number 1) $ field "summary" (at 1 initial)) . modifySample 1 (change "reward" (Number 1))
-        trained = alter 0 first (alter 1 second (Reports.records trainedPolicy expected))
+    initial <- Reports.records Reports.policy expected Reports.outcomes
+    trained <- Reports.records trainedPolicy expected trainedOutcomes
     pure (expected, initial, trained)
 
 admit :: Workload.Document -> String -> [Value] -> PropertyT IO Evaluation.Report
-admit expected policy records = evalEither (Evaluation.admit expected (Evaluation.Run policy 0) (Reports.stream records))
+admit expected policy records = evalEither (Evaluation.admit expected (Evaluation.Run policy 0 Evaluation.Serial Nothing) (Reports.stream records))
 
 compareReports :: Workload.Document -> [Value] -> [Value] -> PropertyT IO Value
 compareReports expected before after = do
@@ -61,15 +66,14 @@ reordered = do
     (expected, initial, trained) <- fixture
     before <- compareReports expected initial trained
     let reversed row = change "samples" (toJSON (reverse (array (field "samples" row)))) row
-    after <- compareReports expected initial (alter 0 reversed (alter 1 reversed trained))
+    after <- compareReports expected initial (Evaluations.phase 0 reversed (Evaluations.phase 1 reversed trained))
     forM_ ["overall", "by_group", "by_seed"] $ \key -> field key before === field key after
     assert (field "log_sha256" (field "trained" before) /= field "log_sha256" (field "trained" after))
 
 truncated :: PropertyT IO ()
 truncated = do
-    (expected, initial, trained) <- fixture
-    let report = at 1 trained
-        altered = alter 1 (change "summary" (change "truncated_count" (Number 1) (field "summary" report)) . modifySample 0 (change "truncated" (Bool True))) trained
+    (expected, initial, _) <- fixture
+    altered <- Reports.records trainedPolicy expected [[hit, hit], [Evaluations.Outcome "#### 0" True, hit, miss, miss]]
     result <- compareReports expected initial altered
     let summary = field "trained" (field "overall" result)
     field "sample_count" summary === Number 6
@@ -81,23 +85,16 @@ bindings = do
     (expected, initial, trained) <- fixture
     before <- admit expected Reports.policy initial
     changed <- evalEither (Workload.decode (encoded declared <> "\n"))
-    other <- admit changed trainedPolicy (alter 2 (change "tasks_sha256" (toJSON (Workload.digest changed))) trained)
+    otherTrained <- Reports.records trainedPolicy changed trainedOutcomes
+    other <- admit changed trainedPolicy otherTrained
     rejected (Quality.compare before other)
-    forM_ [[("tokenizer", String (Text.replicate 64 "c"))], [("tokenizer", String (Text.replicate 64 "c")), ("base", String (Text.replicate 64 "d")), ("assembly", String (Text.replicate 64 "e"))]] $ \description -> do
-        let bound row = foldr (uncurry change) row description
-        after <- admit expected trainedPolicy (alter 2 bound trained)
-        rejected (Quality.compare before after)
-        matching <- admit expected Reports.policy (alter 2 bound initial)
-        _ <- evalEither (Quality.compare matching after)
-        pure ()
-
-modifySample :: Int -> (Value -> Value) -> Value -> Value
-modifySample index operation cohort = change "samples" (toJSON (alter index operation (array (field "samples" cohort)))) cohort
-
-at :: Int -> [value] -> value
-at index values = case drop index values of
-    value : _ -> value
-    [] -> error "Missing fixed quality fixture record"
+    let materialization = (replicate 64 'c', replicate 64 'd', replicate 64 'f')
+    after <- Evaluations.records (trainedPolicy, materialization) expected 1 trainedOutcomes >>= admit expected trainedPolicy
+    rejected (Quality.compare before after)
+    matching <- Evaluations.records (Reports.policy, materialization) expected 1 Reports.outcomes >>= admit expected Reports.policy
+    _ <- evalEither (Quality.compare matching after)
+    _ <- admit expected trainedPolicy trained
+    pure ()
 
 rejected :: (Show value) => Either String value -> PropertyT IO ()
 rejected (Left _) = success

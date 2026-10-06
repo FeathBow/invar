@@ -1,17 +1,15 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.History.Cohort (Checked, admit, admitFrames, describe, inferences, update, rewards) where
+module Invar.History.Cohort (Checked, admit, describe, inferences, update, rewards) where
 
 import Control.Monad (unless)
-import Data.Aeson (Value (..), object, toJSON, withObject, (.:), (.=))
-import Data.Aeson.KeyMap qualified as Fields
+import Data.Aeson (Value, object, toJSON, withObject, (.:), (.=))
 import Data.Aeson.Types (parseEither)
-import Data.ByteString (ByteString)
 import Data.Set qualified as Set
 import Data.Text.Encoding (decodeUtf8)
 import Invar.Cohort qualified as Cohort
-import Invar.Infer.Framing qualified as Framing
 import Invar.Infer.Observation qualified as Observation
+import Invar.Infer.Replay qualified as Replay
 import Invar.Infer.Wire qualified as Wire
 import Invar.Json qualified as Json
 import Invar.Learn qualified as Learn
@@ -19,53 +17,16 @@ import Invar.Learn.Observed qualified as Input
 import Invar.Learn.Report qualified as Report
 import Invar.Learn.Request qualified as Request
 import Invar.Spec.Invocation qualified as V
-import Invar.Workload qualified as Workload
-import Numeric.Natural (Natural)
 
 data Checked = Checked [Observation.Report] Report.Report [Rational]
 
-admitFrames :: Learn.Settings -> (Workload.Cycle, Natural) -> [Framing.Frame] -> Either String Checked
-admitFrames settings (workload, selected) frames = do
-    observed <- observeInferences settings (workload, selected) frames
-    reported <- Report.admitFrames selected frames
-    admit settings (workload, observed) reported
-
-observeInferences :: Learn.Settings -> (Workload.Cycle, Natural) -> [Framing.Frame] -> Either String [Observation.Report]
-observeInferences settings (workload, selected) frames = do
-    let tasks = Workload.tasks workload
-        count = fromIntegral (length tasks)
-    unless (selected >= count) (Left "Update call cannot precede its declared cohort")
-    grouped <- Framing.groups frames
-    let events = [(Framing.raw frame, Framing.fields frame) | frame <- frames]
-    traverse (inference events grouped) (zip [selected - count ..] tasks)
-  where
-    inference events grouped (index, selectedTask) = do
-        declared <- Input.task settings selectedTask
-        let bound = V.ordinal index
-            matches fields = Fields.lookup "binding" fields == Just (Wire.bindingValue bound)
-            groups = [group | group <- grouped, any (matches . Framing.fields . Framing.consumed) (Framing.members group)]
-            serial = [fields | (_, fields) <- events, Fields.lookup "stage" fields == Just (String "loaded_adapter"), matches fields]
-        case (groups, serial) of
-            ([], [_]) -> inferenceSegment bound frames >>= Observation.admitFrames (Cohort.plan declared) bound
-            ([group], []) -> Observation.admitGroup (Cohort.plan declared) bound group
-            _ -> Left "Expected one serial or batched inference for the declared cohort member"
-
-inferenceSegment :: V.Binding -> [Framing.Frame] -> Either String [Framing.Frame]
-inferenceSegment bound frames = do
-    let matches frame = Fields.lookup "stage" (Framing.fields frame) == Just (String "loaded_adapter") && Fields.lookup "binding" (Framing.fields frame) == Just (Wire.bindingValue bound)
-    unless (length (filter matches frames) == 1) (Left "Expected one bound inference load for the declared cohort member")
-    let (_, remaining) = break matches frames
-        (prefix, finished) = break (\frame -> Fields.lookup "stage" (Framing.fields frame) == Just (String "result")) remaining
-    case finished of
-        result : _ -> pure (prefix ++ [result])
-        [] -> Left "History inference has no completed result"
-
-admit :: Learn.Settings -> (Workload.Cycle, [Observation.Report]) -> Report.Report -> Either String Checked
-admit settings (workload, observed) reported = do
+admit :: Learn.Settings -> ([Cohort.Task], [Replay.Logged]) -> Report.Report -> Either String Checked
+admit settings (tasks, logged) reported = do
     updated <- parseEither (withObject "update invocation" Wire.binding) (Report.invocation reported)
-    let bindings = updated : map Observation.binding observed
+    let observed = map Observation.view logged
+        bindings = updated : map Observation.binding observed
     unless (distinct (map V.boundCall bindings) && distinct (map V.boundAttempt bindings) && distinct (map V.boundInstance bindings)) (Left "History cohort reused an invocation identity")
-    (program, payload, scored) <- numericalInput settings (workload, observed)
+    (program, payload, scored) <- Input.input settings tasks (map Observation.trajectory observed)
     reportedProgram <- parseEither (withObject "update invocation" (.: "program")) (Report.invocation reported)
     unless (reportedProgram == decodeUtf8 program) (Left Report.recordedElsewhere)
     expected <- Json.decode payload >>= parseEither Request.parse
@@ -74,9 +35,6 @@ admit settings (workload, observed) reported = do
     pure (Checked observed reported scored)
   where
     distinct values = length values == Set.size (Set.fromList values)
-
-numericalInput :: Learn.Settings -> (Workload.Cycle, [Observation.Report]) -> Either String (ByteString, ByteString, [Rational])
-numericalInput settings (workload, observed) = Input.input settings workload (map Observation.result observed)
 
 inferences :: Checked -> [Observation.Report]
 inferences (Checked observed _ _) = observed

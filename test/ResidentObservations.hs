@@ -38,7 +38,7 @@ cohortCount = 3
 membersPerCohort = 2
 
 run :: Evaluation.Run
-run = Evaluation.Run (Infer.artifact request) 0
+run = Evaluation.Run (Infer.artifact request) 0 Evaluation.Resident Nothing
 
 fixture :: Int -> PropertyT IO (Workload.Document, [Value])
 fixture owners = do

@@ -16,6 +16,8 @@ import Invar.Digest qualified as Digest
 import Invar.Infer qualified as I
 import Invar.Infer.Output qualified as Output
 import Invar.Infer.Result qualified as Result
+import Invar.Infer.Trajectory (Trajectory)
+import Invar.Infer.Trajectory qualified as Trajectory
 import Invar.Learn.Program qualified as P
 import Invar.Learn.Stream (ReferenceSource (..))
 import Invar.Learn.Stream qualified as S
@@ -58,7 +60,7 @@ data Settings = Settings
     }
     deriving (Eq, Show)
 
-data InputSample = InputSample {sampleGroup :: String, sampleResult :: Result.Result, sampleReward :: Rational}
+data InputSample = InputSample {sampleGroup :: String, sampleTrajectory :: Trajectory, sampleReward :: Rational}
 
 type role Plan nominal
 data Plan scope = Plan {planBatch :: R.Batch scope, planChecked :: A.Checked, planWorld :: E.World, planEmission :: E.Emission, planInput :: ByteString}
@@ -68,7 +70,7 @@ data Error = InvalidSettings String | PolicyMismatch | ReferenceMismatch | Token
 
 prepare :: Settings -> R.Batch scope -> Either Error (Plan scope)
 prepare settings batch = do
-    let samples = [InputSample (R.group sample) (R.observation sample) (R.reward sample) | sample <- R.samples batch]
+    let samples = [InputSample (R.group sample) (R.trajectory sample) (R.reward sample) | sample <- R.samples batch]
     (checked, sources, command, payload) <- compileInput settings samples
     pure Plan {planBatch = batch, planChecked = checked, planWorld = sources, planEmission = command, planInput = payload}
 
@@ -81,9 +83,9 @@ observedInput settings batch = do
 compileInput :: Settings -> [InputSample] -> Either Error (A.Checked, E.World, E.Emission, ByteString)
 compileInput settings samples = do
     validate settings
-    unless (all ((== behaviorPolicy (schedule settings)) . I.artifact . Result.consumed . sampleResult) samples) (Left PolicyMismatch)
-    mapM_ (materialization settings . Result.consumed . sampleResult) samples
-    unless (all (scoredBy settings . Result.referenceScores . sampleResult) samples) (Left ReferenceMismatch)
+    unless (all ((== behaviorPolicy (schedule settings)) . I.artifact . Trajectory.request . sampleTrajectory) samples) (Left PolicyMismatch)
+    mapM_ (materialization settings . Trajectory.request . sampleTrajectory) samples
+    unless (all (scoredBy settings . Trajectory.reference . sampleTrajectory) samples) (Left ReferenceMismatch)
     checked <- either (Left . Construction) Right P.checked
     let sources = world settings samples
     commands <- either (Left . Evaluation) Right (A.run checked sources)
@@ -125,7 +127,7 @@ materialization settings requested = do
     unless (behaviorBase settings == I.base requested && behaviorAssembly settings == I.assembly requested) (Left MaterializationMismatch)
 
 world :: Settings -> [InputSample] -> E.World
-world settings samples = Map.fromList [(Semantic "policy", Load.imageValue image), (Semantic "learner", learnerValue settings), (Semantic "reference", text (reference settings)), (Semantic "reference_source", text (Text.unpack (S.sourceName (referenceSource settings)))), (Semantic "algorithm", algorithm), (Semantic "trajectories", keyed (trajectory . sampleResult)), (Semantic "behavior_model", behaviorModel), (Semantic "schedule", record [("update", Atom (Token (update chosenSchedule))), ("staleness", Atom (Token (staleness chosenSchedule)))]), (Semantic "generations", keyed (const generation)), (Semantic "behavior", keyed (Sequence . map (Atom . Bits32) . Result.behaviorBits . sampleResult)), (Semantic "reference_scores", keyed (Sequence . map (Atom . Bits32) . maybe [] Output.scores . Result.referenceScores . sampleResult)), (Semantic "rewards", keyed (Atom . Number . sampleReward)), (Semantic "groups", groupValues indexed), (Semantic "order", Sequence [Mapping (Map.singleton index marker) | (index, _) <- indexed])]
+world settings samples = Map.fromList [(Semantic "policy", Load.imageValue image), (Semantic "learner", learnerValue settings), (Semantic "reference", text (reference settings)), (Semantic "reference_source", text (Text.unpack (S.sourceName (referenceSource settings)))), (Semantic "algorithm", algorithm), (Semantic "trajectories", keyed (trajectory . Trajectory.result . sampleTrajectory)), (Semantic "behavior_model", behaviorModel), (Semantic "schedule", record [("update", Atom (Token (update chosenSchedule))), ("staleness", Atom (Token (staleness chosenSchedule)))]), (Semantic "generations", keyed (const generation)), (Semantic "behavior", keyed (Sequence . map (Atom . Bits32) . Trajectory.behaviorBits . sampleTrajectory)), (Semantic "reference_scores", keyed (Sequence . map (Atom . Bits32) . maybe [] Output.scores . Trajectory.reference . sampleTrajectory)), (Semantic "rewards", keyed (Atom . Number . sampleReward)), (Semantic "groups", groupValues indexed), (Semantic "order", Sequence [Mapping (Map.singleton index marker) | (index, _) <- indexed])]
   where
     image = Materialization.learning (policy settings, learner settings, tokenizer settings, base settings, assembly settings, reference settings)
     behaviorModel = record [("base", text (behaviorBase settings)), ("assembly", text (behaviorAssembly settings))]
