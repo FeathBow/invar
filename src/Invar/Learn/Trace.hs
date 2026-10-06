@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Learn.Trace (validate, validateObserved, readiness, completion) where
+module Invar.Learn.Trace (Attempt (..), invoked, reports, attempt, readiness, completion) where
 
 import Control.Monad (unless, when)
 import Data.Aeson (Object, Value (..), object, withObject, (.:), (.=))
@@ -16,32 +16,54 @@ import Invar.Learn.Protocol qualified as Protocol
 import Invar.Learn.Report qualified as Report
 import Invar.Learn.Request qualified as Request
 import Invar.Learn.Step qualified as Step
+import Invar.Learn.Stream qualified as S
 import Invar.Load qualified as Load
 import Invar.Materialization qualified as Materialization
+import Invar.Spec.Invocation qualified as V
 import Invar.Spec.Load qualified as Image
 
-validate :: Learn.Settings -> Report.Report -> [Object] -> Either String ()
-validate settings = validateWith (Materialization.learning (Learn.policy settings, Learn.learner settings, Learn.tokenizer settings, Learn.base settings, Learn.assembly settings, Learn.reference settings))
+data Attempt = Attempt {opening :: String, stream :: S.Stream, result :: Maybe Object, stopped :: Maybe String}
 
-validateObserved :: Report.Report -> [Object] -> Either String ()
-validateObserved report = validateWith (Request.materialization (Report.checkedRequest report)) report
+invoked :: Report.Report -> Either String (V.Binding, Text.Text, Value)
+invoked report = do
+    bound <- parseEither (withObject "update invocation" Wire.binding) (Report.invocation report)
+    program <- parseEither (withObject "update invocation" (.: "program")) (Report.invocation report)
+    pure (bound, program, Report.request report)
 
-validateWith :: Image.Image -> Report.Report -> [Object] -> Either String ()
-validateWith selected report events = case reverse events of
-    result : remaining | (staged, updated : preceding) <- span staging remaining -> do
-        let (reported, ready) = span stepping preceding
-        pair <- readiness (Report.request report) (reverse ready)
-        bound <- parseEither (withObject "update invocation" Wire.binding) (Report.invocation report)
-        replayed <- first show (Protocol.replay bound (Report.checkedRequest report) (reverse reported))
-        adapter <- parseEither (.: "adapter") result
-        unless (replayed == adapter) (Left "Learner steps do not end at the staged adapter")
-        bindings selected report pair
-        stage "reward_update" updated
-        mapM_ (\fields -> when (Fields.member "phase" fields) (Left "Unexpected learner observation stage")) staged
-        completion (Report.checkedRequest report) result
-        unless (Object result == Report.result report) (Left "Update trace result differs from the admitted report")
-    _ -> Left "Incomplete learner execution trace"
+reports :: Report.Report -> Attempt -> Either String ()
+reports report attempted = case (result attempted, stopped attempted) of
+    (Just finished, _) -> unless (Object finished == Report.result report) (Left "Update trace result differs from the admitted report")
+    (Nothing, Just problem) -> Left problem
+    (Nothing, Nothing) -> Left "Incomplete learner execution trace"
+
+attempt :: Learn.Settings -> (V.Binding, Text.Text, Value) -> [Object] -> Either String Attempt
+attempt settings (bound, program, request) events = do
+    let selected = Materialization.learning (Learn.policy settings, Learn.learner settings, Learn.tokenizer settings, Learn.base settings, Learn.assembly settings, Learn.reference settings)
+    pair@(_, consumed) <- readiness request (take 2 events)
+    unless (Fields.lookup "program" consumed == Just (String program) && Fields.lookup "request" consumed == Just request) (Left "Learner consumption differs from the declared update")
+    declared <- parseEither (withObject "update request" pure) request
+    bindings selected (bound, declared) pair
+    checked <- parseEither Request.parse request
+    let (reported, rest) = span stepping (drop 2 events)
+    (begun, _) <- first show (Protocol.partial bound checked [])
+    (advanced, broken) <- first show (Protocol.partial bound checked reported)
+    let attempted = Attempt (S.opening begun) advanced
+    pure $ case (broken, rest) of
+        (Just problem, _) -> attempted Nothing (Just (show problem))
+        (Nothing, []) -> attempted Nothing Nothing
+        (Nothing, updated : remaining) -> either (attempted Nothing . Just) (`attempted` Nothing) (concluding checked advanced updated remaining)
   where
+    concluding checked advanced updated remaining = do
+        stage "reward_update" updated
+        let (staged, ending) = span staging remaining
+        mapM_ (\fields -> when (Fields.member "phase" fields) (Left "Unexpected learner observation stage")) staged
+        case ending of
+            [] -> Right Nothing
+            [finished] -> do
+                completion finished
+                first show (Protocol.validateResult bound checked advanced finished)
+                Right (Just finished)
+            _ -> Left "Output follows the learner result"
     staging fields = Fields.lookup "stage" fields `elem` map (Just . String) ["checkpoint", "artifacts"]
     stepping fields = Fields.lookup "stage" fields `elem` map (Just . String) Step.stages
 
@@ -56,20 +78,17 @@ readiness _ events = case events of
         pure (loaded, consumed)
     _ -> Left "Expected one learner load followed by one update consumption"
 
-completion :: Request.Request -> Object -> Either String ()
-completion request result = do
-    stage "result" result
-    parseEither (Json.fields ["stage", "binding", "request", "update", "gradients", "probabilities", "adapter", "learner", "storage"]) result
-    parseEither (\fields -> fields .: "update" >>= withObject "update summary" (Json.fields ["gradient_norm", "reward_gradient_norm", "active_tokens", "before", "after", "nonzero_advantages"])) result
-    first show (Protocol.validateSummary request result)
+completion :: Object -> Either String ()
+completion finished = do
+    stage "result" finished
+    parseEither (Json.fields ["stage", "binding", "request", "update", "gradients", "probabilities", "adapter", "learner", "storage"]) finished
+    parseEither (\fields -> fields .: "update" >>= withObject "update summary" (Json.fields ["gradient_norm", "reward_gradient_norm", "active_tokens", "before", "after", "nonzero_advantages"])) finished
 
 stage :: Text.Text -> Object -> Either String ()
 stage expected fields = unless (Fields.lookup "stage" fields == Just (String expected) && not (Fields.member "phase" fields)) (Left "Unexpected learner observation stage")
 
-bindings :: Image.Image -> Report.Report -> (Object, Object) -> Either String ()
-bindings selected report (loaded, consumed) = do
-    bound <- parseEither (withObject "update invocation" Wire.binding) (Report.invocation report)
-    input <- parseEither (withObject "update request" pure) (Report.request report)
+bindings :: Image.Image -> (V.Binding, Object) -> (Object, Object) -> Either String ()
+bindings selected (bound, input) (loaded, consumed) = do
     let image = object ["artifact" .= Bytes.unpack (Image.artifact selected), "profile" .= Bytes.unpack (Image.profile selected)]
         state = Object (Fields.filterWithKey (\key _ -> key `elem` ["policy", "learner", "reference", "tokenizer", "base", "assembly", "optimizer"]) input)
     planned <- first show (Load.prepare bound selected)

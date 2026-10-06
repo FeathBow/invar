@@ -9,7 +9,7 @@ import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as Bytes
 import Data.ByteString.Lazy qualified as Lazy
 import Data.Either (isLeft)
-import Data.IORef (modifyIORef', newIORef, readIORef)
+import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.List (isInfixOf)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as Text
@@ -66,7 +66,7 @@ built count resident = do
     description <- evalEither (Policy.describe ("test-model", "test-revision") (L.policy settings, L.tokenizer settings, L.behaviorBase settings, L.behaviorAssembly settings))
     bound <- evalEither (traverse (\task -> either (Left . show) (\planned -> Right task {C.plan = planned}) (I.bindPolicy description (C.plan task))) (C.tasks definition))
     captured <- evalIO (newIORef Map.empty)
-    let opened slot = pure (Transcript.Transcript (\recorded -> modifyIORef' captured (Map.insertWith (flip (++)) slot [recorded])) (const (pure ())) (const (pure ())))
+    let opened slot = pure (Transcript.Transcript (\recorded -> atomicModifyIORef' captured (\held -> (Map.insertWith (flip (++)) slot [recorded] held, ()))) (const (pure ())) (const (pure ())))
         update = V.ordinal members
     produced <- evalIO $ R.withRecordedDriver R.Serial (R.worker chosen, R.sessions chosen) opened $ \driver -> do
         batch <- R.run driver chosen {R.definition = definition {C.tasks = bound}} >>= F.require

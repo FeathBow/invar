@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Learn.Protocol (Result, Permit, Error (..), observe, authorize, authorizeResident, respond, exchanging, replay, validateSummary, loadProgram, loadedFact, completion, request, checkedRequest, stream, adapter, learner, gradients, probabilities) where
+module Invar.Learn.Protocol (Result, Permit, Error (..), observe, authorize, authorizeResident, respond, exchanging, replay, partial, validateResult, loadProgram, loadedFact, completion, request, checkedRequest, stream, adapter, learner, gradients, probabilities) where
 
 import Control.Monad (foldM, unless, void)
 import Data.Aeson (Object, Value (..), eitherDecodeStrict, encode, object, withObject, (.:), (.=))
@@ -70,11 +70,16 @@ exchanging (Permit _ _ progress _) = case progress of
 
 replay :: V.Binding -> Request.Request -> [Object] -> Either Error String
 replay expected actual records = do
-    begun <- declaredSteps expected actual
-    finished' <- foldM follow begun records
-    step' (S.complete finished')
+    (steps, stopped) <- partial expected actual records
+    maybe (step' (S.complete steps)) Left stopped
+
+partial :: V.Binding -> Request.Request -> [Object] -> Either Error (S.Stream, Maybe Error)
+partial expected actual records = (`follow` records) <$> declaredSteps expected actual
   where
-    follow current value = fst <$> record expected current value
+    follow current [] = (current, Nothing)
+    follow current (value : rest) = case record expected current value of
+        Right (next, _) -> follow next rest
+        Left problem -> (current, Just problem)
 
 cotangents :: V.Binding -> S.Reply -> Value
 cotangents binding reply = object ["stage" .= ("cotangents" :: String), "binding" .= Binding.bindingValue binding, "step" .= S.replyStep reply, "sample" .= S.replySample reply, "observation" .= S.replyObservation reply, "state" .= S.replyState reply, "objective" .= S.objective reply, "reward" .= S.reward reply]
@@ -151,13 +156,9 @@ consumed _ _ _ = Left (Unexpected "Duplicate consumption or consumption before l
 
 finished :: Context -> (Progress, Object) -> ByteString -> Either Error Progress
 finished context (Consumed runtime _ _ actual steps _, value) encoded = do
-    binding <- matching (bound context) value
-    _ <- matchingRequest (Request.value actual) value
-    artifacts@(Artifacts policy _ _) <- summary actual value
-    ended <- step' (S.complete steps)
-    unless (ended == policy) (Left (Mismatch "The last applied step does not end at the staged adapter"))
-    final <- lifecycle (V.finish binding encoded runtime)
-    reported <- lifecycle (V.completion final (V.boundAttempt binding))
+    artifacts <- concluded (bound context) actual steps value
+    final <- lifecycle (V.finish (bound context) encoded runtime)
+    reported <- lifecycle (V.completion final (V.boundAttempt (bound context)))
     case reported of
         Just completed -> Right (Finished (Result completed actual artifacts steps))
         Nothing -> Left (Unexpected "Bound update did not produce a completion")
@@ -181,8 +182,17 @@ summary actual value = do
     validateStats actual update
     pure (Artifacts policy checkpoint (observation, probability))
 
-validateSummary :: Request.Request -> Object -> Either Error ()
-validateSummary actual value = void (summary actual value)
+concluded :: V.Binding -> Request.Request -> S.Stream -> Object -> Either Error Artifacts
+concluded expected actual steps value = do
+    _ <- matching expected value
+    _ <- matchingRequest (Request.value actual) value
+    artifacts@(Artifacts policy _ _) <- summary actual value
+    ended <- step' (S.complete steps)
+    unless (ended == policy) (Left (Mismatch "The last applied step does not end at the staged adapter"))
+    pure artifacts
+
+validateResult :: V.Binding -> Request.Request -> S.Stream -> Object -> Either Error ()
+validateResult expected actual steps value = void (concluded expected actual steps value)
 
 validateStats :: Request.Request -> Object -> Either Error ()
 validateStats actual value = do

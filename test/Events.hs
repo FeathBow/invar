@@ -5,6 +5,7 @@ module Events (events) where
 import Control.Monad (forM_, unless, when)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
+import Data.Maybe (listToMaybe)
 import Data.Set qualified as Set
 import Data.Word (Word32)
 import GHC.Float (castFloatToWord32)
@@ -35,6 +36,7 @@ events =
         , ("a reply is authorized only while its step is open", withTests 1 (property authorization))
         , ("a completion counts only for the exchange and plan its attempt was bound to", withTests 1 (property foreign'))
         , ("recovery decides publication from the commit point alone", withTests 1 (property recovery))
+        , ("a restart commits only the recording attempt a durable publication confirms, and otherwise redoes its update", withTests 1 (property confirmation))
         , ("a different result for a completed request is a conflict", withTests 1 (property conflict))
         ]
 
@@ -208,8 +210,9 @@ perform world (next : rest) = do
             _ -> pure world
         Restart -> do
             let window = [() | Item issued (Receipt _ _) <- pending world, issued == restarts world]
-            let base = 1000 * (restarts world + 1)
-            (recovered, commands) <- evalEither (C.recover (plan world) (published world) (C.results (core world)) (issued world) (C.exchanged (core world)) base)
+            let confirmed = [(update, attempt) | update <- published world, update `notElem` C.committed (core world), Just attempt <- [Map.lookup update (winners world)]]
+            (recovered, commands) <- evalEither (C.restart (core world) (listToMaybe confirmed))
+            C.committed recovered === published world
             let raised = Map.map (\(Epoch epoch) -> Epoch (epoch + 1)) (issued world)
                 restarted = enqueue world {core = recovered, restarts = restarts world + 1, windows = windows world + (if null window then 0 else 1), epochs = raised, issued = raised, bindings = Map.empty} commands
             foldl (\acted (worker, epoch) -> acted >>= \current -> feed current (restarts current) (Connected worker epoch)) (pure restarted) (Map.toList (epochs restarted))
@@ -449,6 +452,24 @@ recovery = do
     recording <- evalEither (run unpublished ([Ready (Update 0) (Attempt 5) caller identity "s0", Current (Update 0) (Attempt 5) 0 "s0"] ++ [Applied (Update 0) (Attempt 5) done | done <- closed] ++ [Staged (Update 0) (Attempt 5) "d", Recorded (Update 0) (Attempt 5)]))
     C.learning recording === Just (Update 0, Committing (Attempt 5))
     C.step recording (Abandoned (Update 0) (Attempt 5)) === Left (UncertainCommit (Update 0) (Attempt 5))
+
+confirmation :: PropertyT IO ()
+confirmation = do
+    chosen <- evalEither (P.prepare 0 [Declared [Request 0] [[Request 0]], Declared [Request 1] [[Request 1]]])
+    let (started, _) = C.start chosen
+        caller = exchangeOf (Update 0) (Attempt 0)
+        (identity, closed) = exchange caller ordinary ["s0", "s1"]
+    connected <- evalEither (run started [Connected (Worker 0) (Epoch 0)])
+    recording <- evalEither (run connected ([Started (Worker 0) (Epoch 0) (Request 0), Completed (Worker 0) (Epoch 0) (Request 0) "r0", Ready (Update 0) (Attempt 0) caller identity "s0", Current (Update 0) (Attempt 0) 0 "s0"] ++ [Applied (Update 0) (Attempt 0) done | done <- closed] ++ [Staged (Update 0) (Attempt 0) "d", Recorded (Update 0) (Attempt 0)]))
+    (published, following) <- evalEither (C.restart recording (Just (Update 0, Attempt 0)))
+    C.committed published === [Update 0]
+    following === [Dispatch (Request 1) (Version 1)]
+    (redone, again) <- evalEither (C.restart recording Nothing)
+    C.committed redone === []
+    again === [Dispatch (Request 0) (Version 0)]
+    C.exchanged redone === C.exchanged recording
+    C.restart recording (Just (Update 0, Attempt 1)) === Left InvalidRecovery
+    C.restart recording (Just (Update 1, Attempt 0)) === Left InvalidRecovery
 
 conflict :: PropertyT IO ()
 conflict = do
