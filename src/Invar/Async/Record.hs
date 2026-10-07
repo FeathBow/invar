@@ -7,32 +7,14 @@ import Data.Aeson.KeyMap qualified as Fields
 import Data.Aeson.Types (Pair, Parser)
 import Data.Text (Text)
 import Data.Text qualified as Text
-import Invar.Async.Completion qualified as Completion
-import Invar.Async.Core (Attempt (..), Epoch (..), Worker (..))
+import Invar.Async.Core (Attempt (..))
 import Invar.Async.Core qualified as Core
+import Invar.Async.Entry (Claim (..), Role (..), claim, claimValue, claimed, outcome, outcomeFields, roleName, roleOf)
 import Invar.Async.Plan (Request (..), Update (..), Version (..))
 import Invar.Infer.Wire qualified as Wire
 import Invar.Spec.Invocation qualified as V
-import Invar.Transcript (Outcome (..), Output (..))
+import Invar.Transcript (Outcome (..))
 import Numeric.Natural (Natural)
-import System.Exit (ExitCode (..))
-
-data Role = Inference | Learner
-    deriving (Eq, Show)
-
-data Claim
-    = Connected Natural Natural
-    | Lost Natural Natural
-    | Started Natural Natural Natural
-    | Completed Natural Natural Natural String
-    | Ready Natural Natural V.Binding String String
-    | Current Natural Natural Natural String
-    | Applied Natural Natural V.Binding String Natural String String String
-    | Staged Natural Natural String
-    | Recorded Natural Natural
-    | Committed Natural Natural
-    | Abandoned Natural Natural
-    deriving (Eq, Show)
 
 data Entry
     = Declared FilePath Object
@@ -47,20 +29,6 @@ data Entry
     | Resumed [Natural] Natural Natural Natural
     | Elapsed Text Natural Double Double
     deriving (Eq, Show)
-
-claim :: Core.Event -> Claim
-claim event = case event of
-    Core.Connected (Worker worker) (Epoch used) -> Connected worker used
-    Core.Lost (Worker worker) (Epoch used) -> Lost worker used
-    Core.Started (Worker worker) (Epoch used) (Request request) -> Started worker used request
-    Core.Completed (Worker worker) (Epoch used) (Request request) digest -> Completed worker used request digest
-    Core.Ready (Update update) (Attempt attempt) bound identity before -> Ready update attempt bound identity before
-    Core.Current (Update update) (Attempt attempt) index before -> Current update attempt index before
-    Core.Applied (Update update) (Attempt attempt) done -> Applied update attempt (Completion.binding done) (Completion.plan done) (Completion.step done) (Completion.consumed done) (Completion.before done) (Completion.after done)
-    Core.Staged (Update update) (Attempt attempt) digest -> Staged update attempt digest
-    Core.Recorded (Update update) (Attempt attempt) -> Recorded update attempt
-    Core.Committed (Update update) (Attempt attempt) -> Committed update attempt
-    Core.Abandoned (Update update) (Attempt attempt) -> Abandoned update attempt
 
 encode :: Entry -> Value
 encode recorded = case recorded of
@@ -94,75 +62,6 @@ decode fields = do
         "resume" -> Resumed <$> fields .: "committed" <*> fields .: "epoch" <*> fields .: "identities" <*> fields .: "processes"
         "interval" -> Elapsed <$> fields .: "role" <*> fields .: "update" <*> fields .: "start" <*> fields .: "end"
         _ -> fail ("Unknown journal entry: " ++ show kind)
-
-roleName :: Role -> Text
-roleName Inference = "inference"
-roleName Learner = "learner"
-
-roleOf :: Text -> Parser Role
-roleOf "inference" = pure Inference
-roleOf "learner" = pure Learner
-roleOf other = fail ("Unknown process role: " ++ show other)
-
-outcomeFields :: Outcome -> [Pair]
-outcomeFields chosen = case chosen of
-    Unlaunched reason -> ["outcome" .= ("unlaunched" :: Text), "reason" .= reason]
-    Exited code read' -> ["outcome" .= ("exited" :: Text), "status" .= statusOf code, "output" .= outputName read']
-    Stopped read' -> ["outcome" .= ("stopped" :: Text), "output" .= outputName read']
-  where
-    statusOf ExitSuccess = 0 :: Int
-    statusOf (ExitFailure status) = status
-
-outcome :: Object -> Parser Outcome
-outcome fields = do
-    kind <- fields .: "outcome"
-    case kind :: Text of
-        "unlaunched" -> Unlaunched <$> fields .: "reason"
-        "exited" -> Exited . (\status -> if status == 0 then ExitSuccess else ExitFailure status) <$> fields .: "status" <*> (fields .: "output" >>= outputOf)
-        "stopped" -> Stopped <$> (fields .: "output" >>= outputOf)
-        _ -> fail ("Unknown process outcome: " ++ show kind)
-
-outputName :: Output -> Text
-outputName Complete = "complete"
-outputName Cut = "cut"
-
-outputOf :: Text -> Parser Output
-outputOf "complete" = pure Complete
-outputOf "cut" = pure Cut
-outputOf other = fail ("Unknown process output: " ++ show other)
-
-claimValue :: Claim -> Value
-claimValue event = case event of
-    Connected worker used -> object ["kind" .= ("connected" :: Text), "worker" .= worker, "epoch" .= used]
-    Lost worker used -> object ["kind" .= ("lost" :: Text), "worker" .= worker, "epoch" .= used]
-    Started worker used request -> object ["kind" .= ("started" :: Text), "worker" .= worker, "epoch" .= used, "request" .= request]
-    Completed worker used request digest -> object ["kind" .= ("completed" :: Text), "worker" .= worker, "epoch" .= used, "request" .= request, "digest" .= digest]
-    Ready update attempt bound identity before -> addressed "ready" update attempt ["binding" .= Wire.bindingValue bound, "plan" .= identity, "before" .= before]
-    Current update attempt index before -> addressed "current" update attempt ["step" .= index, "before" .= before]
-    Applied update attempt bound identity index consumed before after -> addressed "applied" update attempt ["binding" .= Wire.bindingValue bound, "plan" .= identity, "step" .= index, "consumed" .= consumed, "before" .= before, "after" .= after]
-    Staged update attempt digest -> addressed "staged" update attempt ["digest" .= digest]
-    Recorded update attempt -> addressed "recorded" update attempt []
-    Committed update attempt -> addressed "committed" update attempt []
-    Abandoned update attempt -> addressed "abandoned" update attempt []
-
-claimed :: Object -> Parser Claim
-claimed fields = do
-    kind <- fields .: "kind"
-    let update = fields .: "update"
-        attempt = fields .: "attempt"
-    case kind :: Text of
-        "connected" -> Connected <$> fields .: "worker" <*> fields .: "epoch"
-        "lost" -> Lost <$> fields .: "worker" <*> fields .: "epoch"
-        "started" -> Started <$> fields .: "worker" <*> fields .: "epoch" <*> fields .: "request"
-        "completed" -> Completed <$> fields .: "worker" <*> fields .: "epoch" <*> fields .: "request" <*> fields .: "digest"
-        "ready" -> Ready <$> update <*> attempt <*> Wire.binding fields <*> fields .: "plan" <*> fields .: "before"
-        "current" -> Current <$> update <*> attempt <*> fields .: "step" <*> fields .: "before"
-        "applied" -> Applied <$> update <*> attempt <*> Wire.binding fields <*> fields .: "plan" <*> fields .: "step" <*> fields .: "consumed" <*> fields .: "before" <*> fields .: "after"
-        "staged" -> Staged <$> update <*> attempt <*> fields .: "digest"
-        "recorded" -> Recorded <$> update <*> attempt
-        "committed" -> Committed <$> update <*> attempt
-        "abandoned" -> Abandoned <$> update <*> attempt
-        _ -> fail ("Unknown journaled event: " ++ show kind)
 
 commandValue :: Core.Command -> Value
 commandValue issued = case issued of

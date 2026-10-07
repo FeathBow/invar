@@ -1,4 +1,4 @@
-module Invar.Infer.Replay (Logged, Pending, standalone, session, delimit, group, declared, source, trajectory) where
+module Invar.Infer.Replay (Logged, Pending, standalone, ended, session, delimit, group, declared, source, trajectory) where
 
 import Control.Monad (foldM)
 import Crypto.Hash.SHA256 qualified as SHA256
@@ -17,8 +17,11 @@ data Logged = Logged String Trajectory
 data Pending = Pending Session.Session ByteString
 
 standalone :: Session.Protocol -> Session.Declaration -> ExitCode -> ByteString -> Either Session.Error [Logged]
-standalone protocol declaration status encoded = do
-    (_, products) <- foldM advance (Session.start protocol, []) (Session.Dispatched declaration : records encoded ++ [Session.Ended (Transcript.Exited status Transcript.Complete)])
+standalone protocol declaration status = ended protocol declaration (Transcript.Exited status Transcript.Complete)
+
+ended :: Session.Protocol -> Session.Declaration -> Transcript.Outcome -> ByteString -> Either Session.Error [Logged]
+ended protocol declaration outcome encoded = do
+    (_, products) <- foldM advance (Session.start protocol, []) (Session.Dispatched declaration : records encoded ++ [Session.Ended outcome])
     pure (sealed encoded products)
   where
     advance (current, produced) supplied = fmap (produced ++) <$> Session.step current supplied

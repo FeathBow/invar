@@ -1,6 +1,6 @@
 {-# LANGUAGE Safe #-}
 
-module Invar.Async.Core (Worker (..), Epoch (..), Attempt (..), Digest, Event (..), Command (..), Failure (..), Phase (..), State, start, step, authorize, recover, committed, results, learning, highest, exchanged) where
+module Invar.Async.Core (Worker (..), Epoch (..), Attempt (..), Digest, Event (..), Command (..), Failure (..), Phase (..), State, start, step, authorize, recover, restart, committed, results, learning, highest, exchanged, issued) where
 
 import Control.Monad (unless)
 import Data.Map.Strict (Map)
@@ -114,6 +114,18 @@ recover chosen published stored lowest bound fresh = do
     unless (published == take (length published) (updates chosen)) (Left InvalidRecovery)
     unless (all (isJust . owner chosen) (Map.keys stored)) (Left InvalidRecovery)
     pure (advance (State chosen Map.empty lowest (Map.keysSet stored) Map.empty stored Map.empty published Nothing fresh Nothing bound Set.empty))
+
+restart :: State -> Maybe (Update, Attempt) -> Either Failure (State, [Command])
+restart state confirmed = do
+    published <- case (confirmed, active state) of
+        (Nothing, _) -> pure (done state)
+        (Just (update, attempt), Just (target, Committing chosen)) | target == update && chosen == attempt -> pure (done state ++ [update])
+        _ -> Left InvalidRecovery
+    let kept = Map.filterWithKey (\request _ -> maybe False (`elem` published) (owner (plan state) request)) (completedResults state)
+    pure (advance (State (plan state) Map.empty (used state) (Map.keysSet kept) Map.empty kept Map.empty published Nothing (attempts state) Nothing (exchanges state) Set.empty))
+
+issued :: State -> Natural
+issued = attempts
 
 step :: State -> Event -> Either Failure (State, [Command])
 step state event = case event of
