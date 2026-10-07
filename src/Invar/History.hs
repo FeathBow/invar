@@ -9,9 +9,11 @@ import Data.Aeson.KeyMap qualified as Fields
 import Data.Aeson.Types (parseEither)
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as Bytes
+import Data.List (genericLength)
 import Data.Text (Text)
 import Invar.History.Artifacts qualified as Artifacts
 import Invar.History.Cohort qualified as Cohort
+import Invar.History.Generation qualified as Generation
 import Invar.History.Initial qualified as Initial
 import Invar.History.Profile (Profiles (..))
 import Invar.History.Profile qualified as Profile
@@ -28,7 +30,9 @@ import Invar.Learn.Adapter qualified as Adapter
 import Invar.Learn.Codec (Decoder)
 import Invar.Learn.Gradient qualified as Gradient
 import Invar.Learn.Report qualified as Report
+import Invar.Learn.Request qualified as Request
 import Invar.Learn.State qualified as State
+import Invar.Learn.Stream qualified as S
 import Invar.Policy qualified as Policy
 import Invar.Policy.File qualified as File
 import Invar.Resident qualified as Resident
@@ -63,7 +67,7 @@ data Checked = Checked
     , initialState :: Initial.Checked
     }
 
-data Generation = Generation {generationTrace :: Trace.Generation, generationArtifacts :: Value, generationState :: State.Observed, generationGradients :: Gradient.Observed}
+data Generation = Generation {generationTrace :: Generation.Generation, generationArtifacts :: Value, generationState :: State.Observed, generationGradients :: Gradient.Observed}
 
 admit :: Decoder -> Declaration -> (ByteString, ByteString) -> IO Checked
 admit decoder declared (trainingOutput, finalOutput) = do
@@ -71,38 +75,41 @@ admit decoder declared (trainingOutput, finalOutput) = do
     trace <- either invalid pure (Trace.admit (training declared) initialPolicy (tasks declared) trainingOutput)
     let selected = Trace.generations trace
         settings = Trace.settings (training declared)
-    final <- independent declared trace finalOutput
+        next = sum [fromIntegral (length (Workload.tasks workload)) + 1 | workload <- Workload.cycles (tasks declared)]
+    lastGeneration <- case reverse selected of
+        chosen : _ -> pure chosen
+        [] -> invalid "A complete history requires a training generation"
+    final <- independent declared (lastGeneration, Trace.finalPolicy trace, next) finalOutput
     admittedInitial <- Initial.admit decoder (settings, checkpoint declared, randomProfile declared) (initialSource declared)
     let schema = Initial.schema admittedInitial
         initial = Initial.describe admittedInitial
         initialDiagnostics = Initial.diagnostics admittedInitial
     File.withFile (reference declared) $ \file -> Adapter.verify (Learn.reference settings) file >> Adapter.matches schema file
     expectedRng <- either invalid pure (rng initial)
-    observed <- traverse (generation (schema, expectedRng)) (zip [1 ..] selected)
+    observed <- traverse (generation (schema, expectedRng)) (zip (drop 1 (scanl (+) 0 (map optimizerSteps selected))) selected)
     finalDiagnostics <- metadata (selected, initialDiagnostics) final finalOutput
     profiles <- either invalid pure (profileSummary declared selected (initialDiagnostics, finalDiagnostics))
     pure (Checked declared trace initial observed final finalDiagnostics initialDiagnostics profiles admittedInitial)
   where
-    generation (schema, expectedRng) (index, selected) = do
+    generation (schema, expectedRng) (expected, selected) = do
         published <- Publication.observe selected
-        (observed, state, gradients) <- Artifacts.successor (decoder, schema) (index, selected) published
+        (observed, state, gradients) <- Artifacts.successor (decoder, schema) (expected, selected) published
         actualRng <- either invalid pure (rng observed)
         unless (actualRng == expectedRng) (invalid "Successor RNG vector inventory differs from the complete initial state")
         pure (Generation selected observed state gradients)
 
-independent :: Declaration -> Trace.Checked -> ByteString -> IO Inference.Report
-independent declared trace output = do
-    lastGeneration <- case reverse (Trace.generations trace) of
-        selected : _ -> pure selected
-        [] -> invalid "A complete history requires a training generation"
-    expected <- either invalid pure (Report.artifact "adapter" (Cohort.update (Trace.cohort lastGeneration)))
+optimizerSteps :: Generation.Generation -> Integer
+optimizerSteps = genericLength . S.batches . Request.exchange . Report.checkedRequest . Cohort.update . Generation.cohort
+
+independent :: Declaration -> (Generation.Generation, Policy.Description, Natural) -> ByteString -> IO Inference.Report
+independent declared (lastGeneration, finalPolicy, next) output = do
+    expected <- either invalid pure (Report.artifact "adapter" (Cohort.update (Generation.cohort lastGeneration)))
     let requested = finalRequest declared
         bound = finalBinding declared
-        next = sum [fromIntegral (length (Workload.tasks workload)) + 1 | workload <- Workload.cycles (tasks declared)]
     unless (Infer.artifact requested == expected) (invalid "Final independent inference does not load the last published policy")
     either (invalid . show) pure (Learn.materialization (Trace.settings (training declared)) requested)
     unless (V.boundCall bound >= V.CallId next && V.boundAttempt bound >= V.AttemptId next && V.boundInstance bound >= V.Instance next) (invalid "Final independent inference reuses a training invocation identity")
-    planned <- either (invalid . show) pure (Infer.prepare requested >>= Infer.bindPolicy (Trace.finalPolicy trace))
+    planned <- either (invalid . show) pure (Infer.prepare requested >>= Infer.bindPolicy finalPolicy)
     call <- either (invalid . show) pure (Call.prepare bound planned)
     admitted <- either (invalid . show) pure (Replay.standalone Session.Single (Session.Declaration [call] Nothing) (Replay.declared (finalExit declared)) output)
     case admitted of
@@ -112,23 +119,23 @@ independent declared trace output = do
 rng :: Value -> Either String Value
 rng = parseEither (withObject "checkpoint observation" (\fields -> fields .: "state" >>= \state -> pure (Object (Fields.delete "steps" state))))
 
-metadata :: ([Trace.Generation], [Value]) -> Inference.Report -> ByteString -> IO [Value]
+metadata :: ([Generation.Generation], [Value]) -> Inference.Report -> ByteString -> IO [Value]
 metadata (generations, initial) final output = do
     expected <- either invalid pure (workerModel (Inference.describe final))
-    let inferences = [Inference.describe observation | generation <- generations, observation <- Cohort.inferences (Trace.cohort generation)]
-        learners = [value | generation <- generations, value@(Object fields) <- Trace.diagnostics generation, Fields.lookup "stage" fields == Just (String "loaded_learner")]
+    let inferences = [Inference.describe observation | generation <- generations, observation <- Cohort.inferences (Generation.cohort generation)]
+        learners = [value | generation <- generations, value@(Object fields) <- Generation.diagnostics generation, Fields.lookup "stage" fields == Just (String "loaded_learner")]
     profiles <- either invalid pure (traverse Json.decode (Bytes.lines output))
-    actual <- either invalid pure (traverse workerModel (inferences ++ learners ++ selectedProfiles (initial ++ concatMap Trace.diagnostics generations ++ profiles)))
+    actual <- either invalid pure (traverse workerModel (inferences ++ learners ++ selectedProfiles (initial ++ concatMap Generation.diagnostics generations ++ profiles)))
     unless (all (== expected) actual) (invalid "History workers disagree about their model or revision")
     pure [value | value@(Object fields) <- profiles, Fields.lookup "stage" fields `elem` map (Just . String) ["loading", "profile", "load", "inference"]]
 
 selectedProfiles :: [Value] -> [Value]
 selectedProfiles records = [value | value@(Object fields) <- records, Fields.lookup "stage" fields == Just (String "profile")]
 
-profileSummary :: Declaration -> [Trace.Generation] -> ([Value], [Value]) -> Either String Value
+profileSummary :: Declaration -> [Generation.Generation] -> ([Value], [Value]) -> Either String Value
 profileSummary declared generations (initial, final) = do
     let initialProfiles = Profile.fromPrefix Resident.Learning [fields | Object fields <- initial]
-        trainingProfiles = concatMap Trace.profiles generations
+        trainingProfiles = concatMap Generation.profiles generations
         mode = profileMode declared
     ending <- Profile.final mode final
     Profile.summarize mode (initialProfiles ++ trainingProfiles ++ ending)
@@ -154,7 +161,7 @@ compare (left, right) = do
         modelEqual = leftModel == rightModel
         same = and [initialEqual, generationEqual, taskEqual, settingsEqual, finalEqual, modelEqual]
         scheduling declared = ((Trace.sessions (training declared), Trace.inferenceMode (training declared), Trace.learningMode (training declared)), map (\workload -> (Workload.order workload, Workload.delivery workload)) (Workload.cycles (tasks declared)), finalBinding declared)
-        diagnostic checked = (initializationDiagnostics checked, map Trace.diagnostics (Trace.generations (trainingTrace checked)), Trace.closing (trainingTrace checked), standaloneDiagnostics checked)
+        diagnostic checked = (initializationDiagnostics checked, map Generation.diagnostics (Trace.generations (trainingTrace checked)), Trace.closing (trainingTrace checked), standaloneDiagnostics checked)
     pure (object ["comparison" .= ("complete histories: semantic inputs and artifact values" :: Text), "equal" .= same, "tasks_equal" .= taskEqual, "settings_equal" .= settingsEqual, "models_equal" .= modelEqual, "schedule_equal" .= (scheduling first == scheduling second), "publication_method_equal" .= (Trace.method (training first) == Trace.method (training second)), "diagnostics_equal" .= (diagnostic left == diagnostic right), "initial" .= initial, "generations" .= generations, "final_equal" .= finalEqual, "left" .= describe left, "right" .= describe right])
 
 initialization :: Initial.Source -> Maybe Integer
@@ -175,8 +182,8 @@ missing side index remaining = [object ["generation" .= position, "missing" .= s
 
 compareGeneration :: Natural -> (Generation, Generation) -> IO Value
 compareGeneration index (left, right) = do
-    let leftCohort = Trace.cohort (generationTrace left)
-        rightCohort = Trace.cohort (generationTrace right)
+    let leftCohort = Generation.cohort (generationTrace left)
+        rightCohort = Generation.cohort (generationTrace right)
     inputsEqual <- either invalid pure (Report.sameInput (Cohort.update leftCohort) (Cohort.update rightCohort))
     states <- State.compareObserved (generationState left, generationState right)
     gradients <- Gradient.compareObserved (generationGradients left, generationGradients right)
@@ -196,7 +203,7 @@ field key = either invalid pure . parseEither (withObject "artifact observation"
 
 rollouts :: Checked -> Natural -> Either String [(String, Inference.Report)]
 rollouts checked index = case drop (fromIntegral index - 1) (zip (Workload.cycles (tasks (declaration checked))) (generationObservations checked)) of
-    (workload, generation) : _ | index >= 1 -> Right (zip (map Workload.name (Workload.tasks workload)) (Cohort.inferences (Trace.cohort (generationTrace generation))))
+    (workload, generation) : _ | index >= 1 -> Right (zip (map Workload.name (Workload.tasks workload)) (Cohort.inferences (Generation.cohort (generationTrace generation))))
     _ -> Left "The admitted history has no such generation"
 
 describe :: Checked -> Value

@@ -31,6 +31,8 @@ import Invar.Async.Plan (Declared (Declared), Request (..), Update (..))
 import Invar.Async.Plan qualified as Plan
 import Invar.Async.Replay qualified as Replay
 import Invar.Cohort qualified as C
+import Invar.History.Generation qualified as Generation
+import Invar.Infer.Replay qualified as Logged
 import Invar.Infer.Trajectory qualified as Trajectory
 import Invar.Journal qualified as Journal
 import Invar.Learn qualified as L
@@ -74,12 +76,14 @@ replays =
         , ("after a restart a request is started or completed only through a call dispatched since, on the worker and epoch of that call's process", once redispatched)
         , ("a resident owner that exits cleanly before its results are stored leaves them admitted", once drained)
         , ("a learner transcript cut inside an attempt keeps its unconfirmed tail out of the core", once cut)
+        , ("an attempt is committed when journaled or confirmed by a restart, concluded when published nowhere, and incomplete before its result; committed evidence holds what the attempt consumed", once outcomes)
+        , ("a generation is built only from one learner admission, its own cohort and the version its schedule names", once generations)
         , ("a restart publishes the recording attempt a matching generation confirms, redoes it when none is observed and refuses any other generation", once restarts)
         ]
   where
     once = withTests 1 . property
 
-data Run = Run {declaration :: Replay.Declaration, entries :: [Entry.Entry], transcripts :: Map Natural ByteString, records :: [Value], published :: Entry.Generation, members :: Natural, learnerProcess :: Natural}
+data Run = Run {declaration :: Replay.Declaration, entries :: [Entry.Entry], transcripts :: Map Natural ByteString, records :: [Value], published :: Entry.Generation, members :: Natural, learnerProcess :: Natural, tasks :: [C.Task]}
 
 described :: PropertyT IO Policy.Description
 described = evalEither (Policy.describe ("test-model", "test-revision") (L.policy settings, L.tokenizer settings, L.behaviorBase settings, L.behaviorAssembly settings))
@@ -96,7 +100,7 @@ built inference learning = do
         count = fromIntegral (length (Loop.tasks cycle'))
         bound = V.ordinal count
         resident = learning == Learner.Resident
-    tasks <- evalEither (first show (Loop.bindTasks initial (Loop.tasks cycle')))
+    bound' <- evalEither (first show (Loop.bindTasks initial (Loop.tasks cycle')))
     journaled <- evalIO (newIORef [])
     captured <- evalIO (newIORef Map.empty)
     numbers <- evalIO (newIORef 0)
@@ -118,7 +122,7 @@ built inference learning = do
     produced <- evalIO $ R.withRecordedDriver inference (R.worker chosen, R.sessions chosen) opened $ \driver -> do
         owned <- if resident then Just <$> reserve Entry.Learner 0 else pure Nothing
         append [Entry.Opened 0 0, Entry.Happened (Entry.Connected 0 0)]
-        batch <- R.runObserved driver (R.Observer dispatched checked) chosen {R.definition = C.Definition (L.policy settings) tasks} >>= F.require
+        batch <- R.runObserved driver (R.Observer dispatched checked) chosen {R.definition = C.Definition (L.policy settings) bound'} >>= F.require
         planned <- F.require (L.prepare settings batch)
         number <- maybe (reserve Entry.Learner 0) pure owned
         exchange <- F.prepare root (0, bound) planned
@@ -161,6 +165,7 @@ built inference learning = do
             , published = Entry.Generation 1 adapter learner successor
             , members = count
             , learnerProcess = number
+            , tasks = bound'
             }
   where
     isFinished Entry.Finished {} = True
@@ -272,7 +277,15 @@ replayed = forM_ [(R.Serial, Learner.Process), (R.Serial, Learner.Resident), (R.
             Replay.binding learned === V.ordinal (members run)
             Replay.process learned === learnerProcess run
             Replay.confirmed learned === fromIntegral (length (Replay.completions learned))
-            Replay.result learned === Just (Entry.adapter generation, Entry.learner generation)
+            Replay.outcome learned === Replay.Committed 1
+            Replay.consumed learned === map V.ordinal [0 .. members run - 1]
+            evidenced <- evalMaybe (Map.lookup 1 (Replay.evidence result))
+            Replay.committing evidenced === (0, 0)
+            map (Trajectory.binding . Logged.trajectory) (Replay.trajectories evidenced) === Replay.consumed learned
+            (Report.artifact "adapter" (Replay.report evidenced), Report.artifact "learner" (Replay.report evidenced)) === (Right (Entry.adapter generation), Right (Entry.learner generation))
+            direct <- evalEither (Report.admitFrames (members run) (Replay.frames evidenced))
+            let fields reported = (Report.invocation reported, Report.request reported, Report.result reported, Report.gradient reported)
+            fields (Replay.report evidenced) === fields direct
         _ -> failure
     Replay.floors result === Replay.Floors (members run + 1) 2 1 1
 
@@ -480,12 +493,49 @@ cut = do
             Just learned -> do
                 Replay.confirmed learned === 0
                 length (Replay.completions learned) === length applying
-                Replay.result learned === Nothing
+                case Replay.outcome learned of
+                    Replay.Incomplete _ -> success
+                    other -> annotateShow other >> failure
             Nothing -> failure
         case (Core.learning (Replay.state result), current) of
             (Just (Update 0, phase), Entry.Happened (Entry.Current _ _ index before)) -> phase === Answering (Attempt 0) index before
             _ -> failure
     refused "was not reported by the learner" (Replay.replay (declaration run) (through applied (entries run)) (Map.insert 1 (F.wire unapplied) (transcripts run)))
+
+outcomes :: PropertyT IO ()
+outcomes = do
+    run <- serial
+    ready <- firstOf [recorded | recorded@(Entry.Happened Entry.Ready {}) <- entries run]
+    let recording = through (Entry.Happened (Entry.Recorded 0 0)) (entries run)
+        replayedWith journal = evalEither (Replay.replay (declaration run) journal (transcripts run))
+        outcomeOf result = Replay.outcome <$> Map.lookup (0, 0) (Replay.learned result)
+    concluded <- replayedWith recording
+    outcomeOf concluded === Just Replay.Concluded
+    Map.null (Replay.evidence concluded) === True
+    confirmed <- replayedWith (recording ++ [Entry.Restarted [published run]])
+    outcomeOf confirmed === Just (Replay.Committed 1)
+    fmap Replay.committing (Map.lookup 1 (Replay.evidence confirmed)) === Just (0, 0)
+    redone <- replayedWith (recording ++ [Entry.Restarted []])
+    outcomeOf redone === Just Replay.Concluded
+    started <- replayedWith (through ready (entries run))
+    case outcomeOf started of
+        Just (Replay.Incomplete _) -> success
+        other -> annotateShow other >> failure
+
+generations :: PropertyT IO ()
+generations = do
+    run <- serial
+    result <- evalEither (replayOf run)
+    evidenced <- evalMaybe (Map.lookup 1 (Replay.evidence result))
+    let settings = Loop.settings (Replay.config (declaration run))
+        built' cohort = Generation.generation settings ("output", "rename") (tasks run, cohort) (Replay.execution evidenced) ([], [], [])
+        stepping = [Lazy.toStrict (encode record) | record <- records run, F.stage record `elem` map Just ["proximal", "reference", "current"]]
+    selected <- evalEither (built' (Replay.trajectories evidenced))
+    Generation.publication selected === Generation.Publication ("output" </> "generation1") "rename"
+    assert (not (null stepping))
+    Generation.stepOutputs selected === stepping
+    assert (isLeft (built' (drop 1 (Replay.trajectories evidenced))))
+    assert (isLeft (Generation.generation settings ("output", "copy") (tasks run, Replay.trajectories evidenced) (Replay.execution evidenced) ([], [], [])))
 
 restarts :: PropertyT IO ()
 restarts = do

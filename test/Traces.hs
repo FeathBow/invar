@@ -17,6 +17,7 @@ import Data.Text.Encoding (decodeUtf8)
 import Hedgehog
 import Invar.Cohort qualified as C
 import Invar.History.Cohort qualified as Cohort
+import Invar.History.Generation qualified as Generation
 import Invar.History.Trace qualified as Trace
 import Invar.Infer qualified as I
 import Invar.Learn qualified as L
@@ -102,7 +103,7 @@ admitted = forM_ [(1, False), (2, False), (1, True)] $ \(count, resident) -> do
     history <- built count resident
     checked <- evalEither (admit history)
     case Trace.generations checked of
-        [generation] -> length (Cohort.inferences (Trace.cohort generation)) === fromIntegral members
+        [generation] -> length (Cohort.inferences (Generation.cohort generation)) === fromIntegral members
         _ -> failure
     toJSON (Policy.adapter (Trace.finalPolicy checked)) === Calls.field "policy" (published history)
 

@@ -17,11 +17,10 @@ import Invar.Artifact qualified as Artifact
 import Invar.Infer.Framing qualified as Framing
 import Invar.Json qualified as Json
 import Invar.Learn.Program qualified as Program
+import Invar.Learn.Report.Internal (Report (..))
 import Invar.Learn.Request qualified as Request
 import Invar.Spec.Artifact qualified as A
 import Numeric.Natural (Natural)
-
-data Report = Report String Value Request.Request (Object, ByteString) String
 
 logDigest :: Report -> String
 logDigest (Report digest _ _ _ _) = digest

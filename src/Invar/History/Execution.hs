@@ -1,10 +1,9 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.History.Execution (Mode (..), State, Frame (..), Declared (..), Cycle (..), start, validate, finish, encoded, modelLoads) where
+module Invar.History.Execution (Mode (..), State, Frame (..), Declared (..), Cycle (..), start, validate, finish, encoded) where
 
 import Control.Monad (foldM, unless, when)
 import Data.Aeson (Object, Value (..))
-import Data.Aeson.KeyMap qualified as Fields
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import Data.Maybe (catMaybes)
@@ -27,7 +26,7 @@ data Mode = Finite | Batched | Resident | Shared deriving (Eq, Show)
 data State = State Session.Protocol [Maybe Hosted] (Maybe Owner.State) | Joint Hosted
 data Frame = Frame ByteString Object
 data Declared = Declared {calls :: [Call.Call], reference :: Maybe String, report :: Report.Report}
-data Cycle = Cycle {pending :: [Replay.Pending], admitted :: [Replay.Logged], groups :: [Group.Group], profiles :: [Profile.Observation]}
+data Cycle = Cycle {pending :: [Replay.Pending], admitted :: [Replay.Logged], groups :: [Group.Group], profiles :: [Profile.Observation], learned :: Maybe Trace.Attempt}
 
 type Hosted = (Session.Session, Owner.State)
 
@@ -48,15 +47,15 @@ hosted selected = (Session.start Session.Resident, Owner.start selected)
 validate :: (Learn.Settings, State) -> (Workload.Cycle, Declared) -> [Frame] -> Either String (State, Cycle)
 validate (current, Joint owner) (workload, declared) frames = do
     (afterInference, logged, inference, remaining) <- group owner (ordered (Workload.order workload) declared) (map encoded frames)
-    (physical, learning, rest) <- learner (snd afterInference) (current, report declared) remaining
+    (physical, learning, attempted, rest) <- learner (snd afterInference) (current, report declared) remaining
     unless (null rest) (Left "Output follows the shared learner release before publication")
     let observed = [inference, learning]
         modelProfiles = concatMap (Profile.fromPrefix Boundary.Shared . map Framing.fields . Group.prefix) observed
-    pure (Joint (fst afterInference, physical), Cycle [] logged observed modelProfiles)
+    pure (Joint (fst afterInference, physical), Cycle [] logged observed modelProfiles (Just attempted))
 validate (current, State protocol owners learning) (workload, declared) frames = do
     let count = length owners
         partitions = [[index | (position, index) <- zip [0 ..] (Workload.order workload), position `mod` count == slot] | slot <- [0 .. count - 1]]
-    (sessions, collected, rest) <- foldM session ([], Cycle [] [] [] [], map encoded frames) (zip owners partitions)
+    (sessions, collected, rest) <- foldM session ([], Cycle [] [] [] [] Nothing, map encoded frames) (zip owners partitions)
     (next, learned) <- learn learning rest
     pure (State protocol (reverse sessions) next, learned collected)
   where
@@ -70,12 +69,12 @@ validate (current, State protocol owners learning) (workload, declared) frames =
             (next, logged, observed, rest) <- group state (ordered selected declared) remaining
             pure (Just next : accepted, collected {admitted = admitted collected ++ logged, groups = groups collected ++ [observed], profiles = profiles collected ++ Profile.fromPrefix Boundary.Inference (map Framing.fields (Group.prefix observed))}, rest)
     learn Nothing remaining = do
-        prefix <- finiteLearning current (report declared) (map decoded remaining)
-        pure (Nothing, \collected -> collected {profiles = profiles collected ++ Profile.fromPrefix Boundary.Learning prefix})
+        (prefix, attempted) <- finiteLearning current (report declared) (map decoded remaining)
+        pure (Nothing, \collected -> collected {profiles = profiles collected ++ Profile.fromPrefix Boundary.Learning prefix, learned = Just attempted})
     learn (Just physical) remaining = do
-        (next, observed, rest) <- learner physical (current, report declared) remaining
+        (next, observed, attempted, rest) <- learner physical (current, report declared) remaining
         unless (null rest) (Left "Output follows the resident learner release before publication")
-        pure (Just next, \collected -> collected {groups = groups collected ++ [observed], profiles = profiles collected ++ Profile.fromPrefix Boundary.Learning (map Framing.fields (Group.prefix observed))})
+        pure (Just next, \collected -> collected {groups = groups collected ++ [observed], profiles = profiles collected ++ Profile.fromPrefix Boundary.Learning (map Framing.fields (Group.prefix observed)), learned = Just attempted})
 
 ordered :: [Natural] -> Declared -> Session.Declaration
 ordered selected declared = Session.Declaration [chosen | index <- selected, chosen <- take 1 (drop (fromIntegral index) (calls declared))] (reference declared)
@@ -89,23 +88,23 @@ group (current, physical) declaration@(Session.Declaration chosen _) frames = do
     observed <- Group.observe (Owner.owner physical, Owner.groups physical, map Call.binding chosen) records acknowledged
     pure (next, logged, observed, rest)
 
-learner :: Owner.State -> (Learn.Settings, Report.Report) -> [Framing.Frame] -> Either String (Owner.State, Group.Group, [Framing.Frame])
+learner :: Owner.State -> (Learn.Settings, Report.Report) -> [Framing.Frame] -> Either String (Owner.State, Group.Group, Trace.Attempt, [Framing.Frame])
 learner physical (settings, reported) records = do
     let Boundary.Owner role _ = Owner.owner physical
     unless (role `elem` [Boundary.Learning, Boundary.Shared]) (Left "Resident observation has a different numerical owner role")
     declared@(bound, _, _) <- Trace.invoked reported
-    (attempted, released) <- Learner.resident settings physical declared records
+    (attempted, execution, released) <- Learner.resident settings physical declared records
     Trace.reports reported attempted
-    Learner.Released following execution acknowledged after <- released
+    Learner.Released following acknowledged after <- released
     observed <- Group.observe (Owner.owner physical, Owner.groups physical, [bound]) execution acknowledged
-    pure (following, observed, after)
+    pure (following, observed, attempted, after)
 
-finiteLearning :: Learn.Settings -> Report.Report -> [Frame] -> Either String [Object]
+finiteLearning :: Learn.Settings -> Report.Report -> [Frame] -> Either String ([Object], Trace.Attempt)
 finiteLearning current reported frames = do
     declared <- Trace.invoked reported
     (prefix, attempted) <- Learner.finite current declared (map encoded frames)
     Trace.reports reported attempted
-    pure (map Framing.fields prefix)
+    pure (map Framing.fields prefix, attempted)
 
 finish :: State -> [Frame] -> Either String [Frame]
 finish (Joint (current, physical)) records = do
@@ -134,6 +133,3 @@ encoded (Frame raw fields) = Framing.Frame raw fields
 
 decoded :: Framing.Frame -> Frame
 decoded (Framing.Frame raw fields) = Frame raw fields
-
-modelLoads :: [Frame] -> Natural
-modelLoads records = fromIntegral (length [() | Frame _ fields <- records, Fields.lookup "stage" fields == Just (String "load")])

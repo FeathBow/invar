@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Learn.Trace (Attempt (..), invoked, reports, attempt, readiness, completion) where
+module Invar.Learn.Trace (Attempt, opening, stream, result, stopped, records, stop, invoked, reports, attempt, readiness, completion) where
 
 import Control.Monad (unless, when)
 import Data.Aeson (Object, Value (..), object, withObject, (.:), (.=))
@@ -8,12 +8,15 @@ import Data.Aeson.KeyMap qualified as Fields
 import Data.Aeson.Types (parseEither)
 import Data.Bifunctor (first)
 import Data.ByteString.Char8 qualified as Bytes
+import Data.Maybe (fromMaybe)
 import Data.Text qualified as Text
+import Invar.Infer.Framing qualified as Frame
 import Invar.Infer.Wire qualified as Wire
 import Invar.Json qualified as Json
 import Invar.Learn qualified as Learn
 import Invar.Learn.Protocol qualified as Protocol
 import Invar.Learn.Report qualified as Report
+import Invar.Learn.Report.Internal qualified as Internal
 import Invar.Learn.Request qualified as Request
 import Invar.Learn.Step qualified as Step
 import Invar.Learn.Stream qualified as S
@@ -22,7 +25,25 @@ import Invar.Materialization qualified as Materialization
 import Invar.Spec.Invocation qualified as V
 import Invar.Spec.Load qualified as Image
 
-data Attempt = Attempt {opening :: String, stream :: S.Stream, result :: Maybe Object, stopped :: Maybe String}
+data Attempt = Attempt String S.Stream (Maybe Report.Report) (Maybe String) [Frame.Frame]
+
+opening :: Attempt -> String
+opening (Attempt value _ _ _ _) = value
+
+stream :: Attempt -> S.Stream
+stream (Attempt _ value _ _ _) = value
+
+result :: Attempt -> Maybe Report.Report
+result (Attempt _ _ value _ _) = value
+
+stopped :: Attempt -> Maybe String
+stopped (Attempt _ _ _ value _) = value
+
+records :: Attempt -> [Frame.Frame]
+records (Attempt _ _ _ _ value) = value
+
+stop :: String -> Attempt -> Attempt
+stop problem (Attempt before steps _ earlier frames) = Attempt before steps Nothing (Just (fromMaybe problem earlier)) frames
 
 invoked :: Report.Report -> Either String (V.Binding, Text.Text, Value)
 invoked report = do
@@ -32,37 +53,38 @@ invoked report = do
 
 reports :: Report.Report -> Attempt -> Either String ()
 reports report attempted = case (result attempted, stopped attempted) of
-    (Just finished, _) -> unless (Object finished == Report.result report) (Left "Update trace result differs from the admitted report")
+    (Just finished, _) -> unless (Report.result finished == Report.result report) (Left "Update trace result differs from the admitted report")
     (Nothing, Just problem) -> Left problem
     (Nothing, Nothing) -> Left "Incomplete learner execution trace"
 
-attempt :: Learn.Settings -> (V.Binding, Text.Text, Value) -> [Object] -> Either String Attempt
-attempt settings (bound, program, request) events = do
+attempt :: Learn.Settings -> (V.Binding, Text.Text, Value) -> [Frame.Frame] -> Either String Attempt
+attempt settings (bound, program, request) frames = do
     let selected = Materialization.learning (Learn.policy settings, Learn.learner settings, Learn.tokenizer settings, Learn.base settings, Learn.assembly settings, Learn.reference settings)
+        events = map Frame.fields frames
     pair@(_, consumed) <- readiness request (take 2 events)
     unless (Fields.lookup "program" consumed == Just (String program) && Fields.lookup "request" consumed == Just request) (Left "Learner consumption differs from the declared update")
     declared <- parseEither (withObject "update request" pure) request
     bindings selected (bound, declared) pair
     checked <- parseEither Request.parse request
-    let (reported, rest) = span stepping (drop 2 events)
+    let (reported, rest) = span (stepping . Frame.fields) (drop 2 frames)
     (begun, _) <- first show (Protocol.partial bound checked [])
-    (advanced, broken) <- first show (Protocol.partial bound checked reported)
-    let attempted = Attempt (S.opening begun) advanced
+    (advanced, broken) <- first show (Protocol.partial bound checked (map Frame.fields reported))
+    let attempted found reason = Attempt (S.opening begun) advanced found reason frames
     pure $ case (broken, rest) of
         (Just problem, _) -> attempted Nothing (Just (show problem))
         (Nothing, []) -> attempted Nothing Nothing
-        (Nothing, updated : remaining) -> either (attempted Nothing . Just) (`attempted` Nothing) (concluding checked advanced updated remaining)
+        (Nothing, updated : remaining) -> either (attempted Nothing . Just) (`attempted` Nothing) (concluding checked advanced (Frame.fields updated) remaining)
   where
     concluding checked advanced updated remaining = do
         stage "reward_update" updated
-        let (staged, ending) = span staging remaining
-        mapM_ (\fields -> when (Fields.member "phase" fields) (Left "Unexpected learner observation stage")) staged
+        let (staged, ending) = span (staging . Frame.fields) remaining
+        mapM_ ((\fields -> when (Fields.member "phase" fields) (Left "Unexpected learner observation stage")) . Frame.fields) staged
         case ending of
             [] -> Right Nothing
             [finished] -> do
-                completion finished
-                first show (Protocol.validateResult bound checked advanced finished)
-                Right (Just finished)
+                completion (Frame.fields finished)
+                first show (Protocol.validateResult bound checked advanced (Frame.fields finished))
+                Just <$> Internal.admitted (Frame.encode frames) (Wire.bindingValue bound, program, checked) (Frame.fields finished, Frame.raw finished)
             _ -> Left "Output follows the learner result"
     staging fields = Fields.lookup "stage" fields `elem` map (Just . String) ["checkpoint", "artifacts"]
     stepping fields = Fields.lookup "stage" fields `elem` map (Just . String) Step.stages
