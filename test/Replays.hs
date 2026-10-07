@@ -23,6 +23,7 @@ import Data.Text.Encoding (decodeUtf8)
 import Hedgehog hiding (Update)
 import Hedgehog.Gen qualified as Gen
 import Hedgehog.Range qualified as Range
+import Invar.Artifact qualified as Artifact
 import Invar.Async.Completion qualified as Completion
 import Invar.Async.Core (Attempt (..), Phase (..))
 import Invar.Async.Core qualified as Core
@@ -71,6 +72,7 @@ replays =
         , ("a changed transcript line, a different stored digest, a different applied record and a result never completed are told apart", once altered)
         , ("a readiness, step, staged adapter or verified learner that differs from the learner's transcript is refused", once claims)
         , ("a finite session yields its results only after a journaled clean exit", once exits)
+        , ("a process's model load is kept only once its protocol admitted it: a finite session at its clean exit, a process learner at its attempt, a resident learner at its accepted release and a resident inference owner with its first group", once loads)
         , ("a learner result followed by an unreadable line or a fragment, naming another call or request, or after an invalid measurement supports no publication while its steps stay admitted", once results)
         , ("a learner result supports a publication only after its process exited cleanly or its resident release was acknowledged", once boundaries)
         , ("after a restart a request is started or completed only through a call dispatched since, on the worker and epoch of that call's process", once redispatched)
@@ -415,6 +417,44 @@ exits = do
         refused "has no admitted trajectory" (replayOf run {entries = replaced outcome})
     result <- evalEither (replayOf run {entries = takeWhile (/= session) (entries run)})
     [() | (_, Replay.Unfinished _) <- Map.elems (Replay.statuses result)] === replicate (fromIntegral (members run)) ()
+
+loads :: PropertyT IO ()
+loads = do
+    forM_ [(R.Serial, Learner.Process), (R.Serial, Learner.Resident), (R.Resident, Learner.Process), (R.Resident, Learner.Resident)] $ \(inference, learning) -> do
+        run <- built inference learning
+        result <- evalEither (replayOf run)
+        Map.map fst (Replay.loaded result) === Map.fromList ([(number, Entry.Inference) | Entry.Reserved number Entry.Inference _ _ <- entries run] ++ [(learnerProcess run, Entry.Learner)])
+        forM_ (Map.toList (Replay.loaded result)) $ \(number, (_, loaded)) -> do
+            encoded <- evalMaybe (Map.lookup number (transcripts run))
+            leading <- evalEither (traverse eitherDecodeStrict (take (length loaded) (Bytes.lines encoded)))
+            map Object loaded === leading
+            map (Fields.lookup "stage") (take 1 (reverse loaded)) === [Just "load"]
+    run <- serial
+    session <- firstOf [number | Entry.Reserved number Entry.Inference _ _ <- entries run]
+    let pending = takeWhile (/= Entry.Finished session (Transcript.Exited ExitSuccess Transcript.Complete)) (entries run)
+        attempted = through (Entry.Attempted 0 0 (V.ordinal (members run)) (learnerProcess run)) (entries run)
+        fragment = Map.adjust (Bytes.takeWhile (/= '\n')) (learnerProcess run) (transcripts run)
+    running <- evalEither (Replay.replay (declaration run) pending (transcripts run))
+    abandoned <- evalEither (Replay.replay (declaration run) (pending ++ [Entry.Restarted []]) (transcripts run))
+    unloaded <- evalEither (Replay.replay (declaration run) attempted fragment)
+    loaded <- evalEither (Replay.replay (declaration run) attempted (transcripts run))
+    map (Map.member session . Replay.loaded) [running, abandoned] === [False, False]
+    map (Map.member (learnerProcess run) . Replay.loaded) [unloaded, loaded] === [False, True]
+    owned <- built R.Serial Learner.Resident
+    root <- workspace
+    reported <- firstOf [fields | Object fields <- records owned, Fields.lookup "stage" fields == Just "loaded_learner"]
+    model <- evalMaybe (Fields.lookup "model" reported)
+    revision <- evalMaybe (Fields.lookup "revision" reported)
+    let (admitted, acknowledged) = break ((== Just "released") . F.stage) (records owned)
+        owner = learnerProcess owned
+        prefix = through (Entry.Attempted 0 0 (V.ordinal (members owned)) owner) (entries owned)
+    forM_ [(model, [Just "loading", Just "profile", Just "load"]), (String "another-model", [])] $ \(claimed, kept) -> do
+        let profiled = object ["stage" .= String "loading"] : object ["stage" .= String "profile", "model" .= claimed, "revision" .= revision] : admitted
+        evalIO (Bytes.writeFile (root </> "released.jsonl") (F.wire profiled))
+        digest <- evalIO (Artifact.identity "Resident learner records" (root </> "released.jsonl"))
+        let released = [Calls.change "result_sha256" (String (Text.pack digest)) record | record <- take 1 acknowledged] ++ drop 1 acknowledged
+        result <- evalEither (Replay.replay (declaration owned) prefix (Map.insert owner (F.wire (profiled ++ released)) (transcripts owned)))
+        maybe [] (map (Fields.lookup "stage") . snd) (Map.lookup owner (Replay.loaded result)) === kept
 
 results :: PropertyT IO ()
 results = do

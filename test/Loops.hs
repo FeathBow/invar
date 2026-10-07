@@ -4,6 +4,7 @@ module Loops (loops) where
 
 import BatchCalls (quote)
 import Control.Monad (forM_, void)
+import Data.Aeson (Value (Null))
 import Data.ByteString qualified as Bytes
 import Hedgehog
 import Invar.Cohort qualified as C
@@ -19,6 +20,7 @@ import Invar.Store qualified as Store
 import Invar.Worker qualified as W
 import LearnerFixture qualified as F
 import Rollouts qualified as Fixture
+import Sessions qualified
 import Store (workspace)
 import System.Directory (createDirectory, doesPathExist, listDirectory)
 import System.Exit (ExitCode (ExitFailure))
@@ -107,7 +109,8 @@ initial = do
     case synchronous of
         Left (Loop.Policy refused) -> refused === problem
         unexpected -> annotateShow unexpected >> failure
-    concurrent <- evalIO (Runtime.run (Runtime.Run changed 0 [] []) [])
+    document <- evalEither Sessions.workload
+    concurrent <- evalIO (Runtime.run (Runtime.Run changed 0 document) Null)
     case concurrent of
         Left (Runtime.Declaration refused) -> refused === problem
         unexpected -> annotateShow unexpected >> failure

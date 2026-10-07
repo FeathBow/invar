@@ -12,7 +12,7 @@ import sys
 
 import torch
 
-from worker.tests.hf.overlap import CHILD_SECONDS, CORE, execute, flags, journaled, prepared, workload
+from worker.tests.hf.overlap import CHILD_SECONDS, CORE, execute, flags, inspected, journaled, prepared, workload
 
 LOCK = "import fcntl, sys; held = open(sys.argv[1], 'a'); fcntl.lockf(held, fcntl.LOCK_EX); print(flush=True); sys.stdin.read()"
 
@@ -73,7 +73,11 @@ class RecoveryTests(unittest.TestCase):
         with subprocess.Popen([sys.executable, "-c", LOCK, output / "journal.jsonl"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True) as holder:
             holder.stdout.readline()
             self.refused(output, "Another process holds the run journal")
+            with self.assertRaisesRegex(ValueError, "Another process holds the run journal"):
+                inspected(self.root, output, 1, "held")
             holder.stdin.close()
+        history = inspected(self.root, output, 1, "early")
+        self.assertEqual([attempt["outcome"] for attempt in history["training"]["attempts"]], [{"committed": 1}])
         self.applied(output, 0)
         records = self.resume(output, "earlyresumed")
         self.assertEqual(records[0], {"phase": "resumed", "committed": []})
@@ -88,7 +92,7 @@ class RecoveryTests(unittest.TestCase):
         self.refused(output, "Generation 1 differs from the update its attempt staged")
         (output / "generation1").unlink()
         self.refused(output, "Update 0 is committed in the journal but its generation is missing")
-        self.refused(output.rename(output.with_name("moved")), "The declared output directory is not the resumed directory")
+        self.refused(output.rename(output.with_name("moved")), "The declared output directory is not the run's directory")
 
     def test_an_update_applied_without_its_receipt_is_computed_again_and_committed_updates_are_kept(self):
         expected, output = self.train("interrupted", 2, self.settings)
@@ -110,6 +114,13 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(len(identities), len(set(identities)))
         native = torch.load(output / "generation2" / "learner.pt", weights_only=True)
         self.assertTrue(all(slot["step"].item() == 2 for slot in native["optimizer"]["state"].values()))
+        history = inspected(self.root, output, 2, "resumed")
+        self.assertEqual(len(history["artifacts"]), 2)
+        outcomes = [(attempt["update"], attempt["outcome"]) for attempt in history["training"]["attempts"]]
+        self.assertEqual(outcomes[0], (0, {"committed": 1}))
+        self.assertEqual(outcomes[-1], (1, {"committed": 2}))
+        self.assertTrue(any(update == 1 and "committed" not in outcome for update, outcome in outcomes[1:-1]))
+        self.assertEqual(len(history["training"]["restarts"]), 1)
 
 
 if __name__ == "__main__":

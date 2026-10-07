@@ -1,9 +1,9 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Training (run, usage, settings, settingsOptions) where
+module Training (run, usage, settings, settingsOptions, declared) where
 
 import Control.Monad (when)
-import Data.Aeson (Object, Value, eitherDecodeStrict, encode, object, (.:), (.=))
+import Data.Aeson (Value, encode, object, parseJSON, toJSON, (.=))
 import Data.Aeson.Types (parseEither)
 import Data.Bifunctor (first)
 import Data.ByteString qualified as Bytes
@@ -24,6 +24,7 @@ import Invar.Runtime qualified as Runtime
 import Invar.Spec.Invocation qualified as V
 import Invar.Store qualified as Store
 import Invar.Workload qualified as Workload
+import Numeric.Natural (Natural)
 import Options qualified as O
 import System.Console.GetOpt (OptDescr, usageInfo)
 import System.Exit (die)
@@ -37,10 +38,9 @@ run supplied = do
             | Map.size fields == 1 -> Runtime.resume directory declared >>= either (die . show) pure
             | otherwise -> die "--resume takes no other option; the run declaration supplies them"
         (Nothing, Just _) -> do
-            encoded <- Bytes.getContents
-            selected <- either die pure (concurrent fields encoded)
-            workload <- either die pure (eitherDecodeStrict encoded)
-            Runtime.run selected ["arguments" .= supplied, "workload" .= (workload :: Value)] >>= either (die . show) pure
+            (config, lag) <- either die pure (concurrent fields)
+            document <- Bytes.getContents >>= either die pure . Workload.decode
+            Runtime.run (Runtime.Run config lag document) (toJSON supplied) >>= either (die . show) pure
         (Nothing, Nothing) -> do
             config <- either die pure (configure fields)
             either (die . show) pure (Learn.validate (Loop.settings config))
@@ -49,22 +49,18 @@ run supplied = do
             cycles <- either die pure (Dataset.decode selected encoded)
             synchronous config selected cycles
 
-declared :: Object -> Either String Runtime.Run
-declared declaration = do
-    (supplied, workload) <- parseEither (\fields -> (,) <$> fields .: "arguments" <*> fields .: "workload") declaration
-    fields <- O.parse options supplied
+declared :: Value -> Either String (Loop.Config, Natural)
+declared arguments = do
+    fields <- parseEither parseJSON arguments >>= O.parse options
     when (isJust (O.optional fields "resume") || isNothing (O.optional fields "staleness")) (Left "The run declaration does not declare a concurrent run")
-    concurrent fields (Lazy.toStrict (encode (workload :: Value)))
+    concurrent fields
 
-concurrent :: O.Fields -> Bytes.ByteString -> Either String Runtime.Run
-concurrent fields encoded = do
+concurrent :: O.Fields -> Either String (Loop.Config, Natural)
+concurrent fields = do
     config <- configure fields
     first show (Learn.validate (Loop.settings config))
     lag <- O.numeric fields "staleness"
-    let selected = selection (Loop.settings config)
-        instantiate workloadCycle policy = Dataset.instantiate selected {Dataset.policy = policy} workloadCycle
-    cycles <- Dataset.decode selected encoded
-    pure (Runtime.Run config lag (map instantiate cycles) (map (fromIntegral . length . Workload.tasks) cycles))
+    pure (config, lag)
 
 synchronous :: Loop.Config -> Dataset.Identity -> [Dataset.Cycle] -> IO ()
 synchronous config selected cycles = do

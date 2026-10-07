@@ -1,6 +1,6 @@
 {-# LANGUAGE RoleAnnotations #-}
 
-module Invar.Loop (Backend (..), Config (..), Cycle (..), Checkpoint (..), Driver, Generation, Status (..), Error (..), withDriver, run, status, current, result, plan, receipt, inferenceWorker, updateWorker, scoring, stagedName, bindTasks) where
+module Invar.Loop (Backend (..), Config (..), Cycle (..), Checkpoint (..), Driver, Generation, Status (..), Error (..), withDriver, run, status, current, result, plan, receipt, inferenceWorker, updateWorker, scoring, stagedName, bindTasks, instantiate) where
 
 import Control.Concurrent.MVar (MVar, newMVar, withMVar)
 import Control.Exception (mask, onException)
@@ -24,6 +24,7 @@ import Invar.Rollout.Internal qualified as Internal
 import Invar.Spec.Invocation qualified as V
 import Invar.Store qualified as S
 import Invar.Worker qualified as Infer
+import Invar.Workload qualified as Workload
 import Numeric.Natural (Natural)
 import System.Directory (createDirectory)
 import System.FilePath ((</>))
@@ -143,6 +144,16 @@ bindTasks description = traverse bind
     bind task = do
         planned <- first (Policy . show) (I.bindPolicy description (C.plan task))
         pure task {C.plan = planned}
+
+instantiate :: (String, String, String, String) -> Workload.Cycle -> Either String Cycle
+instantiate (policy', tokenizer, base, assembly) workload = do
+    tasks' <- traverse prepare (Workload.tasks workload)
+    first show (C.withCohort (C.Definition policy' tasks') (const ()))
+    pure (Cycle tasks' (Workload.order workload) (Workload.delivery workload))
+  where
+    prepare sample = do
+        planned <- first show (I.prepare I.Request {I.artifact = policy', I.tokenizer = tokenizer, I.base = base, I.assembly = assembly, I.prompt = Workload.prompt sample, I.tokens = Workload.tokens sample, I.temperature = Workload.temperature sample, I.seed = Workload.seed sample})
+        pure (C.Task (Workload.name sample) (Workload.group sample) planned (Workload.rule sample))
 
 scoring :: Config -> Checkpoint -> Maybe Batch.Reference
 scoring config selected

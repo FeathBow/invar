@@ -15,6 +15,7 @@ import tempfile
 import torch
 
 from worker import core
+from worker.hf import codec
 
 ENTRY = Path(__file__).with_name("fixture.py").resolve()
 CORE = os.environ.get("INVAR_CORE", "invar")
@@ -22,6 +23,7 @@ CHILD_SECONDS = 180
 PROMPT = "Compute the answer."
 SEEDS = (1326, 41)
 BOOTSTRAP_BINDING = 7
+FINAL_BINDING = 1000
 
 
 def flags(values):
@@ -50,6 +52,24 @@ def journaled(output):
 def transcribed(output, role):
     return [json.loads(line) for entry in journaled(output) if entry["entry"] == "process" and entry["role"] == role
             for line in (output / "transcripts" / f"{entry['process']}.jsonl").read_text().splitlines()]
+
+
+def inspected(root, output, generations, name):
+    checkpoint = output / f"generation{generations}"
+    described = core.invoke(["policy", "inspect", "--checkpoint", checkpoint], executable=CORE)
+    final = {"digest": described["adapter"], "tokenizer-digest": described["tokenizer"], "base-digest": described["base"],
+             "assembly-digest": described["assembly"], "prompt": PROMPT, "tokens": 4, "temperature": 0.8, "seed": SEEDS[0],
+             **{name: FINAL_BINDING for name in ("call", "attempt", "instance")}}
+    log = root / (name + "final.jsonl")
+    execute([CORE, "infer", *flags({**{key: final[key] for key in ("prompt", "tokens", "temperature", "seed", "call", "attempt", "instance")},
+                                    "python": sys.executable, "worker": ENTRY, "cache": root, "checkpoint": checkpoint})], log)
+    fields = {"run": output, "cuda-rng-vectors": 0, "initial-source": "provided", "profile-mode": "unreported",
+              "final-log": log, "final-exit-code": 0, **{"final-" + key: value for key, value in final.items()}}
+    session = codec.Session()
+    history = core.exchange(["inspect", "history", "--codec-mode", "stdio", *flags(fields)], executable=CORE, handler=session.handle)
+    if session.tensors or session.views:
+        raise AssertionError("History codec scope was not released")
+    return history
 
 
 def prepared(prefix):
@@ -111,6 +131,16 @@ class OverlapTests(unittest.TestCase):
         self.assertLess(learner[0], rollout[1])
         native = torch.load(output / "generation2" / "learner.pt", weights_only=True)
         self.assertTrue(all(slot["step"].item() == 2 for slot in native["optimizer"]["state"].values()))
+        history = inspected(self.root, output, 2, "stale")
+        self.assertEqual(len(history["artifacts"]), 2)
+        self.assertEqual(history["training"]["staleness"], 1)
+        self.assertEqual([attempt["outcome"] for attempt in history["training"]["attempts"]], [{"committed": 1}, {"committed": 2}])
+
+    def test_two_optimizer_steps_per_update_are_counted_in_the_history(self):
+        _, output = self.train("twosteps", 1, staleness=0, steps=2)
+        history = inspected(self.root, output, 1, "twosteps")
+        steps, = [item["state"]["steps"] for item in history["artifacts"]]
+        self.assertTrue(steps and all(count == 2 for count in steps))
 
     def test_zero_staleness_publishes_the_synchronous_successor(self):
         synchronous, left = self.train("synchronous", 1)
