@@ -31,18 +31,22 @@ create path declaration = do
     (locked file >> write file (line declaration) >> synchronizeEntry path file) `onException` Posix.closeFd file
     Journal <$> newMVar (Just file) <*> newMVar (Just Map.empty)
 
-resume :: FilePath -> ([Object] -> Journal -> IO value) -> IO value
-resume path action = bracket (Posix.openFd path Posix.ReadWrite Posix.defaultFileFlags {Posix.append = True}) Posix.closeFd $ \file -> do
+resume :: FilePath -> ([Object] -> IO (Either failure accepted)) -> (accepted -> Journal -> IO value) -> IO (Either failure value)
+resume path admit action = bracket (Posix.openFd path Posix.ReadWrite Posix.defaultFileFlags {Posix.append = True}) Posix.closeFd $ \file -> do
     locked file
     encoded <- contents file
     recorded <- either (ioError . userError) pure (entries encoded)
     when (null recorded) (ioError (userError "The journal has no complete declaration"))
-    let complete = Bytes.length encoded - Bytes.length (Char.takeWhileEnd (/= '\n') encoded)
-    when (complete /= Bytes.length encoded) (setFdSize file (fromIntegral complete) >> Store.synchronizeFile file)
-    lock <- newMVar (Just file)
-    open <- newMVar (Just Map.empty)
-    let journal = Journal lock open
-    action recorded journal `finally` abandon journal
+    admitted <- admit recorded
+    case admitted of
+        Left problem -> pure (Left problem)
+        Right accepted -> do
+            let complete = Bytes.length encoded - Bytes.length (Char.takeWhileEnd (/= '\n') encoded)
+            when (complete /= Bytes.length encoded) (setFdSize file (fromIntegral complete) >> Store.synchronizeFile file)
+            lock <- newMVar (Just file)
+            open <- newMVar (Just Map.empty)
+            let journal = Journal lock open
+            Right <$> action accepted journal `finally` abandon journal
 
 close :: Journal -> IO ()
 close journal = abandon journal >>= mapM_ Posix.closeFd
@@ -55,7 +59,7 @@ abandon (Journal lock open) = do
 append :: Journal -> Value -> IO ()
 append (Journal lock open) entry = do
     readMVar open >>= mapM_ (mapM_ (`modifyMVar_` traverse synchronized))
-    withMVar lock (maybe (ioError (userError "Journal is closed")) (\file -> write file (line entry)))
+    withMVar lock (maybe (ioError (userError "Journal is closed")) (\file -> mask_ (write file (line entry))))
   where
     synchronized (file, changed) = when changed (Store.synchronizeFile file) >> pure (file, False)
 

@@ -6,7 +6,6 @@ import Control.Monad (forM_, unless, when)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (listToMaybe)
-import Data.Set qualified as Set
 import Data.Word (Word32)
 import GHC.Float (castFloatToWord32)
 import Hedgehog hiding (Action, Command, Update)
@@ -35,7 +34,6 @@ events =
         , ("steps are opened and closed only on their attempt and state chain", withTests 1 (property binding))
         , ("a reply is authorized only while its step is open", withTests 1 (property authorization))
         , ("a completion counts only for the exchange and plan its attempt was bound to", withTests 1 (property foreign'))
-        , ("recovery decides publication from the commit point alone", withTests 1 (property recovery))
         , ("a restart commits only the recording attempt a durable publication confirms, and otherwise redoes its update", withTests 1 (property confirmation))
         , ("a different result for a completed request is a conflict", withTests 1 (property conflict))
         ]
@@ -437,22 +435,6 @@ authorization = do
     abandoned <- evalEither (run opened [Abandoned update attempt])
     C.authorize abandoned update attempt 0 === Left (C.NotOpen update attempt 0)
 
-recovery :: PropertyT IO ()
-recovery = do
-    chosen <- evalEither (P.prepare 0 [Declared [Request 0] [[Request 0]], Declared [Request 1] [[Request 1]]])
-    let stored = Map.fromList [(Request 0, "r0")]
-    (unpublished, commands) <- evalEither (C.recover chosen [] stored Map.empty Set.empty 5)
-    commands === [Send (Update 0) (Attempt 5)]
-    (published, resumed) <- evalEither (C.recover chosen [Update 0] stored Map.empty Set.empty 5)
-    resumed === [Dispatch (Request 1) (Version 1)]
-    C.committed published === [Update 0]
-    C.recover chosen [Update 1] stored Map.empty Set.empty 5 === Left InvalidRecovery
-    let caller = exchangeOf (Update 0) (Attempt 5)
-        (identity, closed) = exchange caller ordinary ["s0", "s1"]
-    recording <- evalEither (run unpublished ([Ready (Update 0) (Attempt 5) caller identity "s0", Current (Update 0) (Attempt 5) 0 "s0"] ++ [Applied (Update 0) (Attempt 5) done | done <- closed] ++ [Staged (Update 0) (Attempt 5) "d", Recorded (Update 0) (Attempt 5)]))
-    C.learning recording === Just (Update 0, Committing (Attempt 5))
-    C.step recording (Abandoned (Update 0) (Attempt 5)) === Left (UncertainCommit (Update 0) (Attempt 5))
-
 confirmation :: PropertyT IO ()
 confirmation = do
     chosen <- evalEither (P.prepare 0 [Declared [Request 0] [[Request 0]], Declared [Request 1] [[Request 1]]])
@@ -470,6 +452,7 @@ confirmation = do
     C.exchanged redone === C.exchanged recording
     C.restart recording (Just (Update 0, Attempt 1)) === Left InvalidRecovery
     C.restart recording (Just (Update 1, Attempt 0)) === Left InvalidRecovery
+    C.step recording (Abandoned (Update 0) (Attempt 0)) === Left (UncertainCommit (Update 0) (Attempt 0))
 
 conflict :: PropertyT IO ()
 conflict = do
@@ -482,11 +465,11 @@ conflict = do
 
 regression :: PropertyT IO ()
 regression = do
-    (chosen, connected) <- evalIO single
+    (_, connected) <- evalIO single
     raised <- evalEither (run connected [Lost (Worker 0) (Epoch 0), Connected (Worker 0) (Epoch 5), Lost (Worker 0) (Epoch 5)])
     C.step raised (Connected (Worker 0) (Epoch 1)) === Left (StaleEpoch (Worker 0) (Epoch 1))
     C.step raised (Connected (Worker 0) (Epoch 5)) === Left (StaleEpoch (Worker 0) (Epoch 5))
-    (recovered, _) <- evalEither (C.recover chosen [] Map.empty (C.highest raised) Set.empty 9)
+    (recovered, _) <- evalEither (C.restart raised Nothing)
     C.step recovered (Connected (Worker 0) (Epoch 1)) === Left (StaleEpoch (Worker 0) (Epoch 1))
     _ <- evalEither (C.step recovered (Connected (Worker 0) (Epoch 6)))
     success

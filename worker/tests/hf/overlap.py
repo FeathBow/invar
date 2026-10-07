@@ -97,6 +97,9 @@ class OverlapTests(unittest.TestCase):
                          {(0, self.settings["policy"])})
         self.assertEqual(consumed[1]["policy"], records[0]["policy"])
         entries = journaled(output)
+        resumed = execute([CORE, "train", "--resume", output], self.root / "staleresumed.jsonl")
+        self.assertEqual(resumed, [{"phase": "resumed", "committed": [0, 1]}])
+        self.assertEqual([entry["entry"] for entry in journaled(output)[len(entries):]], ["restart"])
         reserved = [entry["process"] for entry in entries if entry["entry"] == "process"]
         self.assertEqual({entry["process"]: (entry["outcome"], entry["status"], entry["output"]) for entry in entries if entry["entry"] == "exit"},
                          {number: ("exited", 0, "complete") for number in reserved})
