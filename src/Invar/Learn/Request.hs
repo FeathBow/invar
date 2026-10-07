@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Learn.Request (Request, parse, value, logical, exchange, order, materialization) where
+module Invar.Learn.Request (Request, parse, value, logical, exchange, order, materialization, scheduled) where
 
 import Control.Monad (unless, when, (>=>))
 import Data.Aeson (Value (Object), parseJSON, toJSON, withObject, (.:))
@@ -19,23 +19,26 @@ import Invar.Materialization qualified as Materialization
 import Invar.Spec.Load qualified as Image
 import Numeric.Natural (Natural)
 
-data Request = Request Value Value S.Plan [Text] Image.Image
+data Request = Request Value Value S.Plan [Text] Image.Image Natural
     deriving (Eq, Show)
 
 value :: Request -> Value
-value (Request original _ _ _ _) = original
+value (Request original _ _ _ _ _) = original
 
 logical :: Request -> Value
-logical (Request _ ordered _ _ _) = ordered
+logical (Request _ ordered _ _ _ _) = ordered
 
 exchange :: Request -> S.Plan
-exchange (Request _ _ planned _ _) = planned
+exchange (Request _ _ planned _ _ _) = planned
 
 order :: Request -> [Text]
-order (Request _ _ _ sequence' _) = sequence'
+order (Request _ _ _ sequence' _ _) = sequence'
 
 materialization :: Request -> Image.Image
-materialization (Request _ _ _ _ image) = image
+materialization (Request _ _ _ _ image _) = image
+
+scheduled :: Request -> Natural
+scheduled (Request _ _ _ _ _ update) = update
 
 parse :: Value -> Parser Request
 parse = withObject "numerical update request" $ \fields -> do
@@ -69,7 +72,7 @@ parse = withObject "numerical update request" $ \fields -> do
     fields .: "optimizer" >>= optimizer
     let planned = S.Plan (Objective.Profile epsilon penalty) policy (map sampleWords delivered) steps source
         image = Materialization.learning (policy, checkpoint, tokenizer, base, assembly, reference)
-    pure (Request (Object fields) (Object (Fields.insert "samples" (toJSON ordered) fields)) planned sequence' image)
+    pure (Request (Object fields) (Object (Fields.insert "samples" (toJSON ordered) fields)) planned sequence' image update)
 
 schedule :: Value -> Parser (Natural, Natural)
 schedule = withObject "update schedule" $ \fields -> do

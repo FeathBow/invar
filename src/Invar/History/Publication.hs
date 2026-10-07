@@ -3,11 +3,10 @@
 module Invar.History.Publication (Observed, observe, source, directory, describe) where
 
 import Control.Monad (unless)
-import Data.Aeson (Value, object, withObject, (.:), (.=))
-import Data.Aeson.Types (Parser, parseEither)
+import Data.Aeson (Value, object, (.=))
 import Invar.Artifact qualified as Artifact
 import Invar.History.Cohort qualified as Cohort
-import Invar.History.Trace qualified as Trace
+import Invar.History.Generation qualified as Generation
 import Invar.Infer.Observation qualified as Inference
 import Invar.Learn.Report qualified as Report
 import Invar.Policy qualified as Policy
@@ -16,9 +15,9 @@ import System.Posix.Files qualified as File
 
 data Observed = Observed FilePath Value
 
-observe :: Trace.Generation -> IO Observed
+observe :: Generation.Generation -> IO Observed
 observe generation = do
-    (path, method) <- either invalid pure (parseEither location (Trace.publication generation))
+    let Generation.Publication path method = Generation.publication generation
     parent <- File.getSymbolicLinkStatus (takeDirectory path)
     unless (File.isDirectory parent) (invalid "Publication output is not a direct directory")
     entry <- File.getSymbolicLinkStatus path
@@ -38,7 +37,7 @@ observe generation = do
             pure retained
         _ -> invalid "Unknown publication method"
     mapM_ (member path target) ["adapter.safetensors", "learner.pt", "policy.json", "gradients.safetensors", "probabilities.json"]
-    let report = Cohort.update (Trace.cohort generation)
+    let report = Cohort.update (Generation.cohort generation)
     policy <- either invalid pure (Report.artifact "adapter" report)
     learner <- either invalid pure (Report.artifact "learner" report)
     actualPolicy <- Policy.identity (path </> "adapter.safetensors")
@@ -48,12 +47,10 @@ observe generation = do
     expected <- either invalid pure (source generation >>= Policy.successor policy)
     unless (selected == expected) (invalid "Published policy description differs from the consumed behavior model and updated adapter")
     pure (Observed path (object ["checkpoint" .= path, "publication" .= method, "retained" .= target, "policy" .= policy, "learner" .= learner]))
-  where
-    location = withObject "checked publication" $ \fields -> (,) <$> fields .: "checkpoint" <*> (fields .: "publication" :: Parser String)
 
-source :: Trace.Generation -> Either String Policy.Description
+source :: Generation.Generation -> Either String Policy.Description
 source generation = do
-    descriptions <- traverse Inference.policyDescription (Cohort.inferences (Trace.cohort generation))
+    descriptions <- traverse Inference.policyDescription (Cohort.inferences (Generation.cohort generation))
     case descriptions of
         initial : remaining -> do
             unless (all (== initial) remaining) (Left "A cohort loaded different inference policy descriptions")

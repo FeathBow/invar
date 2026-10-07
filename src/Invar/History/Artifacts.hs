@@ -9,8 +9,8 @@ import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Invar.History.Cohort qualified as Cohort
+import Invar.History.Generation qualified as Generation
 import Invar.History.Publication qualified as Publication
-import Invar.History.Trace qualified as Trace
 import Invar.Json qualified as Json
 import Invar.Learn qualified as Learn
 import Invar.Learn.Adapter qualified as Adapter
@@ -23,7 +23,6 @@ import Invar.Learn.Probability qualified as Probability
 import Invar.Learn.State qualified as State
 import Invar.Learn.Step qualified as Step
 import Invar.Learn.Stream qualified as S
-import Numeric.Natural (Natural)
 import System.FilePath ((</>))
 import System.Posix.Files qualified as Posix
 
@@ -35,14 +34,14 @@ initial decoder (settings, path) = do
     summary <- stateSummary (State.initialChecked observed) (State.initialSteps observed)
     pure (State.initialSchema observed, object ["checkpoint" .= path, "policy" .= Learn.policy settings, "learner" .= Learn.learner settings, "tokenizer" .= Learn.tokenizer settings, "base" .= Learn.base settings, "assembly" .= Learn.assembly settings, "state" .= summary], observed)
 
-successor :: (Codec.Decoder, Map Text [Integer]) -> (Natural, Trace.Generation) -> Publication.Observed -> IO (Value, State.Observed, Gradient.Observed)
-successor (decoder, schema) (index, generation) published = do
+successor :: (Codec.Decoder, Map Text [Integer]) -> (Integer, Generation.Generation) -> Publication.Observed -> IO (Value, State.Observed, Gradient.Observed)
+successor (decoder, schema) (expected, generation) published = do
     let path = Publication.directory published
-        report = Cohort.update (Trace.cohort generation)
+        report = Cohort.update (Generation.cohort generation)
     parameters <- either invalid pure (Adapter.parameters schema)
     state' <- Codec.withSession decoder $ \session -> State.observe session (report, schema, path)
     let counted = State.steps state'
-    unless (not (null counted) && all (== toInteger index) counted) (invalid "AdamW steps differ from the declared generation")
+    unless (not (null counted) && all (== expected) counted) (invalid "AdamW steps differ from the optimizer steps of the committed updates")
     observed <- stateSummary (State.checked state') counted
     (gradients, gradient) <- Gradient.observe parameters (report, path </> "gradients.safetensors")
     probabilities <- Observation.probability report (path </> "probabilities.json")
@@ -57,8 +56,8 @@ successor (decoder, schema) (index, generation) published = do
 stateSummary :: Checkpoint.Checked -> [Integer] -> IO Value
 stateSummary checked steps = pure (object ("steps" .= steps : Checkpoint.rngSummary checked))
 
-reported :: Trace.Generation -> [Probability.Sample] -> Either String ()
-reported generation probabilities = mapM_ check (Trace.stepOutputs generation)
+reported :: Generation.Generation -> [Probability.Sample] -> Either String ()
+reported generation probabilities = mapM_ check (Generation.stepOutputs generation)
   where
     expected = Map.fromList [(Probability.sampleName sample, sample) | sample <- probabilities]
     check encoded = do

@@ -18,7 +18,7 @@ import Invar.Resident qualified as Boundary
 import Invar.Resident.Owner qualified as Owner
 import Invar.Spec.Invocation qualified as V
 
-data Released = Released Owner.State [Frame.Frame] Frame.Frame [Frame.Frame]
+data Released = Released Owner.State Frame.Frame [Frame.Frame]
 
 readiness :: Bool -> Value -> ByteString -> Either String ()
 readiness initial request encoded = do
@@ -58,10 +58,10 @@ finite :: Learn.Settings -> (V.Binding, Text, Value) -> [Frame.Frame] -> Either 
 finite settings declared records = do
     (prefix, events) <- loadingPrefix records
     when (null events) (Left "Missing learner execution after the model load")
-    attempted <- Trace.attempt settings declared (map Frame.fields events)
-    pure (prefix, either (\problem -> attempted {Trace.result = Nothing, Trace.stopped = Just problem}) (const attempted) (mapM_ timing (filter (staged ["reward_update", "artifacts", "checkpoint"]) events)))
+    attempted <- Trace.attempt settings declared events
+    pure (prefix, either (`Trace.stop` attempted) (const attempted) (mapM_ timing (filter (staged ["reward_update", "artifacts", "checkpoint"]) events)))
 
-resident :: Learn.Settings -> Owner.State -> (V.Binding, Text, Value) -> [Frame.Frame] -> Either String (Trace.Attempt, Either String Released)
+resident :: Learn.Settings -> Owner.State -> (V.Binding, Text, Value) -> [Frame.Frame] -> Either String (Trace.Attempt, [Frame.Frame], Either String Released)
 resident settings physical declared@(bound, _, request) records = do
     let (leading, remaining) = span (staged ["loading", "profile", "load", "activation"]) records
         (execution, rest) = case break (staged ["result"]) remaining of
@@ -69,17 +69,17 @@ resident settings physical declared@(bound, _, request) records = do
             (preceding, []) -> (preceding, [])
         (ready, consumption) = break (staged ["consumed"]) execution
     readiness (Owner.initial physical) request (Frame.encode (leading ++ ready ++ take 1 consumption))
-    attempted <- Trace.attempt settings declared (map Frame.fields execution)
+    attempted <- Trace.attempt settings declared execution
     let released = case (Trace.result attempted, rest, execution, consumption) of
             (Just _, acknowledged : after, loaded : _, consumed : _) -> do
                 completion (Frame.encode (leading ++ execution))
                 loads <- parseEither (.: "load") (Frame.fields consumed)
                 void (Boundary.observeRelease (Owner.owner physical, [loads], Frame.encode (leading ++ execution)) (Frame.raw acknowledged))
                 next <- Owner.release physical (Owner.Released (map Frame.raw (leading ++ execution)) [bound] [Frame.fields loaded] (Frame.raw acknowledged))
-                pure (Released next (leading ++ execution) acknowledged after)
+                pure (Released next acknowledged after)
             (Just _, _, _, _) -> Left "Resident group has no release acknowledgement"
             (Nothing, _, _, _) -> Left (fromMaybe "Incomplete resident update result" (Trace.stopped attempted))
-    pure (attempted, released)
+    pure (attempted, leading ++ execution, released)
 
 staged :: [Text] -> Frame.Frame -> Bool
 staged names record = stageName record `elem` map (Just . String) names

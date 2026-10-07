@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.History.Trace (Run (..), Mode (..), Checked, Generation, admit, describe, generations, finalPolicy, cohort, publication, diagnostics, closing, modelLoads, stepOutputs, profiles) where
+module Invar.History.Trace (Run (..), Mode (..), Checked, admit, describe, generations, finalPolicy, closing) where
 
 import Control.Monad (foldM, unless)
 import Crypto.Hash.SHA256 qualified as SHA256
@@ -13,10 +13,9 @@ import Data.ByteString.Char8 qualified as Bytes
 import Data.Text (Text)
 import Invar.Artifact qualified as Artifact
 import Invar.Cohort qualified as C
-import Invar.History.Cohort qualified as Cohort
 import Invar.History.Execution (Frame (..), Mode (..))
 import Invar.History.Execution qualified as Execution
-import Invar.History.Profile qualified as Profile
+import Invar.History.Generation qualified as Generation
 import Invar.Infer.Framing qualified as Framing
 import Invar.Infer.Invocation qualified as Call
 import Invar.Infer.Replay qualified as Replay
@@ -27,8 +26,8 @@ import Invar.Learn qualified as Learn
 import Invar.Learn.Observed qualified as Input
 import Invar.Learn.Report qualified as Report
 import Invar.Learn.Step qualified as Step
+import Invar.Learn.Trace qualified as Attempt
 import Invar.Policy qualified as Policy
-import Invar.Resident.Group qualified as Group
 import Invar.Spec.Invocation qualified as V
 import Invar.Workload qualified as Workload
 import Numeric.Natural (Natural)
@@ -36,9 +35,8 @@ import System.FilePath ((</>))
 
 data Run = Run {settings :: Learn.Settings, sessions :: Natural, output :: FilePath, method :: String, exitCode :: Int, inferenceMode :: Mode, learningMode :: Mode}
 
-data Checked = Checked String [Generation] [Frame] Policy.Description
-data Generation = Generation Cohort.Checked Object Object [Frame] [Group.Group] [Profile.Observation]
-data Waiting = Waiting Learn.Settings [C.Task] Natural Execution.Cycle Report.Report Object Object [Frame]
+data Checked = Checked String [(Generation.Generation, Object)] [Frame] Policy.Description
+data Waiting = Waiting Learn.Settings [C.Task] Natural Execution.Cycle Report.Report Object [Frame]
 
 admit :: Run -> Policy.Description -> Workload.Document -> ByteString -> Either String Checked
 admit run initial declared encoded = do
@@ -55,13 +53,16 @@ admit run initial declared encoded = do
     accepted <- traverse admitted (reverse waiting)
     pure (Checked (Artifact.hex (SHA256.hash encoded)) accepted closed final)
   where
-    admitted (Waiting current tasks offset executed reported published finished diagnostic) = do
+    admitted (Waiting current tasks offset executed _ finished diagnostic) = do
         delimited <- first show (concat <$> traverse Replay.delimit (Execution.pending executed))
         let logged = delimited ++ Execution.admitted executed
             matching position = [selected | selected <- logged, Trajectory.binding (Replay.trajectory selected) == binding (offset + position)]
         ordered <- traverse (\position -> case matching position of [single] -> Right single; _ -> Left "Expected one admitted inference for each declared cohort member") [0 .. fromIntegral (length tasks) - 1]
-        observed <- Cohort.admit current (tasks, ordered) reported
-        pure (Generation observed published finished diagnostic (Execution.groups executed) (Execution.profiles executed))
+        attempted <- maybe (Left "Missing learner execution in a training cycle") Right (Execution.learned executed)
+        let learnedRecords = map Framing.raw (Attempt.records attempted)
+            context = [record | record <- map Execution.encoded diagnostic, Framing.raw record `notElem` learnedRecords]
+        selected <- Generation.generation current (output run, method run) (tasks, ordered) attempted (context, Execution.groups executed, Execution.profiles executed)
+        pure (selected, finished)
 
 frame :: ByteString -> Either String Frame
 frame encoded = Frame encoded <$> (Json.decode encoded >>= parseEither (withObject "training log record" pure))
@@ -90,7 +91,7 @@ advance run (current, described, offset, accepted, state, remaining) (index, wor
     learner <- Report.artifact "learner" reported
     successor <- Policy.successor policy described
     let diagnostic = [observedFrame | observedFrame@(Frame _ fields) <- body, Fields.lookup "stage" fields `elem` map (Just . String) (["loading", "profile", "load", "activation", "released", "loaded_learner", "inference"] ++ Step.stages ++ ["reward_update", "artifacts", "checkpoint"])]
-    pure (current {Learn.policy, Learn.learner, Learn.schedule = Learn.synchronous (index + 1) policy}, successor, call + 1, Waiting current tasks offset executed reported published finished diagnostic : accepted, next, rest)
+    pure (current {Learn.policy, Learn.learner, Learn.schedule = Learn.synchronous (index + 1) policy}, successor, call + 1, Waiting current tasks offset executed reported finished diagnostic : accepted, next, rest)
 
 phase :: Text -> Frame -> Bool
 phase expected (Frame _ fields) = Fields.lookup "phase" fields == Just (String expected)
@@ -121,34 +122,14 @@ publish (run, index, offset) (workload, reported) fields = do
 binding :: Natural -> V.Binding
 binding = V.ordinal
 
-generations :: Checked -> [Generation]
-generations (Checked _ values _ _) = values
+generations :: Checked -> [Generation.Generation]
+generations (Checked _ values _ _) = map fst values
 
 finalPolicy :: Checked -> Policy.Description
 finalPolicy (Checked _ _ _ selected) = selected
 
-cohort :: Generation -> Cohort.Checked
-cohort (Generation value _ _ _ _ _) = value
-
-publication :: Generation -> Value
-publication (Generation _ value _ _ _ _) = Object value
-
-diagnostics :: Generation -> [Value]
-diagnostics (Generation _ _ _ values _ _) = [Object fields | Frame _ fields <- values]
-
-stepOutputs :: Generation -> [ByteString]
-stepOutputs (Generation _ _ _ values _ _) = [encoded | Frame encoded fields <- values, Fields.lookup "stage" fields `elem` map (Just . String) Step.reports]
-
-profiles :: Generation -> [Profile.Observation]
-profiles (Generation _ _ _ _ _ values) = values
-
 describe :: Checked -> Value
-describe (Checked digest accepted closed _) = object ["log_sha256" .= digest, "generations" .= map generation accepted, "closed" .= [Object fields | Frame _ fields <- closed]]
-  where
-    generation (Generation observed published finished diagnostic groups _) = object ["cohort" .= Cohort.describe observed, "publication" .= Object published, "cycle" .= Object finished, "diagnostics" .= [Object fields | Frame _ fields <- diagnostic], "resident_groups" .= map Group.describe groups]
+describe (Checked digest accepted closed _) = object ["log_sha256" .= digest, "generations" .= [Fields.insert "cycle" (Object finished) described | (selected, finished) <- accepted, Object described <- [Generation.describe selected]], "closed" .= [Object fields | Frame _ fields <- closed]]
 
 closing :: Checked -> [Value]
 closing (Checked _ _ values _) = [Object fields | Frame _ fields <- values]
-
-modelLoads :: Generation -> Natural
-modelLoads (Generation _ _ _ records _ _) = Execution.modelLoads records
