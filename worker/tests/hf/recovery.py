@@ -100,7 +100,7 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(published(records), {1: expected[1]})
         recorded = journaled(output)
         after = recorded[before:]
-        self.assertEqual(after[0]["entry"], "resume")
+        self.assertEqual(after[0]["entry"], "restart")
         earlier = [entry["process"] for entry in recorded[:before] if entry["entry"] == "process"]
         self.assertGreater(min(entry["process"] for entry in after if entry["entry"] == "process"), max(earlier))
         self.assertEqual({entry["update"] for entry in after if entry["entry"] == "attempt"}, {1})

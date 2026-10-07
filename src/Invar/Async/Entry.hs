@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Async.Entry (Entry (..), Claim (..), Role (..), Generation (..), claim, encode, decode, claimValue, claimed, roleName, roleOf, outcomeFields, outcome) where
+module Invar.Async.Entry (Entry (..), Claim (..), Role (..), Generation (..), claim, encode, decode) where
 
 import Data.Aeson (Object, Value (..), object, withObject, (.:), (.=))
 import Data.Aeson.KeyMap qualified as Fields

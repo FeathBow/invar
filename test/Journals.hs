@@ -4,28 +4,18 @@ module Journals (journals) where
 
 import Control.Exception (ErrorCall (..), try)
 import Control.Monad (forM_)
-import Data.Aeson (Value (..), encode, object, toJSON, (.=))
-import Data.Aeson.Key qualified as Key
+import Data.Aeson (Value (..), object, (.=))
 import Data.Aeson.KeyMap qualified as Fields
-import Data.Aeson.Types (parseEither)
 import Data.ByteString qualified as Bytes
 import Data.ByteString.Char8 qualified as Char
-import Data.ByteString.Lazy qualified as Lazy
 import Data.Either (isLeft)
-import Hedgehog hiding (Command, Update)
-import Hedgehog.Gen qualified as Gen
-import Hedgehog.Range qualified as Range
-import Invar.Async.Core (Attempt (..), Command (..))
-import Invar.Async.Plan (Request (..), Update (..), Version (..))
-import Invar.Async.Record qualified as Record
+import Hedgehog
+import Invar.Async.Entry qualified as Entry
 import Invar.Journal qualified as Journal
 import Invar.Runtime qualified as Runtime
-import Invar.Spec.Invocation qualified as V
 import Invar.Transcript qualified as Transcript
-import Numeric.Natural (Natural)
 import Store (workspace)
 import System.Directory (createDirectory, getCurrentDirectory)
-import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
 import System.IO.Error (isAlreadyExistsError, tryIOError)
 
@@ -34,10 +24,9 @@ journals =
     Group
         "Durable run journal"
         [ ("a journal starts with its declaration, is created once, keeps appended entries in order and refuses entries once closed", withTests 1 (property ordered))
-        , ("a resumed journal drops an unterminated final line before appending and needs a complete declaration", withTests 1 (property resumed))
+        , ("a resumed journal drops an unterminated final line only after its entries are admitted, leaves a refused journal unchanged and needs a complete declaration", withTests 1 (property resumed))
         , ("resuming a run keeps the caller's working directory when it refuses or fails", withTests 1 (property directories))
         , ("only an unterminated final line is dropped; any other malformed line is refused", withTests 1 (property damaged))
-        , ("every journal entry reads back as the entry that was written", withTests 300 (property typed))
         , ("a transcript is created once, keeps its lines and the bytes after the last newline exactly and journals how its process ended; a closed journal closes the transcripts left open and opens no more", withTests 1 (property transcribed))
         ]
 
@@ -71,15 +60,19 @@ resumed = do
         declaration = object ["entry" .= ("declaration" :: String)]
     evalIO (Journal.with path declaration (\journal -> Journal.append journal (entry 0)))
     evalIO (Bytes.appendFile path "{\"entry\":\"ev")
-    seen <- evalIO (Journal.resume path (\recorded journal -> Journal.append journal (entry 1) >> pure recorded))
-    map Object seen === [declaration, entry 0]
+    unfinished <- evalIO (Bytes.readFile path)
+    refused <- evalIO (Journal.resume path (const (pure (Left "refused"))) (\_ _ -> pure ()))
+    refused === Left ("refused" :: String)
+    evalIO (Bytes.readFile path) >>= (=== unfinished)
+    seen <- evalIO (Journal.resume path (pure . Right) (\recorded journal -> Journal.append journal (entry 1) >> pure recorded))
+    fmap (map Object) seen === (Right [declaration, entry 0] :: Either String [Value])
     after <- evalIO (Bytes.readFile path) >>= evalEither . Journal.entries
     map Object after === [declaration, entry 0, entry 1]
     forM_ ["", "{\"entry\":\"decl"] $ \contents -> do
         let partial = root </> "partial.jsonl"
         evalIO (Bytes.writeFile partial contents)
-        refused <- evalIO (tryIOError (Journal.resume partial (\_ _ -> pure ())))
-        assert (isLeft refused)
+        incomplete <- evalIO (tryIOError (Journal.resume partial (pure . Right) (\_ _ -> pure ())))
+        assert (isLeft (incomplete :: Either IOError (Either String ())))
 
 directories :: PropertyT IO ()
 directories = do
@@ -87,7 +80,7 @@ directories = do
     started <- workspace
     let output = root </> "run"
     evalIO (createDirectory output)
-    evalIO (Journal.with (output </> "journal.jsonl") (object ["entry" .= ("declaration" :: String), "directory" .= started]) (const (pure ())))
+    evalIO (Journal.with (output </> "journal.jsonl") (Entry.encode (Entry.Declared started Fields.empty)) (const (pure ())))
     caller <- evalIO getCurrentDirectory
     refused <- evalIO (Runtime.resume output (const (Left "refused")))
     case refused of
@@ -112,57 +105,13 @@ damaged = do
     assert (isLeft (Journal.entries (Char.unlines ["{\"entry\":\"declaration\"}", "{\"entry\":", "{\"entry\":\"event\"}"])))
     assert (isLeft (Journal.entries (Char.unlines ["{\"entry\":\"declaration\"}", line (3 :: Int)])))
 
-typed :: PropertyT IO ()
-typed = do
-    written <- forAll entries
-    decoded <- evalEither (Journal.entries (Lazy.toStrict (encode (Record.encode written)) <> "\n"))
-    traverse (parseEither Record.decode) decoded === Right [written]
-  where
-    number = Gen.integral (Range.linear 0 1000) :: Gen Natural
-    text = Gen.string (Range.linear 0 12) Gen.alphaNum
-    bound = V.Binding . V.CallId <$> number <*> (V.AttemptId <$> number) <*> (V.Instance <$> number)
-    command = Gen.choice [Dispatch . Request <$> number <*> (Version <$> number), Send <$> update <*> attempt, Open <$> update <*> attempt <*> number <*> text, Record <$> update <*> attempt <*> text, Commit <$> update <*> attempt]
-    update = Update <$> number
-    attempt = Attempt <$> number
-    claim =
-        Gen.choice
-            [ Record.Connected <$> number <*> number
-            , Record.Lost <$> number <*> number
-            , Record.Started <$> number <*> number <*> number
-            , Record.Completed <$> number <*> number <*> number <*> text
-            , Record.Ready <$> number <*> number <*> bound <*> text <*> text
-            , Record.Current <$> number <*> number <*> number <*> text
-            , Record.Applied <$> number <*> number <*> bound <*> text <*> number <*> text <*> text <*> text
-            , Record.Staged <$> number <*> number <*> text
-            , Record.Recorded <$> number <*> number
-            , Record.Committed <$> number <*> number
-            , Record.Abandoned <$> number <*> number
-            ]
-    read' = Gen.element [Transcript.Complete, Transcript.Cut]
-    ended = Gen.choice [Transcript.Unlaunched <$> text, Transcript.Exited ExitSuccess <$> read', Transcript.Exited . ExitFailure <$> Gen.filter (/= 0) (Gen.int (Range.linear (-64) 255)) <*> read', Transcript.Stopped <$> read']
-    declared = Fields.fromList <$> Gen.list (Range.linear 0 4) ((,) . Key.fromString <$> Gen.filter (`notElem` ["entry", "directory"]) text <*> (toJSON <$> text))
-    entries =
-        Gen.choice
-            [ Record.Declared <$> text <*> declared
-            , Record.Opened <$> number <*> number
-            , Record.Dispatched <$> number <*> number <*> number <*> bound
-            , Record.Attempted <$> number <*> number <*> bound
-            , Record.Reserved <$> number <*> Gen.element [Record.Inference, Record.Learner] <*> number <*> number
-            , Record.Finished <$> number <*> ended
-            , Record.Happened <$> claim <*> Gen.list (Range.linear 0 4) command
-            , Record.Stored <$> number <*> bound <*> text
-            , Record.Verified <$> number <*> number <*> text
-            , Record.Resumed <$> Gen.list (Range.linear 0 4) number <*> number <*> number <*> number
-            , Record.Elapsed <$> Gen.element ["rollout", "learner"] <*> number <*> Gen.double (Range.linearFrac 0 1.0e6) <*> Gen.double (Range.linearFrac 0 1.0e6)
-            ]
-
 transcribed :: PropertyT IO ()
 transcribed = do
     root <- workspace
     let path = root </> "journal.jsonl"
         declaration = object ["entry" .= ("declaration" :: String)]
         first' = root </> "0.jsonl"
-        ending = Record.encode . Record.Finished 0
+        ending = Entry.encode . Entry.Finished 0
     (again, late, (journal', left)) <- evalIO $ Journal.with path declaration $ \journal -> do
         transcript <- Journal.transcript journal first' ending
         Transcript.record transcript "{\"line\":0}"

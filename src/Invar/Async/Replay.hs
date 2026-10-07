@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Async.Replay (Declaration (..), Status (..), Learned (..), Floors (..), Replayed, replay, state, versions, statuses, learned, floors) where
+module Invar.Async.Replay (Declaration (..), Status (..), Learned (..), Floors (..), Replayed, replay, resume, state, versions, statuses, learned, floors) where
 
 import Control.Monad (foldM, forM_, unless, when, zipWithM)
 import Data.Aeson (Object, Value (..), withObject, (.:))
@@ -100,12 +100,22 @@ data Fold = Fold
     }
 
 replay :: Declaration -> [Entry.Entry] -> Map Natural ByteString -> Either String Replayed
-replay declared entries transcripts = do
-    let settings = Loop.settings (config declared)
-        started = Fold (fst (Core.start (plan declared))) Map.empty Map.empty Map.empty Map.empty Map.empty Set.empty Map.empty Map.empty Map.empty (Map.singleton 0 (Generation (L.policy settings) (L.learner settings) (initial declared))) Set.empty 0
-    folded <- foldM (entry declared transcripts) started entries
-    settled <- foldM (settle declared) folded (Map.keys (inferences folded))
-    pure (summarize settled)
+replay declared entries transcripts = folded declared entries transcripts >>= drained declared
+
+resume :: Declaration -> [Entry.Entry] -> Map Natural ByteString -> [Entry.Generation] -> Either String (Replayed, [Core.Command])
+resume declared entries transcripts observed = do
+    (restartedFold, commands) <- folded declared entries transcripts >>= (`restarted` observed)
+    replayed <- drained declared restartedFold
+    pure (replayed, commands)
+
+folded :: Declaration -> [Entry.Entry] -> Map Natural ByteString -> Either String Fold
+folded declared entries transcripts = foldM (entry declared transcripts) started entries
+  where
+    settings = Loop.settings (config declared)
+    started = Fold (fst (Core.start (plan declared))) Map.empty Map.empty Map.empty Map.empty Map.empty Set.empty Map.empty Map.empty Map.empty (Map.singleton 0 (Generation (L.policy settings) (L.learner settings) (initial declared))) Set.empty 0
+
+drained :: Declaration -> Fold -> Either String Replayed
+drained declared fold = summarize <$> foldM (settle declared) fold (Map.keys (inferences fold))
 
 entry :: Declaration -> Map Natural ByteString -> Fold -> Entry.Entry -> Either String Fold
 entry declared transcripts fold recorded = case recorded of
@@ -159,7 +169,7 @@ entry declared transcripts fold recorded = case recorded of
         reported <- parseEither (.: "learner") finished'
         unless (reported == digest) (Left "A verified learner differs from the learner's result")
         pure fold {tries = Map.adjust (\chosen -> chosen {verified = Just digest}) (update, tried) (tries fold)}
-    Entry.Restarted observed -> restarted fold observed
+    Entry.Restarted observed -> fst <$> restarted fold observed
     Entry.Elapsed {} -> pure fold
 
 running :: Fold -> Natural -> (Entry.Role, Natural, Natural) -> Either String ()
@@ -425,29 +435,31 @@ residentAttempt declaredInput state ending = case (declaredInput, state) of
     (Left problem, _) -> (Owning (Left problem) ending, Left problem, Release (Left problem))
     (_, Left problem) -> (Owning (Left problem) ending, Left problem, Release (Left problem))
 
-restarted :: Fold -> [Entry.Generation] -> Either String Fold
+restarted :: Fold -> [Entry.Generation] -> Either String (Fold, [Core.Command])
 restarted fold observed = do
     let committedCount = length (Core.committed (core fold))
         sorted = sortOn Entry.version observed
+        matches seen (Generation chosen learnerDigest described) = Entry.adapter seen == chosen && Entry.learner seen == learnerDigest && Entry.description seen == described
+        named seen = "Generation " ++ show (Entry.version seen)
     unless (map Entry.version sorted == [1 .. fromIntegral (length sorted)]) (Left "Observed generations are not consecutive from the first")
-    unless (length sorted == committedCount || length sorted == committedCount + 1) (Left "Observed generations differ from the committed updates")
+    when (length sorted < committedCount) (Left ("Update " ++ show (length sorted) ++ " is committed in the journal but its generation is missing"))
+    when (length sorted > committedCount + 1) (Left "More generations are published than the journal committed")
     forM_ (take committedCount sorted) $ \seen -> do
-        Generation chosen learnerDigest described <- generationOf fold (Entry.version seen)
-        unless (Entry.adapter seen == chosen && Entry.learner seen == learnerDigest && Entry.description seen == described) (Left "An observed generation differs from its committed update")
+        replayed <- generationOf fold (Entry.version seen)
+        unless (matches seen replayed) (Left (named seen ++ " differs from the update its attempt staged"))
     confirmedPublication <- case drop committedCount sorted of
         [] -> pure Nothing
-        [seen] -> case Core.learning (core fold) of
+        seen : _ -> case Core.learning (core fold) of
             Just (Update update, Core.Committing (Attempt tried)) | update == fromIntegral committedCount -> do
-                Generation chosen learnerDigest described <- successorOf fold (update, tried)
-                unless (Entry.adapter seen == chosen && Entry.learner seen == learnerDigest && Entry.description seen == described) (Left "An observed generation differs from the attempt that recorded it")
-                pure (Just (Update update, Attempt tried, Generation chosen learnerDigest described))
-            _ -> Left "A generation is published beyond the committed updates without a recorded attempt"
-        _ -> Left "Observed generations differ from the committed updates"
-    (next, _) <- first show (Core.restart (core fold) ((\(update, tried, _) -> (update, tried)) <$> confirmedPublication))
+                successor <- successorOf fold (update, tried)
+                unless (matches seen successor) (Left (named seen ++ " differs from the attempt that recorded it"))
+                pure (Just (Update update, Attempt tried, successor))
+            _ -> Left (named seen ++ " is published without a recorded attempt")
+    (next, commands) <- first show (Core.restart (core fold) ((\(update, tried, _) -> (update, tried)) <$> confirmedPublication))
     let published = case confirmedPublication of
             Just (Update update, _, chosen) -> Map.insert (update + 1) chosen (generations fold)
             Nothing -> generations fold
-    pure fold {core = next, generations = published, latest = Map.empty, processes = Map.map (\(Process chosen place used life) -> Process chosen place used (if life == Running then Ended Nothing else life)) (processes fold)}
+    pure (fold {core = next, generations = published, latest = Map.empty, processes = Map.map (\(Process chosen place used life) -> Process chosen place used (if life == Running then Ended Nothing else life)) (processes fold)}, commands)
 
 settle :: Declaration -> Fold -> Natural -> Either String Fold
 settle declared fold number = case Map.lookup number (inferences fold) of

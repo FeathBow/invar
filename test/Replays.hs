@@ -505,8 +505,8 @@ restarts = do
     _ <- evalEither (restarted (entries run) [generation])
     refused "differs from the attempt that recorded it" (restarted recording [generation {Entry.learner = replicate 64 'c'}])
     refused "differs from the attempt that recorded it" (restarted recording [generation {Entry.description = initial}])
-    refused "differ from the committed updates" (restarted (entries run) [])
-    refused "differs from its committed update" (restarted (entries run) [generation {Entry.adapter = replicate 64 'c'}])
+    refused "is committed in the journal but its generation is missing" (restarted (entries run) [])
+    refused "differs from the update its attempt staged" (restarted (entries run) [generation {Entry.adapter = replicate 64 'c'}])
     refused "without a recorded attempt" (restarted staging [generation])
     refused "not consecutive" (restarted recording [generation {Entry.version = 2}])
     reopened <- firstOf [recorded | recorded@Entry.Dispatched {} <- entries run]

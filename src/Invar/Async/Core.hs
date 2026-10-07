@@ -1,6 +1,6 @@
 {-# LANGUAGE Safe #-}
 
-module Invar.Async.Core (Worker (..), Epoch (..), Attempt (..), Digest, Event (..), Command (..), Failure (..), Phase (..), State, start, step, authorize, recover, restart, committed, results, learning, highest, exchanged, issued) where
+module Invar.Async.Core (Worker (..), Epoch (..), Attempt (..), Digest, Event (..), Command (..), Failure (..), Phase (..), State, start, step, authorize, restart, committed, results, learning, highest, exchanged, issued) where
 
 import Control.Monad (unless)
 import Data.Map.Strict (Map)
@@ -108,12 +108,6 @@ highest = used
 
 start :: Plan -> (State, [Command])
 start chosen = advance (State chosen Map.empty Map.empty Set.empty Map.empty Map.empty Map.empty [] Nothing 0 Nothing Set.empty Set.empty)
-
-recover :: Plan -> [Update] -> Map Request Digest -> Map Worker Epoch -> Set Binding -> Natural -> Either Failure (State, [Command])
-recover chosen published stored lowest bound fresh = do
-    unless (published == take (length published) (updates chosen)) (Left InvalidRecovery)
-    unless (all (isJust . owner chosen) (Map.keys stored)) (Left InvalidRecovery)
-    pure (advance (State chosen Map.empty lowest (Map.keysSet stored) Map.empty stored Map.empty published Nothing fresh Nothing bound Set.empty))
 
 restart :: State -> Maybe (Update, Attempt) -> Either Failure (State, [Command])
 restart state confirmed = do
