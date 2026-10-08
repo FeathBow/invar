@@ -73,6 +73,10 @@ replays =
         , ("a readiness, step, staged adapter or verified learner that differs from the learner's transcript is refused", once claims)
         , ("a finite session yields its results only after a journaled clean exit", once exits)
         , ("a process's model load is kept only once its protocol admitted it: a finite session at its clean exit, a process learner at its attempt, a resident learner at its accepted release and a resident inference owner with its first group", once loads)
+        , ("a shared process carries both roles in one transcript and one exit, under a declaration whose modes are both shared", once shared)
+        , ("a run segment has one running shared process, and a shared learner attempt runs on the process that ran its calls", once ownership)
+        , ("a shared process's learner attempt reads its transcript only after the group before it is released", once switched)
+        , ("a crash of a shared process ends both roles and keeps the released group and the learner's checked completions", once crashed)
         , ("a learner result followed by an unreadable line or a fragment, naming another call or request, or after an invalid measurement supports no publication while its steps stay admitted", once results)
         , ("a learner result supports a publication only after its process exited cleanly or its resident release was acknowledged", once boundaries)
         , ("after a restart a request is started or completed only through a call dispatched since, on the worker and epoch of that call's process", once redispatched)
@@ -230,7 +234,7 @@ typed = do
             , Entry.Opened <$> number <*> number
             , Entry.Dispatched <$> number <*> number <*> number <*> bound <*> number
             , Entry.Attempted <$> number <*> number <*> bound <*> number
-            , Entry.Reserved <$> number <*> Gen.element [Entry.Inference, Entry.Learner] <*> number <*> number
+            , Entry.Reserved <$> number <*> Gen.element [Entry.Inference, Entry.Learner, Entry.Shared] <*> number <*> number
             , Entry.Finished <$> number <*> ended
             , Entry.Happened <$> claim
             , Entry.Stored <$> number <*> bound <*> text
@@ -455,6 +459,110 @@ loads = do
         let released = [Calls.change "result_sha256" (String (Text.pack digest)) record | record <- take 1 acknowledged] ++ drop 1 acknowledged
         result <- evalEither (Replay.replay (declaration owned) prefix (Map.insert owner (F.wire (profiled ++ released)) (transcripts owned)))
         maybe [] (map (Fields.lookup "stage") . snd) (Map.lookup owner (Replay.loaded result)) === kept
+
+sharedRun :: PropertyT IO (Run, Run)
+sharedRun = do
+    resident <- built R.Resident Learner.Resident
+    root <- workspace
+    hosting <- firstOf [number | Entry.Reserved number Entry.Inference _ _ <- entries resident]
+    session <- evalMaybe (Map.lookup hosting (transcripts resident))
+    let learner' = learnerProcess resident
+        joint = min learner' hosting
+        owner = object ["role" .= String "shared", "session" .= (0 :: Int)]
+        relabel line = case eitherDecodeStrict line of
+            Right (Object fields) | Fields.member "owner" fields -> Lazy.toStrict (encode (Object (Fields.insert "owner" owner fields)))
+            _ -> line
+        hosted = [relabel line | line <- Bytes.lines session, lineStage line /= Just "closed"]
+        (admitted, acknowledged) = break ((== Just "released") . F.stage) (records resident)
+        aligned record = if F.stage record == Just "loaded_learner" then foldr (uncurry Calls.change) record [("model", String "test-model"), ("revision", String "test-revision")] else record
+        learning = [aligned record | record <- admitted, F.stage record /= Just "load"]
+    evalIO (Bytes.writeFile (root </> "learning.jsonl") (F.wire learning))
+    digest <- evalIO (Artifact.identity "Shared learner records" (root </> "learning.jsonl"))
+    released <- firstOf acknowledged
+    let acknowledgement = Calls.change "owner" owner (Calls.change "result_sha256" (String (Text.pack digest)) released)
+        closed = object ["stage" .= String "closed", "format" .= String "invar-resident-v1", "owner" .= owner, "groups" .= (2 :: Int), "measurement" .= decodeUtf8 (F.wire [F.timer "closed"])]
+        transcribed = Bytes.unlines hosted <> F.wire (learning ++ [acknowledgement, closed])
+        converted recorded = case recorded of
+            Entry.Reserved number _ place used | number == joint -> [Entry.Reserved joint Entry.Shared place used]
+            Entry.Reserved number _ _ _ | number `elem` [learner', hosting] -> []
+            Entry.Dispatched request worker used bound number | number == hosting -> [Entry.Dispatched request worker used bound joint]
+            Entry.Attempted update tried bound number | number == learner' -> [Entry.Attempted update tried bound joint]
+            Entry.Finished number _ | number == hosting -> []
+            Entry.Finished number outcome | number == learner' -> [Entry.Finished joint outcome]
+            other -> [other]
+        settled = Replay.config (declaration resident)
+        sharing = settled {Loop.backend = (Loop.backend settled) {Loop.inferenceMode = R.Shared, Loop.learningMode = Learner.Shared}}
+    pure (resident, resident {declaration = (declaration resident) {Replay.config = sharing}, entries = concatMap converted (entries resident), transcripts = Map.insert joint transcribed (Map.delete learner' (Map.delete hosting (transcripts resident))), records = learning ++ [acknowledgement, closed], learnerProcess = joint})
+
+lineStage :: ByteString -> Maybe Value
+lineStage line = case eitherDecodeStrict line of
+    Right (Object fields) -> Fields.lookup "stage" fields
+    _ -> Nothing
+
+shared :: PropertyT IO ()
+shared = do
+    (resident, run) <- sharedRun
+    result <- evalEither (replayOf run)
+    Core.committed (Replay.state result) === [Update 0]
+    Replay.reserved result === [learnerProcess run]
+    Map.map fst (Replay.loaded result) === Map.singleton (learnerProcess run) Entry.Shared
+    [request | (request, Replay.Completed _) <- Map.elems (Replay.statuses result)] === [0 .. members run - 1]
+    fmap Replay.outcome (Map.lookup (0, 0) (Replay.learned result)) === Just (Replay.Committed 1)
+    encoded <- evalMaybe (Map.lookup (learnerProcess run) (transcripts run))
+    let miscounted = Bytes.unlines (init (Bytes.lines encoded)) <> F.wire [Calls.change "groups" (toJSON (1 :: Int)) (last (records run))]
+    refused "Resident acknowledgement differs" (replayOf run {transcripts = Map.insert (learnerProcess run) miscounted (transcripts run)})
+    let idle = entries run ++ [Entry.Reserved 9 Entry.Shared 0 0, Entry.Finished 9 (Transcript.Exited ExitSuccess Transcript.Complete)]
+        owner = object ["role" .= String "shared", "session" .= (0 :: Int)]
+        unused = F.wire [object ["stage" .= String "closed", "format" .= String "invar-resident-v1", "owner" .= owner, "groups" .= (0 :: Int), "measurement" .= decodeUtf8 (F.wire [F.timer "closed"])]]
+    _ <- evalEither (Replay.replay (declaration run) idle (Map.insert 9 unused (transcripts run)))
+    refused "close acknowledgement" (Replay.replay (declaration run) idle (Map.insert 9 "" (transcripts run)))
+    refused "role the declared modes do not run" (Replay.replay (declaration resident) (entries run) (transcripts run))
+    refused "role the declared modes do not run" (Replay.replay (declaration run) (entries resident) (transcripts resident))
+
+ownership :: PropertyT IO ()
+ownership = do
+    (_, run) <- sharedRun
+    let joint = learnerProcess run
+        attempted = Entry.Attempted 0 0 (V.ordinal (members run)) joint
+        reservation = Entry.Reserved joint Entry.Shared 0 0
+        doubled = concat [if recorded == reservation then [recorded, Entry.Reserved 9 Entry.Shared 0 0] else [recorded] | recorded <- entries run]
+        moved = concat [if recorded == attempted then [Entry.Finished joint (Transcript.Stopped Transcript.Cut), Entry.Reserved 9 Entry.Shared 0 0, Entry.Attempted 0 0 (V.ordinal (members run)) 9] else [recorded] | recorded <- takeWhile (/= attempted) (entries run) ++ [attempted]]
+    encoded <- evalMaybe (Map.lookup joint (transcripts run))
+    refused "while another shared process runs" (Replay.replay (declaration run) doubled (Map.insert 9 "" (transcripts run)))
+    refused "names another process than the one that ran its calls" (Replay.replay (declaration run) moved (Map.insert 9 encoded (transcripts run)))
+
+switched :: PropertyT IO ()
+switched = do
+    (_, run) <- sharedRun
+    encoded <- evalMaybe (Map.lookup (learnerProcess run) (transcripts run))
+    let lines' = Bytes.lines encoded
+        isReleased line = lineStage line == Just "released"
+        (group, rest) = break isReleased lines'
+        (learnerLines, tailLines) = break isReleased (drop 1 rest)
+        early = Bytes.unlines (group ++ learnerLines ++ take 1 rest ++ tailLines)
+    refused "no admitted trajectory" (replayOf run {transcripts = Map.insert (learnerProcess run) early (transcripts run)})
+
+crashed :: PropertyT IO ()
+crashed = do
+    (_, run) <- sharedRun
+    let joint = learnerProcess run
+        verified = takeWhile (not . isVerified) (entries run)
+        failed = verified ++ [Entry.Finished joint (Transcript.Exited (ExitFailure 1) Transcript.Complete)]
+        isVerified Entry.Verified {} = True
+        isVerified _ = False
+        isStep record = F.stage record == Just "applied"
+    encoded <- evalMaybe (Map.lookup joint (transcripts run))
+    let lines' = Bytes.lines encoded
+        unreleased = Bytes.unlines (takeWhile (\line -> eitherDecodeStrict line /= Right (records run !! (length (records run) - 2))) lines')
+    result <- evalEither (Replay.replay (declaration run) failed (Map.insert joint unreleased (transcripts run)))
+    [request | (request, Replay.Completed _) <- Map.elems (Replay.statuses result)] === [0 .. members run - 1]
+    Replay.unended result === []
+    Map.member joint (Replay.loaded result) === True
+    case fmap Replay.outcome (Map.lookup (0, 0) (Replay.learned result)) of
+        Just (Replay.Incomplete _) -> success
+        other -> annotateShow other >> failure
+    let unapplied = Bytes.unlines [line | line <- lines', either (const True) (not . isStep) (eitherDecodeStrict line :: Either String Value)]
+    refused "not reported by the learner" (Replay.replay (declaration run) failed (Map.insert joint unapplied (transcripts run)))
 
 results :: PropertyT IO ()
 results = do
