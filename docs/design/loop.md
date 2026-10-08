@@ -76,7 +76,7 @@ The driver moves through idle, collecting, updating and publishing. A failure du
 
 With `--inference-mode resident` and `--learning-mode resident`, the core keeps one inference process per session and one learner process for the whole run. The inference worker loads the model once and switches to each newly published adapter. The learner keeps its model, optimizer, fixed reference and random state in memory. Each group and each update is still admitted separately. After a group, the core sends a release naming exactly that group's loads and transcript digest, and the worker acknowledges once it has freed them. At the end the core sends `close` to every owner and requires an acknowledgement with the number of groups run and a zero exit status.
 
-`--inference-mode shared --learning-mode shared` runs both roles in one process with one session, keeping separate invocation checks for each role. The [MLX backend](../backends/mlx.md) uses this mode on Apple Silicon, and the [vLLM backend](../backends/vllm.md) uses separate resident processes.
+`--inference-mode shared --learning-mode shared` runs both roles in one process with one session, keeping separate invocation checks for each role. With `--staleness 0` the event runtime runs the same process: the journal reserves it once under the role `shared`, its transcript holds both roles' records, and each rollout waits for the previous publication. Shared execution with a positive staleness is refused. The [MLX backend](../backends/mlx.md) uses this mode on Apple Silicon, and the [vLLM backend](../backends/vllm.md) uses separate resident processes.
 
 ## History and comparison
 

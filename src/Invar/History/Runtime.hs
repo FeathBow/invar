@@ -96,6 +96,7 @@ profiles (Checked _ _ replayed _ _ _) = concat [Profile.fromPrefix (role chosen)
   where
     role Entry.Inference = Resident.Inference
     role Entry.Learner = Resident.Learning
+    role Entry.Shared = Resident.Shared
 
 loads :: Checked -> [Value]
 loads (Checked _ _ replayed _ _ _) = [Object fields | (_, loading) <- Map.elems (Replay.loaded replayed), fields <- loading]

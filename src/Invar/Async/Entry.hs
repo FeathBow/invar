@@ -20,7 +20,7 @@ import Invar.Transcript (Outcome (..), Output (..))
 import Numeric.Natural (Natural)
 import System.Exit (ExitCode (..))
 
-data Role = Inference | Learner
+data Role = Inference | Learner | Shared
     deriving (Eq, Show)
 
 data Claim
@@ -124,10 +124,12 @@ generation fields = do
 roleName :: Role -> Text
 roleName Inference = "inference"
 roleName Learner = "learner"
+roleName Shared = "shared"
 
 roleOf :: Text -> Parser Role
 roleOf "inference" = pure Inference
 roleOf "learner" = pure Learner
+roleOf "shared" = pure Shared
 roleOf other = fail ("Unknown process role: " ++ show other)
 
 outcomeFields :: Outcome -> [Pair]
