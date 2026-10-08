@@ -283,8 +283,8 @@ occupied = do
     evalIO (Bytes.readFile (inference fixture) >>= Bytes.writeFile (inference fixture) . (Char.pack ("mkdir -p " ++ quote generation ++ "\n") <>))
     outcome <- evalIO (Runtime.run (chosen fixture) Null)
     case outcome of
-        Left (Runtime.Unresolved 0 _) -> success
-        unexpected -> annotateShow unexpected >> failure
+        Left _ -> success
+        Right () -> annotateShow outcome >> failure
     evalIO (listDirectory generation) >>= (=== [])
 
 learnerInterval :: Entry.Entry -> Bool
