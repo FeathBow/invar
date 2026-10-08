@@ -10,4 +10,4 @@ Use the Why, What and Validation sections to explain the change and report relev
 
 ## Sign-off
 
-Read the [Developer Certificate of Origin 1.1](https://developercertificate.org/) and sign off every commit with `git commit -s`, using the name and email of the commit author. Contributions use [Apache-2.0](LICENSE). Preserve relevant sign-offs when squashing.
+Read the [Developer Certificate of Origin 1.1](https://developercertificate.org/) and sign off every non-merge commit with `git commit -s`, using the name and email of the commit author. Merge commits, including those created by GitHub's Update branch button, are exempt; ordinary commits introduced through a merge are still checked. Contributions use [Apache-2.0](LICENSE). Preserve relevant sign-offs when squashing.
