@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Async.Replay (Declaration (..), Status (..), Outcome (..), Learned (..), Evidence, Floors (..), Replayed, replay, resume, state, versions, statuses, learned, evidence, floors, unended, loaded, committing, trajectories, execution, report, frames, admittedUnder) where
+module Invar.Async.Replay (Declaration (..), Status (..), Outcome (..), Learned (..), Evidence, Floors (..), Replayed, replay, resume, state, versions, statuses, learned, evidence, floors, reserved, unended, loaded, committing, trajectories, execution, report, frames, admittedUnder) where
 
 import Control.Monad (foldM, forM_, unless, when, zipWithM)
 import Data.Aeson (Object, Value (..), withObject)
@@ -88,7 +88,7 @@ frames = Trace.records . execution
 data Floors = Floors {identity :: Natural, numbered :: Natural, epoch :: Natural, attempt :: Natural}
     deriving (Eq, Show)
 
-data Replayed = Replayed {state :: Core.State, versions :: Map Natural (String, String, Policy.Description), statuses :: Map V.Binding (Natural, Status), learned :: Map (Natural, Natural) Learned, evidence :: Map Natural Evidence, unended :: [Natural], loaded :: Map Natural (Entry.Role, [Object]), floors :: Floors}
+data Replayed = Replayed {state :: Core.State, versions :: Map Natural (String, String, Policy.Description), statuses :: Map V.Binding (Natural, Status), learned :: Map (Natural, Natural) Learned, evidence :: Map Natural Evidence, reserved :: [Natural], unended :: [Natural], loaded :: Map Natural (Entry.Role, [Object]), floors :: Floors}
 
 data Life = Running | Ended (Maybe Transcript.Outcome)
     deriving (Eq)
@@ -506,7 +506,7 @@ settle declared fold number = case Map.lookup number (inferences fold) of
     _ -> pure fold
 
 summarize :: Fold -> Replayed
-summarize fold = Replayed (core fold) published classified attempted committed [number | (number, Process _ _ _ Running) <- Map.toList (processes fold)] (Map.intersectionWith (\(Process chosen _ _ _) loading -> (chosen, map Framing.fields loading)) (processes fold) (prefixes fold)) (Floors next numbers (epochs fold) (Core.issued (core fold)))
+summarize fold = Replayed (core fold) published classified attempted committed (Map.keys (processes fold)) [number | (number, Process _ _ _ Running) <- Map.toList (processes fold)] (Map.intersectionWith (\(Process chosen _ _ _) loading -> (chosen, map Framing.fields loading)) (processes fold) (prefixes fold)) (Floors next numbers (epochs fold) (Core.issued (core fold)))
   where
     published = Map.map (\(Generation chosen learnerDigest described) -> (chosen, learnerDigest, described)) (generations fold)
     classified = Map.mapWithKey (\bound (request, _, _) -> (request, status bound)) (calls fold)

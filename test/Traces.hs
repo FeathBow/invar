@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Traces (traces) where
+module Traces (traces, built, admit) where
 
 import Calls qualified
 import Control.Monad (forM_)

@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Recoveries (recoveries, inspections) where
+module Recoveries (recoveries, inspections, ran, finishedRun, retriedRun) where
 
 import BatchCalls (quote)
 import Control.Monad (forM_, unless)
@@ -57,7 +57,7 @@ inspections =
         [ ("a finished run is admitted from a read-only journal it leaves unchanged, with its own workload and checkpoint, its schedule, its committed attempt, the calls it consumed and the load of each process", once finishedHistory)
         , ("a run interrupted before its first publication and resumed with retry records is admitted with its concluded and its committed attempt", once retriedHistory)
         , ("a run whose publication a restart confirmed is admitted with that attempt committed", once confirmedHistory)
-        , ("a process no protocol admitted contributes no load, even when its transcript holds one", once unadmittedLoad)
+        , ("a process no protocol admitted contributes no load, even when its transcript holds one, and counts once among the processes", once unadmittedLoad)
         , ("an uncommitted update, a reservation without an end, a removed restart, a missing or extra generation and a declared workload the transcripts do not support are refused", once refusedHistories)
         ]
   where
@@ -315,16 +315,23 @@ finishedHistory = do
     recorded <- attempts checked
     recorded === [object ["update" .= (0 :: Int), "attempt" .= (0 :: Int), "binding" .= binding members, "process" .= (1 :: Int), "consumed" .= map binding [0 .. members - 1], "outcome" .= object ["committed" .= (1 :: Int)]]]
 
-retriedHistory :: PropertyT IO ()
-retriedHistory = do
-    fixture <- ran
+finishedRun :: Fixture -> PropertyT IO History.Checked
+finishedRun fixture = inspected fixture (root fixture </> "run") >>= evalEither
+
+retriedRun :: Fixture -> PropertyT IO History.Checked
+retriedRun fixture = do
     let copy = root fixture </> "retried"
-        members = membersOf fixture
     interruptedBefore fixture copy learnerInterval
     evalIO (removeDirectoryRecursive (copy </> "generation1"))
     outcome <- evalIO (resumed fixture copy)
     either (\problem -> annotateShow problem >> failure) pure outcome
-    checked <- inspected fixture copy >>= evalEither
+    inspected fixture copy >>= evalEither
+
+retriedHistory :: PropertyT IO ()
+retriedHistory = do
+    fixture <- ran
+    let members = membersOf fixture
+    checked <- retriedRun fixture
     recorded <- attempts checked
     map (parseEither (withObject "attempt" (\fields -> (,) <$> fields .: "attempt" <*> fields .: "outcome"))) recorded === [Right (0 :: Int, object ["concluded" .= True]), Right (1, object ["committed" .= (1 :: Int)])]
     map (parseEither (withObject "attempt" (.: "consumed"))) recorded === [Right (map binding [0 .. members - 1]), Right (map binding [members + 1 .. 2 * members])]
@@ -353,6 +360,7 @@ unadmittedLoad = do
         Bytes.appendFile (copy </> "journal.jsonl") (Char.unlines (map (Lazy.toStrict . encode . Entry.encode) idle))
     checked <- inspected fixture copy >>= evalEither
     length [() | Object fields <- History.loads checked, Fields.lookup "stage" fields == Just "load"] === 2
+    parseEither (withObject "recorded execution" (.: "processes")) (History.recorded checked) === Right (3 :: Int)
 
 refusedHistories :: PropertyT IO ()
 refusedHistories = do

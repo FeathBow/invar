@@ -76,7 +76,7 @@ class RecoveryTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Another process holds the run journal"):
                 inspected(self.root, output, 1, "held")
             holder.stdin.close()
-        history = inspected(self.root, output, 1, "early")
+        history = inspected(self.root, output, 1, "early", process=True)
         self.assertEqual([attempt["outcome"] for attempt in history["training"]["attempts"]], [{"committed": 1}])
         self.applied(output, 0)
         records = self.resume(output, "earlyresumed")
