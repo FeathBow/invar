@@ -268,7 +268,7 @@ finish shared = do
     state <- readMVar (core shared)
     when (Core.committed state == Plan.updates (plan shared)) (void (tryPutMVar (finished shared) (Right ())))
 
--- The core reports an attempt in flight, but only the runtime knows whether its worker was invoked, which is what leaves the attempt's effects unknown.
+-- The core reports an attempt in flight, but only the runtime knows whether its worker may have run, which is what leaves the attempt's effects unknown; the index names that update, which at a positive staleness may not be the update the failure came from.
 fail' :: Shared scope -> Error -> IO ()
 fail' shared problem = do
     running <- readMVar (invoked shared)

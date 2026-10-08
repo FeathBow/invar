@@ -48,6 +48,7 @@ recoveries =
         , ("a crash after a process learner's reservation and before its attempt leaves a journal a resume admits", once interrupted)
         , ("a failure after the learner ran names the unresolved update and one before it does not", once reported)
         , ("a publication that would replace a generation already on disk is refused and leaves it untouched", once occupied)
+        , ("a failure after an update has committed is not named against that update", once cleared)
         ]
   where
     once = withTests 1 . property
@@ -65,10 +66,13 @@ inspections =
   where
     once = withTests 1 . property
 
-data Fixture = Fixture {root :: FilePath, chosen :: Runtime.Run, inference :: FilePath}
+data Fixture = Fixture {root :: FilePath, chosen :: Runtime.Run, inference :: FilePath, following :: FilePath}
 
 prepared :: PropertyT IO Fixture
-prepared = do
+prepared = evalEither Sessions.workload >>= preparedFrom
+
+preparedFrom :: Workload.Document -> PropertyT IO Fixture
+preparedFrom document = do
     base <- workspace
     sessions <- Sessions.options base 1
     let settings = F.configured
@@ -92,15 +96,15 @@ prepared = do
         dispatching marker (firstScript, retryScript) = unlines ["if test -e " ++ quote marker ++ "; then exec /bin/sh " ++ quote retryScript ++ " \"$@\"; fi", ": > " ++ quote marker, "exec /bin/sh " ++ quote firstScript ++ " \"$@\""]
         worker = R.worker sessions
         inferring = base </> "inference.sh"
+        following = Worker.script (R.worker retried)
         backend = Loop.Backend "/bin/sh" (Worker.executable worker) inferring Nothing R.Serial (base </> "learner.sh") Learner.Process (Worker.cache worker) (R.sessions sessions)
         config = Loop.Config backend (base </> "run") (base </> "input") (base </> "reference") settings Store.RenameExclusive
     evalIO $ do
         writeFile (base </> "learner0.sh") (copying 0 ++ firstLearner)
         writeFile (base </> "learner1.sh") (copying 1 ++ retryLearner)
         writeFile (base </> "learner.sh") (dispatching (base </> "learned") (base </> "learner0.sh", base </> "learner1.sh"))
-        writeFile inferring (dispatching (base </> "inferred") (Worker.script worker, Worker.script (R.worker retried)))
-    document <- evalEither Sessions.workload
-    pure (Fixture base (Runtime.Run config 0 document) inferring)
+        writeFile inferring (dispatching (base </> "inferred") (Worker.script worker, following))
+    pure (Fixture base (Runtime.Run config 0 document) inferring following)
 
 ran :: PropertyT IO Fixture
 ran = do
@@ -285,7 +289,21 @@ occupied = do
     case outcome of
         Left _ -> success
         Right () -> annotateShow outcome >> failure
+    entries <- traverse (evalEither . decoded) =<< evalIO (journaled output)
+    assert (Entry.Happened (Entry.Recorded 0 0) `elem` entries)
     evalIO (listDirectory generation) >>= (=== [])
+
+cleared :: PropertyT IO ()
+cleared = do
+    fixture <- evalEither (Sessions.workloads 2) >>= preparedFrom
+    -- The second cycle's rollout is dispatched by the first commit and the marker is cleared just after it, so the worker that fails is delayed to land behind that clear.
+    evalIO (writeFile (following fixture) "sleep 1\nexit 3\n")
+    outcome <- evalIO (Runtime.run (chosen fixture) Null)
+    evalIO (doesDirectoryExist (root fixture </> "run" </> "generation1")) >>= (=== True)
+    case outcome of
+        Left (Runtime.Unresolved update _) -> annotate ("Update " ++ show update ++ " was named unresolved after it had committed") >> failure
+        Left _ -> success
+        Right () -> annotateShow outcome >> failure
 
 learnerInterval :: Entry.Entry -> Bool
 learnerInterval (Entry.Elapsed role _ _ _) = role == "learner"
