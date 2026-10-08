@@ -24,8 +24,7 @@ jobs:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          revisions="$(git rev-list "$PR_BASE_SHA..$PR_HEAD_SHA")"
-          test -n "$revisions"
+          revisions="$(git rev-list --no-merges "$PR_BASE_SHA..$PR_HEAD_SHA")"
           for revision in $revisions; do
             email="$(git show -s --format=%ae "$revision")"
             trailers="$(git show -s --format=%B "$revision" | git interpret-trailers --parse --no-divider)"
