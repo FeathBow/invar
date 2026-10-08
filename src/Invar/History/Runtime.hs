@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.History.Runtime (Checked, inspect, config, staleness, workload, generations, finalPolicy, identities, profiles, loads, describe) where
+module Invar.History.Runtime (Checked, inspect, config, workload, generations, finalPolicy, identities, profiles, loads, describe, recorded) where
 
 import Control.Monad (unless)
 import Data.Aeson (Object, Value (..), object, (.=))
@@ -10,6 +10,7 @@ import Data.ByteString (ByteString)
 import Data.List (genericLength)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
+import Data.Text (Text)
 import Invar.Async.Core qualified as Core
 import Invar.Async.Entry qualified as Entry
 import Invar.Async.Plan (Declared (..), Request (..), Update (..), Version (..))
@@ -36,7 +37,7 @@ data Checked = Checked Runtime.Run Replay.Declaration Replay.Replayed [Generatio
 inspect :: FilePath -> (Value -> Either String (Loop.Config, Natural)) -> IO (Either String Checked)
 inspect directory interpreter = do
     target <- canonicalizePath directory
-    Journal.inspect (target </> "journal.jsonl") $ \recorded -> case traverse (parseEither Entry.decode) recorded of
+    Journal.inspect (target </> "journal.jsonl") $ \journaled -> case traverse (parseEither Entry.decode) journaled of
         Left problem -> pure (Left problem)
         Right (Entry.Declared started declared : later) -> do
             interpreted <- withCurrentDirectory started (Runtime.interpret target interpreter declared >>= traverse (located target))
@@ -78,9 +79,6 @@ admit selected declared entries transcribed observed = do
 config :: Checked -> Loop.Config
 config (Checked (Runtime.Run chosen _ _) _ _ _ _ _) = chosen
 
-staleness :: Checked -> Natural
-staleness (Checked (Runtime.Run _ lag _) _ _ _ _ _) = lag
-
 workload :: Checked -> Workload.Document
 workload (Checked (Runtime.Run _ _ document) _ _ _ _ _) = document
 
@@ -107,10 +105,16 @@ describe (Checked _ declared replayed built _ restarts) =
     object
         [ "staleness" .= Replay.staleness declared
         , "updates" .= [object ["update" .= update, "version" .= selected, "requests" .= [request | Request request <- requests]] | Update update <- Plan.updates (Replay.plan declared), let Version selected = Plan.version (Replay.plan declared) (Update update), Just (Declared requests _) <- [Plan.declared (Replay.plan declared) (Update update)]]
-        , "attempts" .= [object ["update" .= update, "attempt" .= tried, "binding" .= Wire.bindingValue (Replay.binding learned), "process" .= Replay.process learned, "consumed" .= map Wire.bindingValue (Replay.consumed learned), "outcome" .= outcome (Replay.outcome learned)] | ((update, tried), learned) <- Map.toList (Replay.learned replayed)]
+        , "attempts" .= attempts replayed
         , "restarts" .= [[object ["version" .= Entry.version seen, "adapter" .= Entry.adapter seen, "learner" .= Entry.learner seen] | seen <- observed] | observed <- restarts]
         , "generations" .= map Generation.describe built
         ]
+
+recorded :: Checked -> Value
+recorded (Checked _ _ replayed _ _ restarts) = object ["source" .= ("run directory" :: Text), "processes" .= length (Replay.reserved replayed), "attempts" .= attempts replayed, "restarts" .= length restarts]
+
+attempts :: Replay.Replayed -> [Value]
+attempts replayed = [object ["update" .= update, "attempt" .= tried, "binding" .= Wire.bindingValue (Replay.binding learned), "process" .= Replay.process learned, "consumed" .= map Wire.bindingValue (Replay.consumed learned), "outcome" .= outcome (Replay.outcome learned)] | ((update, tried), learned) <- Map.toList (Replay.learned replayed)]
   where
     outcome :: Replay.Outcome -> Object
     outcome (Replay.Committed version) = Fields.fromList ["committed" .= version]

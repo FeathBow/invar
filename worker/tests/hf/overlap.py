@@ -24,6 +24,7 @@ PROMPT = "Compute the answer."
 SEEDS = (1326, 41)
 BOOTSTRAP_BINDING = 7
 FINAL_BINDING = 1000
+RUNNING = ("python", "inference-python", "inference", "learning", "cache")
 
 
 def flags(values):
@@ -54,8 +55,7 @@ def transcribed(output, role):
             for line in (output / "transcripts" / f"{entry['process']}.jsonl").read_text().splitlines()]
 
 
-def inspected(root, output, generations, name):
-    checkpoint = output / f"generation{generations}"
+def independent(root, checkpoint, name):
     described = core.invoke(["policy", "inspect", "--checkpoint", checkpoint], executable=CORE)
     final = {"digest": described["adapter"], "tokenizer-digest": described["tokenizer"], "base-digest": described["base"],
              "assembly-digest": described["assembly"], "prompt": PROMPT, "tokens": 4, "temperature": 0.8, "seed": SEEDS[0],
@@ -63,13 +63,31 @@ def inspected(root, output, generations, name):
     log = root / (name + "final.jsonl")
     execute([CORE, "infer", *flags({**{key: final[key] for key in ("prompt", "tokens", "temperature", "seed", "call", "attempt", "instance")},
                                     "python": sys.executable, "worker": ENTRY, "cache": root, "checkpoint": checkpoint})], log)
-    fields = {"run": output, "cuda-rng-vectors": 0, "initial-source": "provided", "profile-mode": "unreported",
-              "final-log": log, "final-exit-code": 0, **{"final-" + key: value for key, value in final.items()}}
-    session = codec.Session()
-    history = core.exchange(["inspect", "history", "--codec-mode", "stdio", *flags(fields)], executable=CORE, handler=session.handle)
+    return {"cuda-rng-vectors": 0, "initial-source": "provided", "profile-mode": "unreported",
+            "final-log": log, "final-exit-code": 0, **{"final-" + key: value for key, value in final.items()}}
+
+
+def released(result, session):
     if session.tensors or session.views:
         raise AssertionError("History codec scope was not released")
-    return history
+    return result
+
+
+def inspected(root, output, generations, name, *, process=False):
+    fields = {"run": output, **independent(root, output / f"generation{generations}", name)}
+    if process:
+        codec_entry = Path(__file__).resolve().parents[3] / "entries" / "codec.py"
+        return core.invoke(["inspect", "history", "--python", sys.executable, "--codec", codec_entry, *flags(fields)], executable=CORE)
+    session = codec.Session()
+    history = core.exchange(["inspect", "history", "--codec-mode", "stdio", *flags(fields)], executable=CORE, handler=session.handle)
+    return released(history, session)
+
+
+def compared(left, right):
+    fields = {**{"left-" + key: value for key, value in left.items()}, **{"right-" + key: value for key, value in right.items()}}
+    session = codec.Session()
+    comparison = core.exchange(["compare", "histories", "--codec-mode", "stdio", *flags(fields)], executable=CORE, handler=session.handle)
+    return released(comparison, session)
 
 
 def prepared(prefix):
@@ -142,6 +160,12 @@ class OverlapTests(unittest.TestCase):
         steps, = [item["state"]["steps"] for item in history["artifacts"]]
         self.assertTrue(steps and all(count == 2 for count in steps))
 
+    def logged(self, name, output, cycles):
+        tasks = self.root / (name + "tasks.json")
+        tasks.write_text(workload(cycles))
+        return {**{key: value for key, value in self.settings.items() if key not in RUNNING}, "tasks": tasks,
+                "log": self.root / (name + ".jsonl"), "sessions": 1, "exit-code": 0, "output": output}
+
     def test_zero_staleness_publishes_the_synchronous_successor(self):
         synchronous, left = self.train("synchronous", 1)
         concurrent, right = self.train("concurrent", 1, staleness=0)
@@ -151,6 +175,24 @@ class OverlapTests(unittest.TestCase):
                          {key: expected[key] for key in ("policy", "learner", "publication")})
         self.assertNotEqual(actual["policy"], self.settings["policy"])
         self.assertEqual((right / "generation1" / "policy.json").read_bytes(), (left / "generation1" / "policy.json").read_bytes())
+        comparison = compared({**self.logged("synchronous", left, 1), **independent(self.root, left / "generation1", "synchronous")},
+                              {"run": right, **independent(self.root, right / "generation1", "concurrent")})
+        self.assertTrue(comparison["equal"])
+        self.assertTrue(comparison["schedule_equal"])
+        self.assertEqual(comparison["schedule"]["differences"], [])
+        self.assertTrue(comparison["execution"]["declared_equal"])
+        self.assertEqual([comparison["execution"][side]["recorded"]["source"] for side in ("left", "right")], ["training log", "run directory"])
+
+    def test_staleness_is_a_schedule_difference(self):
+        _, fresh = self.train("fresh", 1, staleness=0)
+        _, lagged = self.train("lagged", 1, staleness=1)
+        comparison = compared({"run": fresh, **independent(self.root, fresh / "generation1", "fresh")},
+                              {"run": lagged, **independent(self.root, lagged / "generation1", "lagged")})
+        self.assertFalse(comparison["schedule_equal"])
+        self.assertEqual(comparison["schedule"]["differences"], [{"generation": 1, "fields": ["staleness"]}])
+        self.assertEqual([[update["staleness"] for update in comparison["schedule"][side]] for side in ("left", "right")], [[0], [1]])
+        self.assertTrue(comparison["execution"]["declared_equal"])
+        self.assertFalse(comparison["equal"])
 
 
 if __name__ == "__main__":

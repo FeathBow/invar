@@ -19,12 +19,14 @@ import Invar.History.Profile (Profiles (..))
 import Invar.History.Profile qualified as Profile
 import Invar.History.Publication qualified as Publication
 import Invar.History.Runtime qualified as Runtime
+import Invar.History.Schedule qualified as Schedule
 import Invar.History.Trace qualified as Trace
 import Invar.Infer qualified as Infer
 import Invar.Infer.Invocation qualified as Call
 import Invar.Infer.Observation qualified as Inference
 import Invar.Infer.Replay qualified as Replay
 import Invar.Infer.Session qualified as Session
+import Invar.Infer.Wire qualified as Wire
 import Invar.Json qualified as Json
 import Invar.Learn qualified as Learn
 import Invar.Learn.Adapter qualified as Adapter
@@ -34,10 +36,12 @@ import Invar.Learn.Report qualified as Report
 import Invar.Learn.Request qualified as Request
 import Invar.Learn.State qualified as State
 import Invar.Learn.Stream qualified as S
+import Invar.Learn.Worker qualified as W
 import Invar.Loop qualified as Loop
 import Invar.Policy qualified as Policy
 import Invar.Policy.File qualified as File
 import Invar.Resident qualified as Resident
+import Invar.Rollout qualified as R
 import Invar.Spec.Invocation qualified as V
 import Invar.Store qualified as Store
 import Invar.Workload qualified as Workload
@@ -72,6 +76,9 @@ data Checked = Checked
     }
 
 data Source = FromLog Log Trace.Checked | FromRun Runtime.Checked
+
+data Arrangement = Arrangement {sessionCount :: Natural, inferenceRun :: Trace.Mode, learningRun :: Trace.Mode, dispatch :: [([Natural], [Natural])], finalCall :: V.Binding}
+    deriving (Eq)
 
 data Generation = Generation {generationTrace :: Generation.Generation, generationArtifacts :: Value, generationState :: State.Observed, generationGradients :: Gradient.Observed}
 
@@ -189,10 +196,13 @@ compare (left, right) = do
         settingsEqual = leftSettings == rightSettings && randomProfile first == randomProfile second && initialization (initialSource first) == initialization (initialSource second)
         finalEqual = Inference.result (independentObservation left) == Inference.result (independentObservation right)
         modelEqual = leftModel == rightModel
-        same = and [initialEqual, generationEqual, taskEqual, settingsEqual, finalEqual, modelEqual]
-        scheduling checked = (execution (trainingRecord checked), map (\workload -> (Workload.order workload, Workload.delivery workload)) (Workload.cycles (workloadOf (trainingRecord checked))), finalBinding (declaration checked))
+        leftSchedule = schedule left
+        rightSchedule = schedule right
+        scheduleEqual = leftSchedule == rightSchedule
+        same = and [initialEqual, generationEqual, taskEqual, settingsEqual, scheduleEqual, finalEqual, modelEqual]
+        executed checked = object ["declared" .= describeArrangement (arrangement checked), "recorded" .= recorded (trainingRecord checked)]
         diagnostic checked = (initializationDiagnostics checked, map Generation.diagnostics (trained checked), closing (trainingRecord checked), standaloneDiagnostics checked)
-    pure (object ["comparison" .= ("complete histories: semantic inputs and artifact values" :: Text), "equal" .= same, "tasks_equal" .= taskEqual, "settings_equal" .= settingsEqual, "models_equal" .= modelEqual, "schedule_equal" .= (scheduling left == scheduling right), "publication_method_equal" .= (methodOf (trainingRecord left) == methodOf (trainingRecord right)), "diagnostics_equal" .= (diagnostic left == diagnostic right), "initial" .= initial, "generations" .= generations, "final_equal" .= finalEqual, "left" .= describe left, "right" .= describe right])
+    pure (object ["comparison" .= ("complete histories: semantic inputs and artifact values" :: Text), "equal" .= same, "tasks_equal" .= taskEqual, "settings_equal" .= settingsEqual, "models_equal" .= modelEqual, "schedule_equal" .= scheduleEqual, "schedule" .= object ["left" .= Schedule.describe leftSchedule, "right" .= Schedule.describe rightSchedule, "differences" .= Schedule.differences leftSchedule rightSchedule], "execution" .= object ["declared_equal" .= (arrangement left == arrangement right), "left" .= executed left, "right" .= executed right], "publication_method_equal" .= (methodOf (trainingRecord left) == methodOf (trainingRecord right)), "diagnostics_equal" .= (diagnostic left == diagnostic right), "initial" .= initial, "generations" .= generations, "final_equal" .= finalEqual, "left" .= describe left, "right" .= describe right])
 
 initialization :: Initial.Source -> Maybe Integer
 initialization Initial.Provided = Nothing
@@ -237,7 +247,7 @@ rollouts checked index = case drop (fromIntegral index - 1) (zip (Workload.cycle
     _ -> Left "The admitted history has no such generation"
 
 describe :: Checked -> Value
-describe checked = object ["tasks_sha256" .= Workload.digest (workloadOf (trainingRecord checked)), "initial" .= initialObservation checked, "initial_diagnostics" .= initializationDiagnostics checked, "training" .= describeSource (trainingRecord checked), "artifacts" .= map generationArtifacts (generationObservations checked), "final" .= Inference.describe (independentObservation checked), "final_diagnostics" .= standaloneDiagnostics checked, "profiles" .= profileObservation checked]
+describe checked = object ["tasks_sha256" .= Workload.digest (workloadOf (trainingRecord checked)), "initial" .= initialObservation checked, "initial_diagnostics" .= initializationDiagnostics checked, "training" .= describeSource (trainingRecord checked), "schedule" .= Schedule.describe (schedule checked), "artifacts" .= map generationArtifacts (generationObservations checked), "final" .= Inference.describe (independentObservation checked), "final_diagnostics" .= standaloneDiagnostics checked, "profiles" .= profileObservation checked]
 
 trained :: Checked -> [Generation.Generation]
 trained checked = map generationTrace (generationObservations checked)
@@ -250,13 +260,32 @@ describeSource :: Source -> Value
 describeSource (FromLog _ trace) = Trace.describe trace
 describeSource (FromRun run) = Runtime.describe run
 
-execution :: Source -> Value
-execution (FromLog logged _) = object ["sessions" .= Trace.sessions run, "inference" .= show (Trace.inferenceMode run), "learning" .= show (Trace.learningMode run)]
+schedule :: Checked -> Schedule.Schedule
+schedule checked = Schedule.project [Report.checkedRequest (Cohort.update (Generation.cohort generation)) | generation <- trained checked]
+
+arrangement :: Checked -> Arrangement
+arrangement checked = case trainingRecord checked of
+    FromLog logged _ -> let run = trainingRun logged in Arrangement (Trace.sessions run) (Trace.inferenceMode run) (Trace.learningMode run) cycles final
+    FromRun run ->
+        let backend = Loop.backend (Runtime.config run)
+         in Arrangement (genericLength (Loop.sessions backend)) (rollout (Loop.inferenceMode backend)) (learner (Loop.learningMode backend)) cycles final
   where
-    run = trainingRun logged
-execution (FromRun run) = object ["sessions" .= length (Loop.sessions backend), "inference" .= show (Loop.inferenceMode backend), "learning" .= show (Loop.learningMode backend), "staleness" .= Runtime.staleness run]
-  where
-    backend = Loop.backend (Runtime.config run)
+    cycles = [(Workload.order workload, Workload.delivery workload) | workload <- Workload.cycles (workloadOf (trainingRecord checked))]
+    final = finalBinding (declaration checked)
+    rollout R.Serial = Trace.Finite
+    rollout R.Batched = Trace.Batched
+    rollout R.Resident = Trace.Resident
+    rollout R.Shared = Trace.Shared
+    learner W.Process = Trace.Finite
+    learner W.Resident = Trace.Resident
+    learner W.Shared = Trace.Shared
+
+describeArrangement :: Arrangement -> Value
+describeArrangement arranged = object ["sessions" .= sessionCount arranged, "inference" .= show (inferenceRun arranged), "learning" .= show (learningRun arranged), "cycles" .= [object ["order" .= executionOrder, "delivery" .= arrival] | (executionOrder, arrival) <- dispatch arranged], "final_binding" .= Wire.bindingValue (finalCall arranged)]
+
+recorded :: Source -> Value
+recorded (FromLog _ _) = object ["source" .= ("training log" :: Text)]
+recorded (FromRun run) = Runtime.recorded run
 
 invalid :: String -> IO value
 invalid = ioError . userError

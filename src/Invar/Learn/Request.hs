@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Learn.Request (Request, parse, value, logical, exchange, order, materialization, scheduled) where
+module Invar.Learn.Request (Request, parse, value, logical, exchange, order, materialization, scheduled, staleness, version) where
 
 import Control.Monad (unless, when, (>=>))
 import Data.Aeson (Value (Object), parseJSON, toJSON, withObject, (.:))
@@ -19,7 +19,7 @@ import Invar.Materialization qualified as Materialization
 import Invar.Spec.Load qualified as Image
 import Numeric.Natural (Natural)
 
-data Request = Request Value Value S.Plan [Text] Image.Image Natural
+data Request = Request Value Value S.Plan [Text] Image.Image (Natural, Natural, Natural)
     deriving (Eq, Show)
 
 value :: Request -> Value
@@ -38,7 +38,13 @@ materialization :: Request -> Image.Image
 materialization (Request _ _ _ _ image _) = image
 
 scheduled :: Request -> Natural
-scheduled (Request _ _ _ _ _ update) = update
+scheduled (Request _ _ _ _ _ (update, _, _)) = update
+
+staleness :: Request -> Natural
+staleness (Request _ _ _ _ _ (_, lag, _)) = lag
+
+version :: Request -> Natural
+version (Request _ _ _ _ _ (_, _, behavior)) = behavior
 
 parse :: Value -> Parser Request
 parse = withObject "numerical update request" $ \fields -> do
@@ -48,13 +54,13 @@ parse = withObject "numerical update request" $ \fields -> do
     source <- fields .: "reference_source" >>= maybe (fail "Unknown reference source") pure . S.readSource
     [policy, checkpoint, reference, tokenizer, base, assembly] <- traverse ((.:) fields >=> Json.identity) ["policy", "learner", "reference", "tokenizer", "base", "assembly"]
     fields .: "behavior_model" >>= model
-    (update, staleness) <- fields .: "schedule" >>= schedule
+    (update, lag) <- fields .: "schedule" >>= schedule
     delivered <- fields .: "samples" >>= traverse sample
     sequence' <- fields .: "order" :: Parser [Text]
-    let version = if update > staleness then update - staleness else 0
-    unless (all (\entry -> sampleVersion entry == version) delivered) (fail "Every sample must come from version max(0, update - staleness)")
+    let behavior = if update > lag then update - lag else 0
+    unless (all (\entry -> sampleVersion entry == behavior) delivered) (fail "Every sample must come from version max(0, update - staleness)")
     unless (Set.size (Set.fromList (map samplePolicy delivered)) == 1) (fail "Every sample of one version must come from the one policy published as that version")
-    unless (version /= update || all (\entry -> samplePolicy entry == Text.pack policy) delivered) (fail "Samples of the update's own version must come from the policy being updated")
+    unless (behavior /= update || all (\entry -> samplePolicy entry == Text.pack policy) delivered) (fail "Samples of the update's own version must come from the policy being updated")
     unless (all (\entry -> not (null (S.referenceWords (sampleWords entry))) == (samplePolicy entry /= Text.pack reference)) delivered) (fail "Reference scores must be present exactly when the reference differs from the sample's behavior policy")
     let named = Map.fromList [(sampleName entry, sampleValue entry) | entry <- delivered]
         grouped = Map.fromListWith (+) [(sampleGroup entry, 1 :: Int) | entry <- delivered]
@@ -72,7 +78,7 @@ parse = withObject "numerical update request" $ \fields -> do
     fields .: "optimizer" >>= optimizer
     let planned = S.Plan (Objective.Profile epsilon penalty) policy (map sampleWords delivered) steps source
         image = Materialization.learning (policy, checkpoint, tokenizer, base, assembly, reference)
-    pure (Request (Object fields) (Object (Fields.insert "samples" (toJSON ordered) fields)) planned sequence' image update)
+    pure (Request (Object fields) (Object (Fields.insert "samples" (toJSON ordered) fields)) planned sequence' image (update, lag, behavior))
 
 schedule :: Value -> Parser (Natural, Natural)
 schedule = withObject "update schedule" $ \fields -> do
@@ -97,7 +103,7 @@ sample original = withObject "update sample" inspect original
         named <- fields .: "sample"
         grouped <- fields .: "group"
         when (Text.null named || Text.null grouped) (fail "Logical sample and group identities must be nonempty")
-        version <- fields .: "version"
+        sampled <- fields .: "version"
         behaviorPolicy <- fields .: "behavior_policy" >>= Json.identity
         _ <- fields .: "prompt" :: Parser Text
         _ <- fields .: "text" :: Parser Text
@@ -116,7 +122,7 @@ sample original = withObject "update sample" inspect original
         unless (not truncated || count == limit) (fail "Invalid observed truncation status")
         _ <- fields .: "reward" >>= Json.finite
         advantage <- fields .: "advantage_bits" >>= word False
-        pure (Delivered named grouped original version (Text.pack behaviorPolicy) (S.Sample named words32 scores advantage))
+        pure (Delivered named grouped original sampled (Text.pack behaviorPolicy) (S.Sample named words32 scores advantage))
 
 word :: Bool -> Value -> Parser Word32
 word probability encoded = do
