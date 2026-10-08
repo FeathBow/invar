@@ -49,7 +49,7 @@ import System.Directory (canonicalizePath, createDirectory, getCurrentDirectory,
 import System.FilePath ((</>))
 import System.IO.Error (tryIOError)
 
-data Error = Declaration String | Recovery String | Rollout R.Error | Admission L.Error | Learning W.Failure | Crashed String
+data Error = Declaration String | Recovery String | Rollout R.Error | Admission L.Error | Learning W.Failure | Unresolved Natural Error | Crashed String
     deriving (Show)
 
 data Run = Run Loop.Config Natural Workload.Document
@@ -74,6 +74,7 @@ data Shared scope = Shared
     , cohorts :: Chan (Natural, Natural)
     , updates :: Chan (Natural, Attempt)
     , finished :: MVar (Either Error ())
+    , invoked :: MVar (Maybe Natural)
     , driver :: R.Driver scope
     , runner :: Owner.Runner
     }
@@ -195,6 +196,7 @@ begin selected@(Run chosen lag _) planned (Origin state commands versions next i
                     <*> newChan
                     <*> newChan
                     <*> newEmptyMVar
+                    <*> newMVar Nothing
                     <*> pure collector
                     <*> pure updater
             execute shared commands
@@ -266,8 +268,11 @@ finish shared = do
     state <- readMVar (core shared)
     when (Core.committed state == Plan.updates (plan shared)) (void (tryPutMVar (finished shared) (Right ())))
 
+-- The core reports an attempt in flight, but only the runtime knows whether its worker was invoked, which is what leaves the attempt's effects unknown.
 fail' :: Shared scope -> Error -> IO ()
-fail' shared problem = void (tryPutMVar (finished shared) (Left problem))
+fail' shared problem = do
+    running <- readMVar (invoked shared)
+    void (tryPutMVar (finished shared) (Left (maybe problem (`Unresolved` problem) running)))
 
 transition :: Shared scope -> Event -> IO [Command]
 transition shared event = do
@@ -361,6 +366,7 @@ learn shared (update, attempt@(Attempt counter)) = do
                     opened <- newIORef Nothing
                     let hooks = W.Hooks (ready attempt) (replying attempt forwarded opened)
                         paths = Resident.Paths (Loop.directory current) (Loop.root chosen </> staging)
+                    modifyMVar_ (invoked shared) (const (pure (Just update)))
                     executed <- Owner.run (runner shared) paths (W.hooked hooks call)
                     case executed of
                         Left problem -> fail' shared (Learning problem)
@@ -405,6 +411,7 @@ publish shared (update, attempt, ordinal) (description, produced) commands = do
     modifyMVar_ (published shared) (pure . Map.insert (update + 1) (Published checkpoint successor))
     announce (object ["phase" .= ("published" :: String), "update" .= update, "version" .= (update + 1), "checkpoint" .= Loop.directory checkpoint, "policy" .= Loop.policy checkpoint, "learner" .= Loop.learner checkpoint, "publication" .= Store.methodName (Store.method receipt)])
     void (transition shared (Committed (Update update) attempt))
+    modifyMVar_ (invoked shared) (const (pure Nothing))
     modifyMVar_ (batches shared) (pure . Map.delete update)
     finish shared
   where

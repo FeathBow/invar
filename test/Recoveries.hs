@@ -46,6 +46,7 @@ recoveries =
         , ("every prefix of a run's journal, with the files a crash there leaves, is admitted by a resume", once prefixes)
         , ("a resume that cannot read a transcript or a generation, or that the replay refuses, leaves the journal's bytes unchanged", once refusals)
         , ("a crash after a process learner's reservation and before its attempt leaves a journal a resume admits", once interrupted)
+        , ("a failure after the learner ran names the unresolved update and one before it does not", once reported)
         ]
   where
     once = withTests 1 . property
@@ -256,6 +257,22 @@ interrupted = do
                 Entry.Restarted [] -> success
                 _ -> annotateShow entry >> failure
         [] -> failure
+
+reported :: PropertyT IO ()
+reported = do
+    engaged <- prepared
+    evalIO (writeFile (root engaged </> "learner.sh") "exit 3\n")
+    afterLearner <- evalIO (Runtime.run (chosen engaged) Null)
+    case afterLearner of
+        Left (Runtime.Unresolved 0 (Runtime.Learning _)) -> success
+        unexpected -> annotateShow unexpected >> failure
+    evalIO (doesDirectoryExist (root engaged </> "run" </> "generation1")) >>= (=== False)
+    untouched <- prepared
+    evalIO (writeFile (inference untouched) "exit 3\n")
+    beforeLearner <- evalIO (Runtime.run (chosen untouched) Null)
+    case beforeLearner of
+        Left (Runtime.Rollout _) -> success
+        unexpected -> annotateShow unexpected >> failure
 
 learnerInterval :: Entry.Entry -> Bool
 learnerInterval (Entry.Elapsed role _ _ _) = role == "learner"
