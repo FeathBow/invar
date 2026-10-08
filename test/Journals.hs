@@ -14,6 +14,8 @@ import Invar.Async.Entry qualified as Entry
 import Invar.Journal qualified as Journal
 import Invar.Runtime qualified as Runtime
 import Invar.Transcript qualified as Transcript
+import Invar.Workload qualified as Workload
+import Sessions qualified
 import Store (workspace)
 import System.Directory (createDirectory, getCurrentDirectory)
 import System.FilePath ((</>))
@@ -80,7 +82,8 @@ directories = do
     started <- workspace
     let output = root </> "run"
     evalIO (createDirectory output)
-    evalIO (Journal.with (output </> "journal.jsonl") (Entry.encode (Entry.Declared started Fields.empty)) (const (pure ())))
+    document <- evalEither Sessions.workload
+    evalIO (Journal.with (output </> "journal.jsonl") (Entry.encode (Entry.Declared started (Fields.fromList ["arguments" .= Null, "workload" .= Workload.value document]))) (const (pure ())))
     caller <- evalIO getCurrentDirectory
     refused <- evalIO (Runtime.resume output (const (Left "refused")))
     case refused of

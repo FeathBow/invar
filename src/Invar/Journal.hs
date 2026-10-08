@@ -1,4 +1,4 @@
-module Invar.Journal (Journal, with, resume, append, transcript, entries) where
+module Invar.Journal (Journal, with, resume, inspect, append, transcript, entries) where
 
 import Control.Concurrent.MVar (MVar, modifyMVar, modifyMVar_, newMVar, readMVar, withMVar)
 import Control.Exception (bracket, finally, mask_, onException)
@@ -28,12 +28,12 @@ with path declaration = bracket (create path declaration) close
 create :: FilePath -> Value -> IO Journal
 create path declaration = do
     file <- exclusive path
-    (locked file >> write file (line declaration) >> synchronizeEntry path file) `onException` Posix.closeFd file
+    (locked Posix.WriteLock file >> write file (line declaration) >> synchronizeEntry path file) `onException` Posix.closeFd file
     Journal <$> newMVar (Just file) <*> newMVar (Just Map.empty)
 
 resume :: FilePath -> ([Object] -> IO (Either failure accepted)) -> (accepted -> Journal -> IO value) -> IO (Either failure value)
 resume path admit action = bracket (Posix.openFd path Posix.ReadWrite Posix.defaultFileFlags {Posix.append = True}) Posix.closeFd $ \file -> do
-    locked file
+    locked Posix.WriteLock file
     encoded <- contents file
     recorded <- either (ioError . userError) pure (entries encoded)
     when (null recorded) (ioError (userError "The journal has no complete declaration"))
@@ -47,6 +47,13 @@ resume path admit action = bracket (Posix.openFd path Posix.ReadWrite Posix.defa
             open <- newMVar (Just Map.empty)
             let journal = Journal lock open
             Right <$> action accepted journal `finally` abandon journal
+
+inspect :: FilePath -> ([Object] -> IO value) -> IO value
+inspect path action = bracket (Posix.openFd path Posix.ReadOnly Posix.defaultFileFlags) Posix.closeFd $ \file -> do
+    locked Posix.ReadLock file
+    recorded <- contents file >>= either (ioError . userError) pure . entries
+    when (null recorded) (ioError (userError "The journal has no complete declaration"))
+    action recorded
 
 close :: Journal -> IO ()
 close journal = abandon journal >>= mapM_ Posix.closeFd
@@ -83,8 +90,8 @@ shut held = mapM_ (Posix.closeFd . fst) held >> pure Nothing
 exclusive :: FilePath -> IO Fd
 exclusive path = Posix.openFd path Posix.WriteOnly Posix.defaultFileFlags {Posix.append = True, Posix.exclusive = True, Posix.creat = Just 0o644}
 
-locked :: Fd -> IO ()
-locked file = Posix.setLock file (Posix.WriteLock, AbsoluteSeek, 0, 0) `catchIOError` const (ioError (userError "Another process holds the run journal"))
+locked :: Posix.LockRequest -> Fd -> IO ()
+locked kind file = Posix.setLock file (kind, AbsoluteSeek, 0, 0) `catchIOError` const (ioError (userError "Another process holds the run journal"))
 
 contents :: Fd -> IO ByteString
 contents file = go []

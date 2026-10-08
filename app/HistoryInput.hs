@@ -16,7 +16,7 @@ import Invar.Policy qualified as Policy
 import Invar.Workload qualified as Workload
 import NativeCodec qualified
 import Options qualified as O
-import System.Console.GetOpt (OptDescr, usageInfo)
+import System.Console.GetOpt (OptDescr (Option), usageInfo)
 import System.Exit (die)
 import System.FilePath ((</>))
 import Training qualified
@@ -58,16 +58,22 @@ inspect supplied = do
     observed <- History.admit decoder declared output
     Lazy.putStrLn (encode (History.describe observed))
 
-load :: O.Fields -> IO (History.Declaration, (ByteString, ByteString))
+load :: O.Fields -> IO (History.Declaration, ByteString)
 load fields = do
-    (run, tasks, encoded) <- trace fields
+    training <- case O.optional fields "run" of
+        Just directory -> do
+            unless (null [name | name <- names traceOptions ++ ["reference"], Map.member name fields]) (die "--run takes the training arguments and workload from the run's declaration")
+            pure (History.Recorded directory Training.declared)
+        Nothing -> do
+            (run, tasks, encoded) <- trace fields
+            checkpoint <- either die pure (O.required fields "checkpoint")
+            reference <- either die pure (O.required fields "reference")
+            pure (History.Logged (History.Log run tasks checkpoint reference encoded))
     finalRequest <- either die pure (InferenceInput.requestWith "final-" fields)
     finalBinding <- either die pure (InferenceInput.bindingWith "final-" fields)
     finalExit <- either die pure (O.numeric fields "final-exit-code")
     finalPath <- either die pure (O.required fields "final-log")
     finalOutput <- Bytes.readFile finalPath
-    checkpoint <- either die pure (O.required fields "checkpoint")
-    reference <- either die pure (O.required fields "reference")
     random <- either die pure (randomProfile fields)
     source <- initialSource fields
     mode <- either die pure $ case O.optional fields "profile-mode" of
@@ -75,8 +81,11 @@ load fields = do
         Just "uniform" -> Right History.Uniform
         Just "roles" -> Right History.Roles
         _ -> Left "Expected explicit --profile-mode unreported, uniform or roles"
-    let declared = History.Declaration {History.training = run, History.tasks = tasks, History.checkpoint = checkpoint, History.reference = reference, History.randomProfile = random, History.initialSource = source, History.profileMode = mode, History.finalRequest = finalRequest, History.finalBinding = finalBinding, History.finalExit = finalExit}
-    pure (declared, (encoded, finalOutput))
+    let declared = History.Declaration {History.training = training, History.randomProfile = random, History.initialSource = source, History.profileMode = mode, History.finalRequest = finalRequest, History.finalBinding = finalBinding, History.finalExit = finalExit}
+    pure (declared, finalOutput)
+
+names :: [OptDescr (String, String)] -> [String]
+names described = concat [long | Option _ long _ _ <- described]
 
 initialSource :: O.Fields -> IO Initial.Source
 initialSource fields = case O.optional fields "initial-source" of
@@ -137,7 +146,7 @@ options :: [OptDescr (String, String)]
 options = inputOptions ++ NativeCodec.options
 
 inputOptions :: [OptDescr (String, String)]
-inputOptions = traceOptions ++ InferenceInput.optionsWith "final-" ++ initialInputOptions ++ O.descriptions [("reference", "Fixed reference adapter file"), ("profile-mode", "unreported, uniform across all processes, or roles with complete profiles uniform within inference, learning and shared owners separately"), ("final-log", "Complete independent final inference stdout"), ("final-exit-code", "Independently observed final inference process exit status")]
+inputOptions = traceOptions ++ InferenceInput.optionsWith "final-" ++ initialInputOptions ++ O.descriptions [("run", "Output directory of a run of the event runtime; its journal declares the training arguments and workload, which replace the training log options"), ("reference", "Fixed reference adapter file"), ("profile-mode", "unreported, uniform across all processes, or roles with complete profiles uniform within inference, learning and shared owners separately"), ("final-log", "Complete independent final inference stdout"), ("final-exit-code", "Independently observed final inference process exit status")]
 
 initialInputOptions :: [OptDescr (String, String)]
 initialInputOptions = O.descriptions [("rng-profile", "torch (default) or native mlx"), ("cuda-rng-vectors", "Declared CUDA RNG vector count in initial and successor learners"), ("initial-source", "provided or initializer"), ("initial-log", "Complete actual initializer stdout"), ("initial-exit-code", "Independently observed initializer process exit status"), ("initial-seed", "Declared initializer seed")]

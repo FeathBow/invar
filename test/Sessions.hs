@@ -1,13 +1,14 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Sessions (sessions, options) where
+module Sessions (sessions, options, optionsFrom, workload) where
 
 import BatchCalls (prepared, quote, session)
 import Calls qualified as Fixture
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Monad (forM_, void)
-import Data.Aeson (Value)
+import Data.Aeson (Value, encode, object, (.=))
+import Data.ByteString.Lazy qualified as Lazy
 import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.List (sort, sortOn)
 import Data.Maybe (isNothing)
@@ -21,6 +22,7 @@ import Invar.Rollout qualified as R
 import Invar.Spec.Invocation qualified as B
 import Invar.Transcript qualified as Transcript
 import Invar.Worker qualified as W
+import Invar.Workload qualified as Workload
 import Numeric.Natural (Natural)
 import Store (workspace)
 import System.Exit (ExitCode (..))
@@ -53,16 +55,21 @@ arrival = [2, 4, 0, 1, 3]
 assignment :: Int -> [[Natural]]
 assignment count = [[execution !! position | position <- [0 .. fromIntegral members - 1], position `mod` count == slot] | slot <- [0 .. count - 1]]
 
-setup :: Int -> PropertyT IO ([(V.Call, [Value])], C.Definition)
-setup count = do
+setup :: Int -> Natural -> PropertyT IO ([(V.Call, [Value])], C.Definition)
+setup count offset = do
     (_, events) <- Fixture.setup
     planned <- evalEither (I.prepare Fixture.request)
     expected <- evalEither (Reward.decimal "#### 12")
-    calls <- traverse (uncurry (prepared planned events)) (concatMap chain (assignment count))
+    calls <- traverse (\(index, previous) -> prepared planned events (offset + index) (fmap (offset +) previous)) (concatMap chain (assignment count))
     let tasks = [C.Task ("member" ++ show index) "group" planned expected | index <- [0 .. members - 1]]
     pure (calls, C.Definition (replicate 64 'a') tasks)
   where
     chain chosen = zip chosen (Nothing : map Just chosen)
+
+workload :: Either String Workload.Document
+workload = Workload.decode (Lazy.toStrict (encode [object ["tasks" .= map task [0 .. members - 1], "order" .= execution, "delivery" .= arrival]]))
+  where
+    task index = object ["name" .= ("member" ++ show index), "group" .= ("group" :: String), "prompt" .= I.prompt Fixture.request, "tokens" .= I.tokens Fixture.request, "temperature" .= I.temperature Fixture.request, "seed" .= I.seed Fixture.request, "answer" .= ("#### 12" :: String)]
 
 script :: FilePath -> [(V.Call, [Value])] -> Int -> String
 script root calls count =
@@ -75,9 +82,12 @@ script root calls count =
     grouped _ [] = []
 
 options :: FilePath -> Int -> PropertyT IO R.Options
-options root count = do
-    (calls, definition) <- setup count
-    let path = root </> ("session" ++ show count ++ ".sh")
+options root count = optionsFrom root count 0
+
+optionsFrom :: FilePath -> Int -> Natural -> PropertyT IO R.Options
+optionsFrom root count offset = do
+    (calls, definition) <- setup count offset
+    let path = root </> ("session" ++ show count ++ "from" ++ show offset ++ ".sh")
     evalIO (writeFile path (script root calls count))
     let worker = W.Worker "/bin/sh" path root "unused" [] Nothing
         overlays = if count == 1 then [[]] else [[("INVAR_TEST_SESSION", show slot)] | slot <- [0 .. count - 1]]

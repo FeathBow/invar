@@ -177,7 +177,7 @@ execute ownerScope (exchange : remaining) = do
 process :: FilePath -> Exchange scope -> String
 process replies exchange = unlines (["IFS= read -r input || exit 21", emit kept, "IFS= read -r permission || exit 22"] ++ concatMap stepLines (steps exchange) ++ [emit (after exchange)])
   where
-    kept = [event | event <- before exchange, stage event /= Just "activation"]
+    kept = timer "load" : [event | event <- before exchange, stage event `notElem` [Just "activation", Just "load"]]
     stepLines record = emit [record] : ["IFS= read -r reply || exit 23\nprintf '%s\\n' \"$reply\" >> " ++ quote replies | stage record == Just "current"]
 
 emit :: [Value] -> String

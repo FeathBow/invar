@@ -9,7 +9,7 @@ import Invar.History.Initial qualified as Initial
 import Invar.Learn qualified as Learn
 import Invar.Learn.State (Decoder)
 
-inspect :: Decoder -> History.Declaration -> (ByteString, ByteString) -> IO History.Checked
+inspect :: Decoder -> History.Declaration -> ByteString -> IO History.Checked
 inspect = History.admit
 
 initial :: Decoder -> (Learn.Settings, FilePath, Initial.Random) -> Initial.Source -> IO Initial.Checked

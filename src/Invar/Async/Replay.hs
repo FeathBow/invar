@@ -1,9 +1,9 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Async.Replay (Declaration (..), Status (..), Outcome (..), Learned (..), Evidence, Floors (..), Replayed, replay, resume, state, versions, statuses, learned, evidence, floors, committing, trajectories, execution, report, frames) where
+module Invar.Async.Replay (Declaration (..), Status (..), Outcome (..), Learned (..), Evidence, Floors (..), Replayed, replay, resume, state, versions, statuses, learned, evidence, floors, unended, loaded, committing, trajectories, execution, report, frames, admittedUnder) where
 
 import Control.Monad (foldM, forM_, unless, when, zipWithM)
-import Data.Aeson (Value (..), withObject)
+import Data.Aeson (Object, Value (..), withObject)
 import Data.Aeson.Types (parseEither)
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
@@ -65,19 +65,22 @@ data Outcome = Committed Natural | Concluded | Incomplete String
 
 data Learned = Learned {binding :: V.Binding, process :: Natural, consumed :: [V.Binding], completions :: [Completion], confirmed :: Natural, outcome :: Outcome}
 
-data Evidence = Evidence (Natural, Natural) [Replay.Logged] Trace.Attempt Report.Report
+data Evidence = Evidence (Natural, Natural) (L.Settings, [C.Task]) [Replay.Logged] Trace.Attempt Report.Report
 
 committing :: Evidence -> (Natural, Natural)
-committing (Evidence key _ _ _) = key
+committing (Evidence key _ _ _ _) = key
+
+admittedUnder :: Evidence -> (L.Settings, [C.Task])
+admittedUnder (Evidence _ declaration _ _ _) = declaration
 
 trajectories :: Evidence -> [Replay.Logged]
-trajectories (Evidence _ logged _ _) = logged
+trajectories (Evidence _ _ logged _ _) = logged
 
 execution :: Evidence -> Trace.Attempt
-execution (Evidence _ _ attempted _) = attempted
+execution (Evidence _ _ _ attempted _) = attempted
 
 report :: Evidence -> Report.Report
-report (Evidence _ _ _ reported) = reported
+report (Evidence _ _ _ _ reported) = reported
 
 frames :: Evidence -> [Framing.Frame]
 frames = Trace.records . execution
@@ -85,7 +88,7 @@ frames = Trace.records . execution
 data Floors = Floors {identity :: Natural, numbered :: Natural, epoch :: Natural, attempt :: Natural}
     deriving (Eq, Show)
 
-data Replayed = Replayed {state :: Core.State, versions :: Map Natural (String, String, Policy.Description), statuses :: Map V.Binding (Natural, Status), learned :: Map (Natural, Natural) Learned, evidence :: Map Natural Evidence, floors :: Floors}
+data Replayed = Replayed {state :: Core.State, versions :: Map Natural (String, String, Policy.Description), statuses :: Map V.Binding (Natural, Status), learned :: Map (Natural, Natural) Learned, evidence :: Map Natural Evidence, unended :: [Natural], loaded :: Map Natural (Entry.Role, [Object]), floors :: Floors}
 
 data Life = Running | Ended (Maybe Transcript.Outcome)
     deriving (Eq)
@@ -100,7 +103,7 @@ data Learner = Launched | Owning (Either String (Owner.State, [Framing.Frame])) 
 
 data Boundary = Exit | Release (Either String ())
 
-data Tried = Tried {tryBinding :: V.Binding, tryProcess :: Natural, inputs :: [V.Binding], traced :: Either String Trace.Attempt, boundary :: Boundary, applied :: Natural, staged :: Maybe String, verified :: Maybe String}
+data Tried = Tried {tryBinding :: V.Binding, tryProcess :: Natural, inputs :: [V.Binding], declaredFor :: Maybe (L.Settings, [C.Task]), traced :: Either String Trace.Attempt, boundary :: Boundary, applied :: Natural, staged :: Maybe String, verified :: Maybe String}
 
 data Generation = Generation String String Policy.Description
 
@@ -119,6 +122,7 @@ data Fold = Fold
     , committers :: Map Natural (Natural, Natural)
     , identities :: Set V.Binding
     , epochs :: Natural
+    , prefixes :: Map Natural [Framing.Frame]
     }
 
 replay :: Declaration -> [Entry.Entry] -> Map Natural ByteString -> Either String Replayed
@@ -134,7 +138,7 @@ folded :: Declaration -> [Entry.Entry] -> Map Natural ByteString -> Either Strin
 folded declared entries transcripts = foldM (entry declared transcripts) started entries
   where
     settings = Loop.settings (config declared)
-    started = Fold (fst (Core.start (plan declared))) Map.empty Map.empty Map.empty Map.empty Map.empty Set.empty Map.empty Map.empty Map.empty (Map.singleton 0 (Generation (L.policy settings) (L.learner settings) (initial declared))) Map.empty Set.empty 0
+    started = Fold (fst (Core.start (plan declared))) Map.empty Map.empty Map.empty Map.empty Map.empty Set.empty Map.empty Map.empty Map.empty (Map.singleton 0 (Generation (L.policy settings) (L.learner settings) (initial declared))) Map.empty Set.empty 0 Map.empty
 
 drained :: Declaration -> Fold -> Either String Replayed
 drained declared fold = summarize <$> foldM (settle declared) fold (Map.keys (inferences fold))
@@ -164,15 +168,16 @@ entry declared transcripts fold recorded = case recorded of
         fresh fold bound
         when (Map.member (update, tried) (tries fold)) (Left "An attempt is journaled twice")
         let declaredInput = learnerInput declared fold update bound
-            used = either (const []) (\(_, _, bindings) -> bindings) declaredInput
-            input' = (\(settings, invoked, _) -> (settings, invoked)) <$> declaredInput
-        (hosted, attempted, release) <- case (Loop.learningMode (Loop.backend (config declared)), Map.lookup number (learners fold)) of
+            used = either (const []) (\(_, _, bindings, _) -> bindings) declaredInput
+            under = either (const Nothing) (\(settings, _, _, tasks) -> Just (settings, tasks)) declaredInput
+            input' = (\(settings, invoked, _, _) -> (settings, invoked)) <$> declaredInput
+        (hosted, attempted, release, loading) <- case (Loop.learningMode (Loop.backend (config declared)), Map.lookup number (learners fold)) of
             (W.Resident, owner) -> case fromMaybe (learnerOwner place encoded) owner of
                 Owning state ending -> pure (residentAttempt input' state ending)
                 Launched -> Left "A learner process runs a second attempt"
-            (_, Nothing) -> pure (Launched, launched input' (output encoded), Exit)
+            (_, Nothing) -> let begun = launched input' (output encoded) in pure (Launched, snd <$> begun, Exit, either (const []) fst begun)
             _ -> Left "A learner process runs a second attempt"
-        pure fold {tries = Map.insert (update, tried) (Tried bound number used attempted release 0 Nothing Nothing) (tries fold), learners = Map.insert number hosted (learners fold), identities = Set.insert bound (identities fold)}
+        pure fold {tries = Map.insert (update, tried) (Tried bound number used under attempted release 0 Nothing Nothing) (tries fold), learners = Map.insert number hosted (learners fold), identities = Set.insert bound (identities fold), prefixes = admittedLoad number loading (prefixes fold)}
     Entry.Finished number outcome -> do
         Process chosen place used life <- maybe (Left "An exit names a process that was never reserved") Right (Map.lookup number (processes fold))
         unless (life == Running) (Left "A process exits twice")
@@ -241,7 +246,8 @@ finished declared transcripts prior (number, role, place) outcome = do
             declaration <- declarationOf declared fold bound
             let protocol = if Loop.inferenceMode backend == R.Batched then Session.Batched else Session.Serial
                 admitted = Replay.ended protocol declaration outcome encoded
-            pure fold {products = Map.union (Map.fromList (attach bound admitted)) (products fold)}
+                loading = either (const []) (const (preparation (fst (output encoded)))) admitted
+            pure fold {products = Map.union (Map.fromList (attach bound admitted)) (products fold), prefixes = admittedLoad number loading (prefixes fold)}
         (Just Hosting {}, _) | clean -> do
             settled <- settle declared fold number
             case Map.lookup number (inferences settled) of
@@ -279,7 +285,7 @@ produced declared fold bound = case Map.lookup bound (products fold) of
                 Right (hosted, remaining) -> do
                     declaration <- declarationOf declared fold grouped
                     pure $ case Replay.group hosted declaration remaining of
-                        Right (next, logged, _, rest) -> fold {inferences = Map.insert number (Hosting (Right (next, rest)) ending later) (inferences fold), products = Map.union (Map.fromList (attach grouped (Right logged))) (products fold)}
+                        Right (next, logged, consumed, rest) -> fold {inferences = Map.insert number (Hosting (Right (next, rest)) ending later) (inferences fold), products = Map.union (Map.fromList (attach grouped (Right logged))) (products fold), prefixes = admittedLoad number (preparation consumed) (prefixes fold)}
                         Left problem -> failed (show problem)
             produced declared advanced bound
         _ -> pure (fold, Left "The call's process never established a result")
@@ -408,7 +414,7 @@ concluded fold key = do
             _ -> Left "A learner result is used before its process exited cleanly"
     pure finished'
 
-learnerInput :: Declaration -> Fold -> Natural -> V.Binding -> Either String (L.Settings, (V.Binding, Text, Value), [V.Binding])
+learnerInput :: Declaration -> Fold -> Natural -> V.Binding -> Either String (L.Settings, (V.Binding, Text, Value), [V.Binding], [C.Task])
 learnerInput declared fold update bound = do
     Generation current currentLearner _ <- generationOf fold update
     let behavior = if update > staleness declared then update - staleness declared else 0
@@ -430,7 +436,7 @@ learnerInput declared fold update bound = do
                 )
             )
     request <- Json.decode payload
-    pure (settings, (bound, decodeUtf8 program, request), map fst used)
+    pure (settings, (bound, decodeUtf8 program, request), map fst used, tasks)
 
 trajectoryOf :: Fold -> Natural -> Either String (V.Binding, Trajectory)
 trajectoryOf fold request = do
@@ -440,23 +446,31 @@ trajectoryOf fold request = do
         Just (Right logged) -> pure (bound, Replay.trajectory logged)
         _ -> Left "An update's request has no admitted trajectory"
 
-launched :: Either String (L.Settings, (V.Binding, Text, Value)) -> ([Framing.Frame], Tail) -> Either String Trace.Attempt
+launched :: Either String (L.Settings, (V.Binding, Text, Value)) -> ([Framing.Frame], Tail) -> Either String ([Framing.Frame], Trace.Attempt)
 launched declaredInput (records, ending) = do
     (settings, invoked) <- declaredInput
-    (_, attempted) <- Learner.finite settings invoked records
-    pure $ case (ending, Trace.result attempted) of
+    (loading, attempted) <- Learner.finite settings invoked records
+    pure $ (,) loading $ case (ending, Trace.result attempted) of
         (Unreadable problem, _) -> Trace.stop problem attempted
         (Fragment, Just _) -> Trace.stop "Output follows the learner result" attempted
         _ -> attempted
 
-residentAttempt :: Either String (L.Settings, (V.Binding, Text, Value)) -> Either String (Owner.State, [Framing.Frame]) -> Tail -> (Learner, Either String Trace.Attempt, Boundary)
+residentAttempt :: Either String (L.Settings, (V.Binding, Text, Value)) -> Either String (Owner.State, [Framing.Frame]) -> Tail -> (Learner, Either String Trace.Attempt, Boundary, [Framing.Frame])
 residentAttempt declaredInput state ending = case (declaredInput, state) of
     (Right (settings, invoked), Right (physical, remaining)) -> case Learner.resident settings physical invoked remaining of
-        Right (attempted, _, Right (Learner.Released next _ after)) -> (Owning (Right (next, after)) ending, Right attempted, Release (Right ()))
-        Right (attempted, _, Left problem) -> (Owning (Left ("An earlier attempt on the owner was never released: " ++ problem)) ending, Right attempted, Release (Left problem))
-        Left problem -> (Owning (Left problem) ending, Left problem, Release (Left problem))
-    (Left problem, _) -> (Owning (Left problem) ending, Left problem, Release (Left problem))
-    (_, Left problem) -> (Owning (Left problem) ending, Left problem, Release (Left problem))
+        Right (attempted, admitted, Right (Learner.Released next _ after)) -> (Owning (Right (next, after)) ending, Right attempted, Release (Right ()), preparation admitted)
+        Right (attempted, _, Left problem) -> (Owning (Left ("An earlier attempt on the owner was never released: " ++ problem)) ending, Right attempted, Release (Left problem), [])
+        Left problem -> (Owning (Left problem) ending, Left problem, Release (Left problem), [])
+    (Left problem, _) -> (Owning (Left problem) ending, Left problem, Release (Left problem), [])
+    (_, Left problem) -> (Owning (Left problem) ending, Left problem, Release (Left problem), [])
+
+preparation :: [Framing.Frame] -> [Framing.Frame]
+preparation = takeWhile ((`elem` map (Just . String) ["loading", "profile", "load"]) . Framing.stageName)
+
+admittedLoad :: Natural -> [Framing.Frame] -> Map Natural [Framing.Frame] -> Map Natural [Framing.Frame]
+admittedLoad number loading current
+    | null loading = current
+    | otherwise = Map.insertWith (\_ earlier -> earlier) number loading current
 
 restarted :: Fold -> [Entry.Generation] -> Either String (Fold, [Core.Command])
 restarted fold observed = do
@@ -492,7 +506,7 @@ settle declared fold number = case Map.lookup number (inferences fold) of
     _ -> pure fold
 
 summarize :: Fold -> Replayed
-summarize fold = Replayed (core fold) published classified attempted committed (Floors next numbers (epochs fold) (Core.issued (core fold)))
+summarize fold = Replayed (core fold) published classified attempted committed [number | (number, Process _ _ _ Running) <- Map.toList (processes fold)] (Map.intersectionWith (\(Process chosen _ _ _) loading -> (chosen, map Framing.fields loading)) (processes fold) (prefixes fold)) (Floors next numbers (epochs fold) (Core.issued (core fold)))
   where
     published = Map.map (\(Generation chosen learnerDigest described) -> (chosen, learnerDigest, described)) (generations fold)
     classified = Map.mapWithKey (\bound (request, _, _) -> (request, status bound)) (calls fold)
@@ -514,7 +528,8 @@ summarize fold = Replayed (core fold) published classified attempted committed (
         finished' <- either (const Nothing) Just (concluded fold key)
         admission <- either (const Nothing) Just (traced record)
         consumed' <- traverse (\bound -> case Map.lookup bound (products fold) of Just (Right logged) -> Just logged; _ -> Nothing) (inputs record)
-        pure (Evidence key consumed' admission finished')
+        declaration <- declaredFor record
+        pure (Evidence key declaration consumed' admission finished')
     next = maybe 0 (+ 1) (Set.lookupMax (Set.map largest (identities fold)))
     numbers = maybe 0 ((+ 1) . fst) (Map.lookupMax (processes fold))
     largest (V.Binding (V.CallId call) (V.AttemptId tried) (V.Instance instanceId)) = maximum [call, tried, instanceId]

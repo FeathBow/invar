@@ -1,10 +1,10 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Recoveries (recoveries) where
+module Recoveries (recoveries, inspections) where
 
 import BatchCalls (quote)
 import Control.Monad (forM_, unless)
-import Data.Aeson (Value (..), encode)
+import Data.Aeson (Value (..), encode, object, withObject, (.:), (.=))
 import Data.Aeson.KeyMap qualified as Fields
 import Data.Aeson.Types (parseEither)
 import Data.Bifunctor (first)
@@ -12,10 +12,11 @@ import Data.ByteString (ByteString)
 import Data.ByteString qualified as Bytes
 import Data.ByteString.Char8 qualified as Char
 import Data.ByteString.Lazy qualified as Lazy
-import Data.List (isInfixOf)
+import Data.List (genericLength, isInfixOf)
 import Hedgehog
 import Invar.Async.Entry qualified as Entry
 import Invar.Cohort qualified as C
+import Invar.History.Runtime qualified as History
 import Invar.Journal qualified as Journal
 import Invar.Learn qualified as L
 import Invar.Learn.Worker qualified as Learner
@@ -25,12 +26,17 @@ import Invar.Rollout qualified as R
 import Invar.Runtime qualified as Runtime
 import Invar.Spec.Invocation qualified as V
 import Invar.Store qualified as Store
+import Invar.Transcript qualified as Transcript
 import Invar.Worker qualified as Worker
+import Invar.Workload qualified as Workload
 import LearnerFixture qualified as F
+import Numeric.Natural (Natural)
 import Sessions qualified
 import Store (workspace)
 import System.Directory (copyFile, createDirectory, doesDirectoryExist, getPermissions, listDirectory, removeDirectoryRecursive, removeFile, setOwnerWritable, setPermissions)
+import System.Exit (ExitCode (ExitSuccess))
 import System.FilePath ((</>))
+import Workloads qualified
 
 recoveries :: Group
 recoveries =
@@ -40,6 +46,19 @@ recoveries =
         , ("every prefix of a run's journal, with the files a crash there leaves, is admitted by a resume", once prefixes)
         , ("a resume that cannot read a transcript or a generation, or that the replay refuses, leaves the journal's bytes unchanged", once refusals)
         , ("a crash after a process learner's reservation and before its attempt leaves a journal a resume admits", once interrupted)
+        ]
+  where
+    once = withTests 1 . property
+
+inspections :: Group
+inspections =
+    Group
+        "Runtime history admission"
+        [ ("a finished run is admitted from a read-only journal it leaves unchanged, with its own workload and checkpoint, its schedule, its committed attempt, the calls it consumed and the load of each process", once finishedHistory)
+        , ("a run interrupted before its first publication and resumed with retry records is admitted with its concluded and its committed attempt", once retriedHistory)
+        , ("a run whose publication a restart confirmed is admitted with that attempt committed", once confirmedHistory)
+        , ("a process no protocol admitted contributes no load, even when its transcript holds one", once unadmittedLoad)
+        , ("an uncommitted update, a reservation without an end, a removed restart, a missing or extra generation and a declared workload the transcripts do not support are refused", once refusedHistories)
         ]
   where
     once = withTests 1 . property
@@ -54,34 +73,43 @@ prepared = do
         definition = R.definition sessions
         cycle' = Loop.Cycle (C.tasks definition) (R.order sessions) (R.delivery sessions)
         members = fromIntegral (length (Loop.tasks cycle'))
+    retried <- Sessions.optionsFrom base 1 (members + 1)
     initial <- evalEither (Policy.describe ("test-model", "test-revision") (L.policy settings, L.tokenizer settings, L.behaviorBase settings, L.behaviorAssembly settings))
     tasks <- evalEither (first show (Loop.bindTasks initial (Loop.tasks cycle')))
     evalIO $ do
         createDirectory (base </> "input")
         Policy.stageDescription (base </> "input" </> "policy.json") initial
-    learner <- evalIO $ R.withConfiguredDriver R.Serial (R.worker sessions, R.sessions sessions) $ \driver -> do
+    learners <- evalIO $ R.withConfiguredDriver R.Serial (R.worker sessions, R.sessions sessions) $ \driver -> do
         batch <- R.run driver sessions {R.definition = C.Definition (L.policy settings) tasks} >>= F.require
         planned <- F.require (L.prepare settings batch)
-        exchange <- F.prepare base (0, V.ordinal members) planned
-        pure (F.process (base </> "replies") exchange)
-    script <- evalEither learner
-    let artifacts = base </> "update0"
-        copying = unlines ["output=\"${4#--output=}\"", "mkdir -p \"$output\" || exit 24", unwords (["cp"] ++ [quote (artifacts </> name) | name <- ["adapter.safetensors", "learner.pt", "gradients.safetensors", "probabilities.json"]] ++ ["\"$output\"", "|| exit 25"])]
+        first' <- F.prepare base (0, V.ordinal members) planned
+        retry <- F.prepare base (1, V.ordinal (2 * members + 1)) planned
+        pure (F.process (base </> "replies") first', F.process (base </> "replies") retry)
+    (firstLearner, retryLearner) <- evalEither learners
+    let copying index = unlines ["output=\"${4#--output=}\"", "mkdir -p \"$output\" || exit 24", unwords (["cp"] ++ [quote (base </> ("update" ++ show (index :: Int)) </> name) | name <- ["adapter.safetensors", "learner.pt", "gradients.safetensors", "probabilities.json"]] ++ ["\"$output\"", "|| exit 25"])]
+        dispatching marker (firstScript, retryScript) = unlines ["if test -e " ++ quote marker ++ "; then exec /bin/sh " ++ quote retryScript ++ " \"$@\"; fi", ": > " ++ quote marker, "exec /bin/sh " ++ quote firstScript ++ " \"$@\""]
         worker = R.worker sessions
-        backend = Loop.Backend "/bin/sh" (Worker.executable worker) (Worker.script worker) Nothing R.Serial (base </> "learner.sh") Learner.Process (Worker.cache worker) (R.sessions sessions)
+        inferring = base </> "inference.sh"
+        backend = Loop.Backend "/bin/sh" (Worker.executable worker) inferring Nothing R.Serial (base </> "learner.sh") Learner.Process (Worker.cache worker) (R.sessions sessions)
         config = Loop.Config backend (base </> "run") (base </> "input") (base </> "reference") settings Store.RenameExclusive
-    evalIO (writeFile (base </> "learner.sh") (copying ++ script))
-    pure (Fixture base (Runtime.Run config 0 [const (Right cycle')] [members]) (Worker.script worker))
+    evalIO $ do
+        writeFile (base </> "learner0.sh") (copying 0 ++ firstLearner)
+        writeFile (base </> "learner1.sh") (copying 1 ++ retryLearner)
+        writeFile (base </> "learner.sh") (dispatching (base </> "learned") (base </> "learner0.sh", base </> "learner1.sh"))
+        writeFile inferring (dispatching (base </> "inferred") (Worker.script worker, Worker.script (R.worker retried)))
+    document <- evalEither Sessions.workload
+    pure (Fixture base (Runtime.Run config 0 document) inferring)
 
 ran :: PropertyT IO Fixture
 ran = do
     fixture <- prepared
-    outcome <- evalIO (Runtime.run (chosen fixture) [])
+    outcome <- evalIO (Runtime.run (chosen fixture) Null)
     either (\problem -> annotateShow problem >> failure) pure outcome
     pure fixture
 
-located :: Runtime.Run -> FilePath -> Runtime.Run
-located (Runtime.Run config lag workload sizes) directory = Runtime.Run config {Loop.root = directory} lag workload sizes
+interpreter :: Fixture -> FilePath -> Value -> Either String (Loop.Config, Natural)
+interpreter fixture directory _ = case chosen fixture of
+    Runtime.Run config lag _ -> Right (config {Loop.root = directory}, lag)
 
 journaled :: FilePath -> IO [ByteString]
 journaled directory = Char.lines <$> Bytes.readFile (directory </> "journal.jsonl")
@@ -101,7 +129,7 @@ copied source target = do
         if directory then copied (source </> name) (target </> name) else copyFile (source </> name) (target </> name)
 
 resumed :: Fixture -> FilePath -> IO (Either Runtime.Error ())
-resumed fixture directory = Runtime.resume directory (const (Right (located (chosen fixture) directory)))
+resumed fixture directory = Runtime.resume directory (interpreter fixture directory)
 
 finished :: PropertyT IO ()
 finished = do
@@ -205,7 +233,7 @@ interrupted = do
     let output = root fixture </> "run"
         transcribed = output </> "transcripts"
     evalIO (Bytes.readFile (inference fixture) >>= Bytes.writeFile (inference fixture) . (Char.pack ("chmod a-w " ++ quote transcribed ++ "\n") <>))
-    outcome <- evalIO (Runtime.run (chosen fixture) [])
+    outcome <- evalIO (Runtime.run (chosen fixture) Null)
     evalIO (getPermissions transcribed >>= setPermissions transcribed . setOwnerWritable True)
     case outcome of
         Left (Runtime.Crashed _) -> success
@@ -228,3 +256,125 @@ interrupted = do
                 Entry.Restarted [] -> success
                 _ -> annotateShow entry >> failure
         [] -> failure
+
+learnerInterval :: Entry.Entry -> Bool
+learnerInterval (Entry.Elapsed role _ _ _) = role == "learner"
+learnerInterval _ = False
+
+membersOf :: Fixture -> Natural
+membersOf fixture = case chosen fixture of
+    Runtime.Run _ _ document -> sum [genericLength (Workload.tasks declared) | declared <- Workload.cycles document]
+
+inspected :: Fixture -> FilePath -> PropertyT IO (Either String History.Checked)
+inspected fixture directory = do
+    evalIO (History.inspect directory (interpreter fixture directory))
+
+attempts :: History.Checked -> PropertyT IO [Value]
+attempts checked = evalEither (parseEither (withObject "history description" (.: "attempts")) (History.describe checked))
+
+binding :: Natural -> Value
+binding index = object ["call" .= index, "attempt" .= index, "instance" .= index]
+
+interruptedBefore :: Fixture -> FilePath -> (Entry.Entry -> Bool) -> PropertyT IO ()
+interruptedBefore fixture copy ending = do
+    let output = root fixture </> "run"
+    complete <- evalIO (journaled output)
+    entries <- traverse (evalEither . decoded) complete
+    let kept = length (takeWhile (not . ending) entries)
+        reserved = [number | Entry.Reserved number _ _ _ <- take kept entries]
+    evalIO $ do
+        copied output copy
+        Bytes.writeFile (copy </> "journal.jsonl") (Char.unlines (take kept complete) <> "{\"entry\":\"ev")
+        files <- listDirectory (copy </> "transcripts")
+        forM_ files $ \name -> unless (name `elem` [show number ++ ".jsonl" | number <- reserved]) (removeFile (copy </> "transcripts" </> name))
+
+refusedHistory :: Fixture -> FilePath -> String -> PropertyT IO ()
+refusedHistory fixture copy expected = do
+    outcome <- inspected fixture copy
+    case outcome of
+        Left problem -> annotate problem >> assert (expected `isInfixOf` problem)
+        Right _ -> failure
+
+finishedHistory :: PropertyT IO ()
+finishedHistory = do
+    fixture <- ran
+    let output = root fixture </> "run"
+        members = membersOf fixture
+        journal = output </> "journal.jsonl"
+    evalIO (Bytes.appendFile journal "{\"entry\":\"ev")
+    evalIO (getPermissions journal >>= setPermissions journal . setOwnerWritable False)
+    before <- evalIO (Bytes.readFile journal)
+    checked <- inspected fixture output >>= evalEither
+    evalIO (Bytes.readFile journal) >>= (=== before)
+    case chosen fixture of
+        Runtime.Run _ _ document -> History.workload checked === document
+    Loop.checkpoint (History.config checked) === root fixture </> "input"
+    length [() | Object fields <- History.loads checked, Fields.lookup "stage" fields == Just "load"] === 2
+    length (History.generations checked) === 1
+    History.identities checked === members + 1
+    recorded <- attempts checked
+    recorded === [object ["update" .= (0 :: Int), "attempt" .= (0 :: Int), "binding" .= binding members, "process" .= (1 :: Int), "consumed" .= map binding [0 .. members - 1], "outcome" .= object ["committed" .= (1 :: Int)]]]
+
+retriedHistory :: PropertyT IO ()
+retriedHistory = do
+    fixture <- ran
+    let copy = root fixture </> "retried"
+        members = membersOf fixture
+    interruptedBefore fixture copy learnerInterval
+    evalIO (removeDirectoryRecursive (copy </> "generation1"))
+    outcome <- evalIO (resumed fixture copy)
+    either (\problem -> annotateShow problem >> failure) pure outcome
+    checked <- inspected fixture copy >>= evalEither
+    recorded <- attempts checked
+    map (parseEither (withObject "attempt" (\fields -> (,) <$> fields .: "attempt" <*> fields .: "outcome"))) recorded === [Right (0 :: Int, object ["concluded" .= True]), Right (1, object ["committed" .= (1 :: Int)])]
+    map (parseEither (withObject "attempt" (.: "consumed"))) recorded === [Right (map binding [0 .. members - 1]), Right (map binding [members + 1 .. 2 * members])]
+    History.identities checked === 2 * members + 2
+
+confirmedHistory :: PropertyT IO ()
+confirmedHistory = do
+    fixture <- ran
+    let copy = root fixture </> "confirmed"
+    interruptedBefore fixture copy (== Entry.Happened (Entry.Committed 0 0))
+    outcome <- evalIO (resumed fixture copy)
+    either (\problem -> annotateShow problem >> failure) pure outcome
+    checked <- inspected fixture copy >>= evalEither
+    recorded <- attempts checked
+    map (parseEither (withObject "attempt" (.: "outcome"))) recorded === [Right (object ["committed" .= (1 :: Int)])]
+
+unadmittedLoad :: PropertyT IO ()
+unadmittedLoad = do
+    fixture <- ran
+    let output = root fixture </> "run"
+        copy = root fixture </> "idle"
+        idle = [Entry.Reserved 99 Entry.Inference 0 0, Entry.Finished 99 (Transcript.Exited ExitSuccess Transcript.Complete)]
+    evalIO $ do
+        copied output copy
+        copyFile (copy </> "transcripts" </> "0.jsonl") (copy </> "transcripts" </> "99.jsonl")
+        Bytes.appendFile (copy </> "journal.jsonl") (Char.unlines (map (Lazy.toStrict . encode . Entry.encode) idle))
+    checked <- inspected fixture copy >>= evalEither
+    length [() | Object fields <- History.loads checked, Fields.lookup "stage" fields == Just "load"] === 2
+
+refusedHistories :: PropertyT IO ()
+refusedHistories = do
+    fixture <- ran
+    let output = root fixture </> "run"
+        refusedWith copy (change :: FilePath -> IO ()) expected = do
+            evalIO (copied output copy >> change copy)
+            refusedHistory fixture copy expected
+    refusedWith (root fixture </> "unended") (\copy -> Bytes.appendFile (copy </> "journal.jsonl") (Lazy.toStrict (encode (Entry.encode (Entry.Reserved 99 Entry.Inference 0 0))) <> "\n")) "no recorded end"
+    refusedWith (root fixture </> "missinggeneration") (\copy -> removeDirectoryRecursive (copy </> "generation1")) "published generations differ"
+    refusedWith (root fixture </> "uncommitted") (\copy -> journaled copy >>= \lines' -> Bytes.writeFile (copy </> "journal.jsonl") (Char.unlines (takeWhile ((/= Right (Entry.Happened (Entry.Committed 0 0))) . decoded) lines'))) "not committed every declared update"
+    refusedWith (root fixture </> "extrageneration") (\copy -> copied (copy </> "generation1") (copy </> "generation2")) "published generations differ"
+    refusedWith (root fixture </> "otherworkload") (\copy -> journaled copy >>= \lines' -> Bytes.writeFile (copy </> "journal.jsonl") (Char.unlines (map (Workloads.everywhere "\"seed\":17" "\"seed\":18") (take 1 lines') ++ drop 1 lines'))) "differs from the declared invocation"
+    let copy = root fixture </> "unrestarted"
+    interruptedBefore fixture copy learnerInterval
+    evalIO (removeDirectoryRecursive (copy </> "generation1"))
+    resumedOutcome <- evalIO (resumed fixture copy)
+    either (\problem -> annotateShow problem >> failure) pure resumedOutcome
+    evalIO $ do
+        lines' <- journaled copy
+        Bytes.writeFile (copy </> "journal.jsonl") (Char.unlines [line | line <- lines', either (const True) (not . restarting) (decoded line)])
+    refusedHistory fixture copy "(Epoch 1)"
+  where
+    restarting Entry.Restarted {} = True
+    restarting _ = False

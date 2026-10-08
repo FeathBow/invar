@@ -1,34 +1,30 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Runtime (Error (..), Run (..), run, resume) where
+module Invar.Runtime (Error (..), Run (..), run, resume, interpret, declaration) where
 
 import Control.Concurrent (forkFinally, killThread)
 import Control.Concurrent.Chan (Chan, newChan, readChan, writeChan)
 import Control.Concurrent.MVar (MVar, modifyMVar, modifyMVar_, newEmptyMVar, newMVar, putMVar, readMVar, tryPutMVar)
 import Control.Exception (SomeAsyncException, bracket, finally, fromException, throwIO, try)
 import Control.Monad (forM_, forever, unless, void, when)
-import Data.Aeson (Object, Value, encode, object, (.=))
+import Data.Aeson (Object, Value, encode, object, (.:), (.=))
 import Data.Aeson.KeyMap qualified as Fields
-import Data.Aeson.Types (Pair, parseEither)
+import Data.Aeson.Types (parseEither)
 import Data.Bifunctor (first)
-import Data.ByteString (ByteString)
-import Data.ByteString qualified as Bytes
 import Data.ByteString.Char8 qualified as Char
 import Data.ByteString.Lazy qualified as Lazy
-import Data.Char (isDigit)
 import Data.IORef (atomicModifyIORef', newIORef, readIORef, writeIORef)
-import Data.List (genericTake, sort, stripPrefix)
+import Data.List (genericLength, genericTake)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (catMaybes)
 import Data.Text (Text)
 import GHC.Clock (getMonotonicTime)
-import Invar.Artifact qualified as Artifact
 import Invar.Async.Core (Attempt (..), Command (..), Epoch (..), Event (..), Worker (..))
 import Invar.Async.Core qualified as Core
 import Invar.Async.Entry qualified as Entry
 import Invar.Async.Plan (Declared (..), Request (..), Update (..), Version (..))
 import Invar.Async.Plan qualified as Plan
+import Invar.Async.Recorded qualified as Recorded
 import Invar.Async.Replay qualified as Replay
 import Invar.Cohort qualified as C
 import Invar.Infer.Trajectory qualified as Trajectory
@@ -47,15 +43,16 @@ import Invar.Rollout.Internal qualified as Internal
 import Invar.Spec.Invocation qualified as V
 import Invar.Store qualified as Store
 import Invar.Transcript qualified as Transcript
+import Invar.Workload qualified as Workload
 import Numeric.Natural (Natural)
-import System.Directory (canonicalizePath, createDirectory, getCurrentDirectory, listDirectory, withCurrentDirectory)
+import System.Directory (canonicalizePath, createDirectory, getCurrentDirectory, withCurrentDirectory)
 import System.FilePath ((</>))
-import System.IO.Error (isDoesNotExistError, tryIOError)
+import System.IO.Error (tryIOError)
 
 data Error = Declaration String | Recovery String | Rollout R.Error | Admission L.Error | Learning W.Failure | Crashed String
     deriving (Show)
 
-data Run = Run Loop.Config Natural [String -> Either String Loop.Cycle] [Natural]
+data Run = Run Loop.Config Natural Workload.Document
 
 data Published = Published Loop.Checkpoint Policy.Description
 
@@ -91,8 +88,8 @@ data Recorder = Recorder
     , owning :: MVar (Maybe Natural)
     }
 
-run :: Run -> [Pair] -> IO (Either Error ())
-run selected@(Run chosen _ _ _) declared = do
+run :: Run -> Value -> IO (Either Error ())
+run selected@(Run chosen _ document) arguments = do
     prepared <- prepare selected
     case prepared of
         Left problem -> pure (Left problem)
@@ -100,55 +97,40 @@ run selected@(Run chosen _ _ _) declared = do
             started <- getCurrentDirectory
             createDirectory (Loop.root chosen)
             createDirectory (Loop.root chosen </> "transcripts")
-            Journal.with (Loop.root chosen </> "journal.jsonl") (Entry.encode (Entry.Declared started (Fields.fromList declared))) $ \recorded -> do
+            Journal.with (Loop.root chosen </> "journal.jsonl") (Entry.encode (Entry.Declared started (Fields.fromList ["arguments" .= arguments, "workload" .= Workload.value document]))) $ \recorded -> do
                 let (state, commands) = Core.start planned
                 begin selected planned (Origin state commands (Map.singleton 0 initial) 0 0 0) recorded
 
-resume :: FilePath -> (Object -> Either String Run) -> IO (Either Error ())
-resume directory interpret = do
+resume :: FilePath -> (Value -> Either String (Loop.Config, Natural)) -> IO (Either Error ())
+resume directory interpreter = do
     target <- canonicalizePath directory
-    either Left id <$> Journal.resume (target </> "journal.jsonl") (admit target interpret) proceed
+    either Left id <$> Journal.resume (target </> "journal.jsonl") (admit target interpreter) proceed
 
-admit :: FilePath -> (Object -> Either String Run) -> [Object] -> IO (Either Error Resumed)
-admit target interpret recorded = case traverse (parseEither Entry.decode) recorded of
+admit :: FilePath -> (Value -> Either String (Loop.Config, Natural)) -> [Object] -> IO (Either Error Resumed)
+admit target interpreter recorded = case traverse (parseEither Entry.decode) recorded of
     Left problem -> pure (Left (Recovery problem))
-    Right (Entry.Declared started declaration : later) ->
-        withCurrentDirectory started $ case interpret declaration of
-            Left problem -> pure (Left (Declaration problem))
-            Right selected@(Run chosen lag workload sizes) -> do
-                same <- (== target) <$> canonicalizePath (Loop.root chosen)
-                prepared <- prepare selected
-                case prepared of
-                    _ | not same -> pure (Left (Declaration "The declared output directory is not the resumed directory"))
-                    Left problem -> pure (Left problem)
-                    Right (planned, Published _ description) -> do
-                        found <- tryIOError ((,) <$> written (Loop.root chosen) later <*> observe (Loop.root chosen))
-                        pure $ do
-                            (transcribed, observed) <- first (Recovery . ("A transcript or a generation cannot be read: " ++) . show) found
-                            let declared = Replay.Declaration chosen lag planned workload (scanl (+) 0 sizes) description
-                            (replayed, commands) <- first Recovery (Replay.resume declared later transcribed observed)
-                            pure (Resumed started selected planned observed (origin chosen replayed commands))
+    Right (Entry.Declared started declared : later) ->
+        withCurrentDirectory started $ do
+            interpreted <- interpret target interpreter declared
+            prepared <- either (pure . Left) (\selected -> fmap (selected,) <$> declaration selected) interpreted
+            case prepared of
+                Left problem -> pure (Left problem)
+                Right (selected@(Run chosen _ _), replaying) -> do
+                    found <- tryIOError ((,) <$> Recorded.transcripts (Loop.root chosen) later <*> Recorded.generations (Loop.root chosen))
+                    pure $ do
+                        (transcribed, observed) <- first (Recovery . ("A transcript or a generation cannot be read: " ++) . show) found
+                        (replayed, commands) <- first Recovery (Replay.resume replaying later transcribed observed)
+                        pure (Resumed started selected (Replay.plan replaying) observed (origin chosen replayed commands))
     _ -> pure (Left (Recovery "The journal does not start with a run declaration"))
 
-written :: FilePath -> [Entry.Entry] -> IO (Map Natural ByteString)
-written root later = Map.fromList . catMaybes <$> traverse found [number | Entry.Reserved number _ _ _ <- later]
-  where
-    found number = do
-        read' <- tryIOError (Bytes.readFile (root </> "transcripts" </> (show number ++ ".jsonl")))
-        case read' of
-            Right encoded -> pure (Just (number, encoded))
-            Left problem
-                | isDoesNotExistError problem -> pure Nothing
-                | otherwise -> ioError problem
-
-observe :: FilePath -> IO [Entry.Generation]
-observe root = do
-    names <- listDirectory root
-    traverse generation (sort [read digits | name <- names, Just digits <- [stripPrefix "generation" name], not (null digits), all isDigit digits])
-  where
-    generation version = do
-        let published = root </> ("generation" ++ show version)
-        Entry.Generation version <$> Policy.identity (published </> "adapter.safetensors") <*> Artifact.identity "Learner checkpoint" (published </> "learner.pt") <*> Policy.readDescription (published </> "policy.json")
+interpret :: FilePath -> (Value -> Either String (Loop.Config, Natural)) -> Object -> IO (Either Error Run)
+interpret target interpreter declared = case parseEither (\fields -> (,) <$> fields .: "arguments" <*> fields .: "workload") declared of
+    Left problem -> pure (Left (Declaration problem))
+    Right (arguments, workload) -> case (,) <$> interpreter arguments <*> Workload.decode (Lazy.toStrict (encode (workload :: Value))) of
+        Left problem -> pure (Left (Declaration problem))
+        Right ((chosen, lag), document) -> do
+            same <- (== target) <$> canonicalizePath (Loop.root chosen)
+            pure (if same then Right (Run chosen lag document) else Left (Declaration "The declared output directory is not the run's directory"))
 
 origin :: Loop.Config -> Replay.Replayed -> [Command] -> Origin
 origin chosen replayed commands = Origin (Replay.state replayed) commands versions (Replay.epoch floors) (Replay.identity floors) (Replay.numbered floors)
@@ -164,22 +146,35 @@ proceed (Resumed started selected planned observed restarted@(Origin state _ _ _
         announce (object ["phase" .= ("resumed" :: String), "committed" .= [update | Update update <- Core.committed state]])
         if Core.committed state == Plan.updates planned then pure (Right ()) else begin selected planned restarted recorded
 
+declaration :: Run -> IO (Either Error Replay.Declaration)
+declaration selected@(Run chosen lag _) = fmap (\(planned, Published _ description) -> Replay.Declaration chosen lag planned (instantiated selected) (scanl (+) 0 (counts selected)) description) <$> prepare selected
+
+instantiated :: Run -> [String -> Either String Loop.Cycle]
+instantiated (Run chosen _ document) = [\policy -> Loop.instantiate (policy, L.tokenizer settings, L.behaviorBase settings, L.behaviorAssembly settings) declared | declared <- Workload.cycles document]
+  where
+    settings = Loop.settings chosen
+
+counts :: Run -> [Natural]
+counts (Run _ _ document) = [genericLength (Workload.tasks declared) | declared <- Workload.cycles document]
+
 prepare :: Run -> IO (Either Error (Plan.Plan, Published))
-prepare (Run chosen lag _ sizes)
+prepare selected@(Run chosen lag _)
     | Loop.inferenceMode (Loop.backend chosen) == R.Shared || Loop.learningMode (Loop.backend chosen) == W.Shared = pure (Left (Declaration "Concurrent rollout and learning need separate inference and learning processes"))
     | otherwise = do
         description <- Policy.readDescription (Loop.checkpoint chosen </> "policy.json")
         let settings = Loop.settings chosen
             initial = Loop.Checkpoint (Loop.checkpoint chosen) (L.policy settings) (L.learner settings)
+            sizes = counts selected
             members = [[Request (offset + index) | index <- genericTake size [0 ..]] | (offset, size) <- zip (scanl (+) 0 sizes) sizes]
             expected = (L.policy settings, L.tokenizer settings, L.behaviorBase settings, L.behaviorAssembly settings)
         pure $ do
             unless (Policy.bindings description == expected) (Left (Declaration "Initial policy description differs from the declared inference materialization"))
+            mapM_ (first Declaration . ($ L.policy settings)) (instantiated selected)
             planned <- first (Declaration . show) (Plan.prepare lag [Declared requests (chunks (L.steps settings) requests) | requests <- members])
             pure (planned, Published initial description)
 
 begin :: Run -> Plan.Plan -> Origin -> Journal.Journal -> IO (Either Error ())
-begin (Run chosen lag workload sizes) planned (Origin state commands versions next identities numbers) recorded = do
+begin selected@(Run chosen lag _) planned (Origin state commands versions next identities numbers) recorded = do
     let settings = Loop.settings chosen
         engine = Loop.backend chosen
         initial = Loop.Checkpoint (Loop.checkpoint chosen) (L.policy settings) (L.learner settings)
@@ -192,7 +187,7 @@ begin (Run chosen lag workload sizes) planned (Origin state commands versions ne
         void (Internal.reserve collector identities)
         owned <- Owner.withRecordedRunner (Loop.learningMode engine) (Loop.updateWorker chosen (initial, 0)) (learnerTranscript recording (Loop.learningMode engine)) $ \updater -> do
             shared <-
-                Shared chosen lag planned workload (scanl (+) 0 sizes) recording
+                Shared chosen lag planned (instantiated selected) (scanl (+) 0 (counts selected)) recording
                     <$> newMVar state
                     <*> newMVar versions
                     <*> newMVar Map.empty
