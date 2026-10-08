@@ -43,11 +43,13 @@ def initialize(output):
                        "inference": {"base": frozen.digest(learner), "assembly": assembly.digest(learner, INFERENCE)}})
 
 
-def inference(cache, adapter, *, expected):
+def inference(cache, adapter, *, expected, emit=None):
+    from worker.tests.hf.handshake import cpu_measure
+
     state = read_adapter(adapter, expected["adapter"])
     tokenizer = make_tokenizer()
     verify(tokenizer, expected["tokenizer"])
-    loaded = measured("load", model)
+    loaded = measured("load", model) if emit is None else cpu_measure("load", model, emit=emit)
     activate(loaded, state, base=expected["base"], assembly=expected["assembly"], role=INFERENCE)
     return Runtime(model=loaded, tokenizer=tokenizer, adapter=adapter, device="cpu", identity=IDENTITY)
 
@@ -75,7 +77,7 @@ def main():
     parser.add_argument("--cache", type=Path, required=True)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--adapter", type=Path)
-    parser.add_argument("--reference", type=Path)
+    parser.add_argument("--reference")
     parser.add_argument("--reference-digest")
     parser.add_argument("--session", type=int)
     parser.add_argument("--digest")
@@ -90,8 +92,13 @@ def main():
     torch.set_num_threads(TEST_THREADS)
     if options.output is not None:
         initialize(options.output)
-    elif options.session is not None:
+    elif options.session is not None and options.reference is not None:
         learn(options)
+    elif options.session is not None:
+        from worker.hf.cohort import run
+        from worker.tests.hf.handshake import cpu_measure
+
+        run(options, load=inference, measure=cpu_measure)
     elif options.digest is not None:
         from worker.hf.infer import run
 
