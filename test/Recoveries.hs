@@ -47,6 +47,7 @@ recoveries =
         , ("a resume that cannot read a transcript or a generation, or that the replay refuses, leaves the journal's bytes unchanged", once refusals)
         , ("a crash after a process learner's reservation and before its attempt leaves a journal a resume admits", once interrupted)
         , ("a failure after the learner ran names the unresolved update and one before it does not", once reported)
+        , ("a publication that would replace a generation already on disk is refused and leaves it untouched", once occupied)
         ]
   where
     once = withTests 1 . property
@@ -273,6 +274,18 @@ reported = do
     case beforeLearner of
         Left (Runtime.Rollout _) -> success
         unexpected -> annotateShow unexpected >> failure
+
+occupied :: PropertyT IO ()
+occupied = do
+    fixture <- prepared
+    let output = root fixture </> "run"
+        generation = output </> "generation1"
+    evalIO (Bytes.readFile (inference fixture) >>= Bytes.writeFile (inference fixture) . (Char.pack ("mkdir -p " ++ quote generation ++ "\n") <>))
+    outcome <- evalIO (Runtime.run (chosen fixture) Null)
+    case outcome of
+        Left (Runtime.Unresolved 0 _) -> success
+        unexpected -> annotateShow unexpected >> failure
+    evalIO (listDirectory generation) >>= (=== [])
 
 learnerInterval :: Entry.Entry -> Bool
 learnerInterval (Entry.Elapsed role _ _ _) = role == "learner"
