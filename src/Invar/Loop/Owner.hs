@@ -1,4 +1,4 @@
-module Invar.Loop.Owner (validate, withShared) where
+module Invar.Loop.Owner (validate, withShared, withRecordedShared) where
 
 import Control.Monad (unless)
 import Data.Bifunctor (first)
@@ -15,19 +15,24 @@ import Invar.Worker.Resident qualified as Inference
 
 type Configuration = (Infer.Worker, Learn.Worker, [[(String, String)]])
 
-validate :: Configuration -> Either Learn.Failure ()
-validate (inference, learning, overlays) = first Learn.ProtocolFailure $ do
+validate :: Configuration -> Either String ()
+validate (inference, learning, overlays) = do
     unless (Infer.executable inference == Learn.executable learning && Infer.script inference == Learn.script learning && Infer.cache inference == Learn.cache learning) (Left "Shared roles require the same executable, script and model cache")
     unless (length overlays == 1) (Left "Shared execution requires exactly one physical session")
 
 withShared :: Configuration -> (Rollout.Pool -> Learner.Runner -> IO value) -> IO (Either Learn.Failure value)
-withShared configuration@(inference, learning, overlays) action = case validate configuration of
-    Left problem -> pure (Left problem)
-    Right () -> first failure <$> Transport.withResident launch owner (const (pure (Right ()))) execute
+withShared configuration = withRecordedShared configuration (pure Transcript.standard)
+
+withRecordedShared :: Configuration -> IO Transcript.Transcript -> (Rollout.Pool -> Learner.Runner -> IO value) -> IO (Either Learn.Failure value)
+withRecordedShared configuration@(inference, learning, overlays) opened action = case validate configuration of
+    Left problem -> pure (Left (Learn.ProtocolFailure problem))
+    Right () -> do
+        transcript <- opened
+        first failure <$> Transport.withResident (launch transcript) owner (const (pure (Right ()))) execute
   where
     owner = Boundary.Owner Boundary.Shared 0
     arguments = [Infer.script inference, "--cache=" ++ Infer.cache inference, "--reference=" ++ Learn.reference learning, "--session=0", "--shared"] ++ maybe [] (\path -> ["--config=" ++ path]) (Infer.configuration inference)
-    launch = Process.Launch (Infer.executable inference) arguments (concat overlays) Transcript.standard
+    launch = Process.Launch (Infer.executable inference) arguments (concat overlays)
     execute process = Inference.withBorrowed process $ \collector ->
         Update.withBorrowed process owner $ \updater ->
             Right <$> action (Rollout.borrowed (inference, overlays) collector) (Learner.borrowed updater)

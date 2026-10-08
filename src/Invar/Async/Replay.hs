@@ -149,20 +149,22 @@ entry declared transcripts fold recorded = case recorded of
     Entry.Opened _ used -> pure fold {epochs = max (epochs fold) (used + 1)}
     Entry.Reserved number chosen place used -> do
         when (Map.member number (processes fold)) (Left "A process number is reserved twice")
+        unless (chosen `elem` [inferenceRole declared, learnerRole declared]) (Left "A process is reserved under a role the declared modes do not run")
+        when (chosen == Entry.Shared && or [life == Running | Process Entry.Shared _ _ life <- Map.elems (processes fold)]) (Left "A shared process is reserved while another shared process runs")
         pure fold {processes = Map.insert number (Process chosen place used Running) (processes fold), epochs = max (epochs fold) (used + 1)}
     Entry.Dispatched request worker used bound number -> do
-        running fold number (Entry.Inference, worker, used)
+        running fold number (inferenceRole declared, worker, used)
         encoded <- transcript transcripts number
         fresh fold bound
         update <- maybe (Left "A dispatched request belongs to no update") Right (Plan.owner (plan declared) (Request request))
         let Version selected = Plan.version (plan declared) update
-            replayed = case fromMaybe (if Loop.inferenceMode (Loop.backend (config declared)) == R.Resident then inferenceOwner worker encoded else Finite []) (Map.lookup number (inferences fold)) of
+            replayed = case fromMaybe (hostedOwner declared worker encoded) (Map.lookup number (inferences fold)) of
                 Finite pending -> Finite (pending ++ [bound])
                 Hosting state ending pending -> Hosting state ending (pending ++ [bound])
         pure fold {calls = Map.insert bound (request, number, selected) (calls fold), latest = Map.insert request bound (latest fold), inferences = Map.insert number replayed (inferences fold), identities = Set.insert bound (identities fold)}
     Entry.Attempted update tried bound number -> do
         Process chosen place _ life <- maybe (Left "An attempt names a process that was never reserved") Right (Map.lookup number (processes fold))
-        unless (chosen == Entry.Learner && life == Running) (Left "An attempt names a process of another role or one that has ended")
+        unless (chosen == learnerRole declared && life == Running) (Left "An attempt names a process of another role or one that has ended")
         unless (Core.learning (core fold) == Just (Update update, Core.Loading (Attempt tried))) (Left "An attempt is journaled under a number the core did not assign")
         encoded <- transcript transcripts number
         fresh fold bound
@@ -171,13 +173,25 @@ entry declared transcripts fold recorded = case recorded of
             used = either (const []) (\(_, _, bindings, _) -> bindings) declaredInput
             under = either (const Nothing) (\(settings, _, _, tasks) -> Just (settings, tasks)) declaredInput
             input' = (\(settings, invoked, _, _) -> (settings, invoked)) <$> declaredInput
-        (hosted, attempted, release, loading) <- case (Loop.learningMode (Loop.backend (config declared)), Map.lookup number (learners fold)) of
+        (placed, attempted, release, loading) <- case (Loop.learningMode (Loop.backend (config declared)), Map.lookup number (learners fold)) of
+            (W.Shared, _) -> do
+                unless (all (\consumed -> fmap (\(_, owner, _) -> owner) (Map.lookup consumed (calls fold)) == Just number) used) (Left "A shared learner attempt names another process than the one that ran its calls")
+                case Map.lookup number (inferences fold) of
+                    Just (Hosting state ending _) -> do
+                        let (next, attempted', release', loading') = residentAttempt input' (fmap (\((_, physical), remaining) -> (physical, remaining)) state)
+                            cursor = (\((session, _), _) (physical, remaining) -> ((session, physical), remaining)) <$> state <*> next
+                        pure (fold {inferences = Map.insert number (Hosting cursor ending []) (inferences fold)}, attempted', release', loading')
+                    _ -> Left "A shared learner attempt names a process that hosted no inference"
             (W.Resident, owner) -> case fromMaybe (learnerOwner place encoded) owner of
-                Owning state ending -> pure (residentAttempt input' state ending)
+                Owning state ending -> do
+                    let (next, attempted', release', loading') = residentAttempt input' state
+                    pure (fold {learners = Map.insert number (Owning next ending) (learners fold)}, attempted', release', loading')
                 Launched -> Left "A learner process runs a second attempt"
-            (_, Nothing) -> let begun = launched input' (output encoded) in pure (Launched, snd <$> begun, Exit, either (const []) fst begun)
+            (_, Nothing) -> do
+                let begun = launched input' (output encoded)
+                pure (fold {learners = Map.insert number Launched (learners fold)}, snd <$> begun, Exit, either (const []) fst begun)
             _ -> Left "A learner process runs a second attempt"
-        pure fold {tries = Map.insert (update, tried) (Tried bound number used under attempted release 0 Nothing Nothing) (tries fold), learners = Map.insert number hosted (learners fold), identities = Set.insert bound (identities fold), prefixes = admittedLoad number loading (prefixes fold)}
+        pure placed {tries = Map.insert (update, tried) (Tried bound number used under attempted release 0 Nothing Nothing) (tries placed), identities = Set.insert bound (identities placed), prefixes = admittedLoad number loading (prefixes placed)}
     Entry.Finished number outcome -> do
         Process chosen place used life <- maybe (Left "An exit names a process that was never reserved") Right (Map.lookup number (processes fold))
         unless (life == Running) (Left "A process exits twice")
@@ -212,8 +226,20 @@ running fold number (expected, worker, used) = case Map.lookup number (processes
 transcript :: Map Natural ByteString -> Natural -> Either String ByteString
 transcript transcripts number = maybe (Left "An entry names a process whose transcript is missing") Right (Map.lookup number transcripts)
 
-inferenceOwner :: Natural -> ByteString -> Inference
-inferenceOwner place encoded = let (records, ending) = output encoded in Hosting (Right ((Session.start Session.Resident, Owner.start (Boundary.Owner Boundary.Inference place)), records)) ending []
+inferenceOwner :: Boundary.Role -> Natural -> ByteString -> Inference
+inferenceOwner role place encoded = let (records, ending) = output encoded in Hosting (Right ((Session.start Session.Resident, Owner.start (Boundary.Owner role place)), records)) ending []
+
+hostedOwner :: Declaration -> Natural -> ByteString -> Inference
+hostedOwner declared place encoded = case Loop.inferenceMode (Loop.backend (config declared)) of
+    R.Resident -> inferenceOwner Boundary.Inference place encoded
+    R.Shared -> inferenceOwner Boundary.Shared place encoded
+    _ -> Finite []
+
+inferenceRole :: Declaration -> Entry.Role
+inferenceRole declared = if Loop.inferenceMode (Loop.backend (config declared)) == R.Shared then Entry.Shared else Entry.Inference
+
+learnerRole :: Declaration -> Entry.Role
+learnerRole declared = if Loop.learningMode (Loop.backend (config declared)) == W.Shared then Entry.Shared else Entry.Learner
 
 learnerOwner :: Natural -> ByteString -> Learner
 learnerOwner place encoded = let (records, ending) = output encoded in Owning (Right (Owner.start (Boundary.Owner Boundary.Learning place), records)) ending
@@ -238,7 +264,8 @@ finished declared transcripts prior (number, role, place) outcome = do
     encoded <- transcript transcripts number
     let backend = Loop.backend (config declared)
         fold = case role of
-            Entry.Inference | Loop.inferenceMode backend == R.Resident -> prior {inferences = Map.insertWith (\_ held -> held) number (inferenceOwner place encoded) (inferences prior)}
+            Entry.Inference | Loop.inferenceMode backend == R.Resident -> prior {inferences = Map.insertWith (\_ held -> held) number (inferenceOwner Boundary.Inference place encoded) (inferences prior)}
+            Entry.Shared -> prior {inferences = Map.insertWith (\_ held -> held) number (inferenceOwner Boundary.Shared place encoded) (inferences prior)}
             Entry.Learner | Loop.learningMode backend == W.Resident -> prior {learners = Map.insertWith (\_ held -> held) number (learnerOwner place encoded) (learners prior)}
             _ -> prior
     case (Map.lookup number (inferences fold), Map.lookup number (learners fold)) of
@@ -455,14 +482,14 @@ launched declaredInput (records, ending) = do
         (Fragment, Just _) -> Trace.stop "Output follows the learner result" attempted
         _ -> attempted
 
-residentAttempt :: Either String (L.Settings, (V.Binding, Text, Value)) -> Either String (Owner.State, [Framing.Frame]) -> Tail -> (Learner, Either String Trace.Attempt, Boundary, [Framing.Frame])
-residentAttempt declaredInput state ending = case (declaredInput, state) of
+residentAttempt :: Either String (L.Settings, (V.Binding, Text, Value)) -> Either String (Owner.State, [Framing.Frame]) -> (Either String (Owner.State, [Framing.Frame]), Either String Trace.Attempt, Boundary, [Framing.Frame])
+residentAttempt declaredInput state = case (declaredInput, state) of
     (Right (settings, invoked), Right (physical, remaining)) -> case Learner.resident settings physical invoked remaining of
-        Right (attempted, admitted, Right (Learner.Released next _ after)) -> (Owning (Right (next, after)) ending, Right attempted, Release (Right ()), preparation admitted)
-        Right (attempted, _, Left problem) -> (Owning (Left ("An earlier attempt on the owner was never released: " ++ problem)) ending, Right attempted, Release (Left problem), [])
-        Left problem -> (Owning (Left problem) ending, Left problem, Release (Left problem), [])
-    (Left problem, _) -> (Owning (Left problem) ending, Left problem, Release (Left problem), [])
-    (_, Left problem) -> (Owning (Left problem) ending, Left problem, Release (Left problem), [])
+        Right (attempted, admitted, Right (Learner.Released next _ after)) -> (Right (next, after), Right attempted, Release (Right ()), preparation admitted)
+        Right (attempted, _, Left problem) -> (Left ("An earlier attempt on the owner was never released: " ++ problem), Right attempted, Release (Left problem), [])
+        Left problem -> (Left problem, Left problem, Release (Left problem), [])
+    (Left problem, _) -> (Left problem, Left problem, Release (Left problem), [])
+    (_, Left problem) -> (Left problem, Left problem, Release (Left problem), [])
 
 preparation :: [Framing.Frame] -> [Framing.Frame]
 preparation = takeWhile ((`elem` map (Just . String) ["loading", "profile", "load"]) . Framing.stageName)

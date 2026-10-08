@@ -77,7 +77,7 @@ withPolicy config description action
         if inferenceMode (backend config) /= R.Shared || learningMode (backend config) /= W.Shared
             then pure (Left (Update (W.ProtocolFailure "Both numerical roles must explicitly select shared execution")))
             else case Shared.validate shared of
-                Left problem -> pure (Left (Update problem))
+                Left problem -> pure (Left (Update (W.ProtocolFailure problem)))
                 Right () -> do
                     createDirectory (root config)
                     first Update <$> Shared.withShared shared (\pool runner -> R.withDriver (\(Internal.Driver gate counter _ recorded) -> drive (Internal.Driver gate counter (Just pool) recorded) runner))

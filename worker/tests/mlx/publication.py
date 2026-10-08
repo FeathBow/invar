@@ -13,12 +13,12 @@ def flags(values):
     return [str(item) for key, value in values.items() for item in ("--" + key, value)]
 
 
-def seal(root, initial, *, observed, configuration, executable):
+def seal(root, initial, *, observed, configuration, executable, worker=ENTRY):
     inputs = {"digest": observed["policy"],
               **{name + "-digest": observed[name] for name in ("tokenizer", "base", "assembly")},
               "prompt": "one two", "tokens": 2, "temperature": 0.8, "seed": 17,
               **{name: BOOTSTRAP_BINDING for name in ("call", "attempt", "instance")}}
-    command = [executable, "infer", *flags({**inputs, "python": sys.executable, "worker": ENTRY,
+    command = [executable, "infer", *flags({**inputs, "python": sys.executable, "worker": worker,
                "worker-config": configuration, "cache": root, "adapter": initial / "adapter.safetensors"})]
     completed = subprocess.run(command, capture_output=True, text=True, timeout=CHILD_SECONDS)
     log = root / "bootstrap.jsonl"

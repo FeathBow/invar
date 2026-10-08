@@ -27,14 +27,14 @@ from worker.implementation import INFERENCE
 IDENTITY = ("invar-native-hybrid-test", "fixture-v1")
 
 
-def load(cache, *, scope, configuration, measure, emit, seed=17, initial=None, identified=False):
+def load(cache, *, scope, configuration, measure, emit, seed=17, initial=None, identified=False, learnable=False):
     mx.random.seed(seed)
     previous = mx.set_cache_limit(configuration.cache_bytes)
     scope.callback(mx.set_cache_limit, previous)
 
     def prepare():
         emit("loading", {"model": IDENTITY[0], "revision": IDENTITY[1]})
-        numerical, config = model()
+        numerical, config = model(uniform_head=not learnable)
         configuration.profile().install(numerical)
         numerical.eval()
         scope.enter_context(wired_limit(numerical))
@@ -43,7 +43,7 @@ def load(cache, *, scope, configuration, measure, emit, seed=17, initial=None, i
         if initial is not None:
             mlx_model.activate(loaded, initial[0], expected=initial[1])
         reported = {"model": IDENTITY[0], "revision": IDENTITY[1],
-                    "native_test": {"layers": len(numerical.layers), "uniform_head": True,
+                    "native_test": {"layers": len(numerical.layers), "uniform_head": not learnable,
                                     "batch_size": configuration.batch_size}}
         if identified:
             reported["inference"] = {name: value for name, value in mlx_model.identities(loaded, INFERENCE).items()
@@ -56,7 +56,7 @@ def load(cache, *, scope, configuration, measure, emit, seed=17, initial=None, i
     return measure("load", prepare)
 
 
-def main():
+def main(loader=load):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cache", type=Path, required=True)
     parser.add_argument("--output", type=Path)
@@ -75,13 +75,13 @@ def main():
     parser.add_argument("--shared", action="store_true")
     options = parser.parse_args()
     if options.shared:
-        mlx_resident.run(options, loader=load)
+        mlx_resident.run(options, loader=loader)
     elif options.session is not None:
-        mlx_inference_resident.run(options, loader=load)
+        mlx_inference_resident.run(options, loader=loader)
     elif options.output is not None:
-        mlx_initialize.run(options, loader=load)
+        mlx_initialize.run(options, loader=loader)
     else:
-        mlx_infer.run(options, loader=load)
+        mlx_infer.run(options, loader=loader)
 
 
 if __name__ == "__main__":

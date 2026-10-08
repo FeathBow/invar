@@ -37,12 +37,14 @@ import Invar.Learn.Worker.Observation qualified as Observation
 import Invar.Learn.Worker.Owner qualified as Owner
 import Invar.Learn.Worker.Resident qualified as Resident
 import Invar.Loop qualified as Loop
+import Invar.Loop.Owner qualified as Joint
 import Invar.Policy qualified as Policy
 import Invar.Rollout qualified as R
 import Invar.Rollout.Internal qualified as Internal
 import Invar.Spec.Invocation qualified as V
 import Invar.Store qualified as Store
 import Invar.Transcript qualified as Transcript
+import Invar.Worker qualified as Worker
 import Invar.Workload qualified as Workload
 import Numeric.Natural (Natural)
 import System.Directory (canonicalizePath, createDirectory, getCurrentDirectory, withCurrentDirectory)
@@ -160,7 +162,9 @@ counts (Run _ _ document) = [genericLength (Workload.tasks declared) | declared 
 
 prepare :: Run -> IO (Either Error (Plan.Plan, Published))
 prepare selected@(Run chosen lag _)
-    | Loop.inferenceMode (Loop.backend chosen) == R.Shared || Loop.learningMode (Loop.backend chosen) == W.Shared = pure (Left (Declaration "Concurrent rollout and learning need separate inference and learning processes"))
+    | sharedInference /= sharedLearning = pure (Left (Declaration "Both numerical roles must explicitly select shared execution"))
+    | sharedInference && lag > 0 = pure (Left (Declaration "Shared execution requires staleness zero"))
+    | sharedInference, Left problem <- Joint.validate (sharing chosen) = pure (Left (Declaration problem))
     | otherwise = do
         description <- Policy.readDescription (Loop.checkpoint chosen </> "policy.json")
         let settings = Loop.settings chosen
@@ -173,6 +177,15 @@ prepare selected@(Run chosen lag _)
             mapM_ (first Declaration . ($ L.policy settings)) (instantiated selected)
             planned <- first (Declaration . show) (Plan.prepare lag [Declared requests (chunks (L.steps settings) requests) | requests <- members])
             pure (planned, Published initial description)
+  where
+    sharedInference = Loop.inferenceMode (Loop.backend chosen) == R.Shared
+    sharedLearning = Loop.learningMode (Loop.backend chosen) == W.Shared
+
+sharing :: Loop.Config -> (Worker.Worker, W.Worker, [[(String, String)]])
+sharing chosen = (Loop.inferenceWorker chosen initial, Loop.updateWorker chosen (initial, 0), Loop.sessions (Loop.backend chosen))
+  where
+    settings = Loop.settings chosen
+    initial = Loop.Checkpoint (Loop.checkpoint chosen) (L.policy settings) (L.learner settings)
 
 begin :: Run -> Plan.Plan -> Origin -> Journal.Journal -> IO (Either Error ())
 begin selected@(Run chosen lag _) planned (Origin state commands versions next identities numbers) recorded = do
@@ -184,9 +197,8 @@ begin selected@(Run chosen lag _) planned (Origin state commands versions next i
     prepared <- newMVar Nothing
     owner <- newMVar Nothing
     let recording = Recorder recorded (Loop.root chosen </> "transcripts") counted next linked prepared owner
-    outcome <- R.withRecordedDriver (Loop.inferenceMode engine) (Loop.inferenceWorker chosen initial, Loop.sessions engine) (inferenceTranscript recording) $ \collector -> do
-        void (Internal.reserve collector identities)
-        owned <- Owner.withRecordedRunner (Loop.learningMode engine) (Loop.updateWorker chosen (initial, 0)) (learnerTranscript recording (Loop.learningMode engine)) $ \updater -> do
+        running collector updater = do
+            void (Internal.reserve collector identities)
             shared <-
                 Shared chosen lag planned (instantiated selected) (scanl (+) 0 (counts selected)) recording
                     <$> newMVar state
@@ -200,8 +212,13 @@ begin selected@(Run chosen lag _) planned (Origin state commands versions next i
                     <*> pure collector
                     <*> pure updater
             execute shared commands
-        pure (either (Left . Learning) id owned)
-    pure (either (Left . Rollout) id outcome)
+    if Loop.inferenceMode engine == R.Shared
+        then either (Left . Learning) id <$> Joint.withRecordedShared (sharing chosen) (sharedTranscript recording) (\pool updater -> R.withDriver (\(Internal.Driver gate counter _ _) -> running (Internal.Driver gate counter (Just pool) Nothing) updater))
+        else do
+            outcome <- R.withRecordedDriver (Loop.inferenceMode engine) (Loop.inferenceWorker chosen initial, Loop.sessions engine) (inferenceTranscript recording) $ \collector -> do
+                owned <- Owner.withRecordedRunner (Loop.learningMode engine) (Loop.updateWorker chosen (initial, 0)) (learnerTranscript recording (Loop.learningMode engine)) (running collector)
+                pure (either (Left . Learning) id owned)
+            pure (either (Left . Rollout) id outcome)
 
 reserve :: Recorder -> Entry.Role -> Natural -> IO Natural
 reserve recording role slot = do
@@ -218,6 +235,13 @@ inferenceTranscript recording slot = do
     modifyMVar_ (processOf recording) (pure . Map.insert slot number)
     transcribe recording number
 
+sharedTranscript :: Recorder -> IO Transcript.Transcript
+sharedTranscript recording = do
+    number <- reserve recording Entry.Shared 0
+    modifyMVar_ (processOf recording) (pure . Map.insert 0 number)
+    modifyMVar_ (owning recording) (const (pure (Just number)))
+    transcribe recording number
+
 learnerTranscript :: Recorder -> W.Mode -> IO Transcript.Transcript
 learnerTranscript recording mode = case mode of
     W.Resident -> do
@@ -228,12 +252,12 @@ learnerTranscript recording mode = case mode of
 
 learnerProcess :: Recorder -> W.Mode -> IO Natural
 learnerProcess recording mode = case mode of
-    W.Resident -> readMVar (owning recording) >>= maybe (ioError (userError "The resident learner owner was never reserved")) pure
-    _ -> do
+    W.Process -> do
         number <- reserve recording Entry.Learner 0
         opened <- transcribe recording number
         modifyMVar_ (launching recording) (const (pure (Just opened)))
         pure number
+    _ -> readMVar (owning recording) >>= maybe (ioError (userError "The resident learner owner was never reserved")) pure
 
 execute :: Shared scope -> [Command] -> IO (Either Error ())
 execute shared initial =
