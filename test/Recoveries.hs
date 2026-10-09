@@ -3,6 +3,7 @@
 module Recoveries (recoveries, inspections, ran, finishedRun, retriedRun) where
 
 import BatchCalls (quote)
+import Control.Concurrent.MVar (newEmptyMVar, putMVar)
 import Control.Monad (forM_, unless)
 import Data.Aeson (Value (..), encode, object, withObject, (.:), (.=))
 import Data.Aeson.KeyMap qualified as Fields
@@ -46,6 +47,13 @@ recoveries =
         , ("every prefix of a run's journal, with the files a crash there leaves, is admitted by a resume", once prefixes)
         , ("a resume that cannot read a transcript or a generation, or that the replay refuses, leaves the journal's bytes unchanged", once refusals)
         , ("a crash after a process learner's reservation and before its attempt leaves a journal a resume admits", once interrupted)
+        , ("a failure after the learner ran names the unresolved update and one before it does not", once reported)
+        , ("a publication that would replace a generation already on disk is refused and leaves it untouched", once occupied)
+        , ("a failure after an update has committed is not named against that update", once cleared)
+        , ("a resident learner whose owner is poisoned still names the update its failure belongs to", once poisoned)
+        , ("a cleanup that returns or throws after the run recorded its failure keeps that failure", once preserving)
+        , ("a cleanup that returns or throws on a run that recorded nothing is reported as it stands", once alone)
+        , ("a shared run whose single process dies reports a failure instead of throwing", once joint)
         ]
   where
     once = withTests 1 . property
@@ -63,10 +71,13 @@ inspections =
   where
     once = withTests 1 . property
 
-data Fixture = Fixture {root :: FilePath, chosen :: Runtime.Run, inference :: FilePath}
+data Fixture = Fixture {root :: FilePath, chosen :: Runtime.Run, inference :: FilePath, following :: FilePath}
 
 prepared :: PropertyT IO Fixture
-prepared = do
+prepared = evalEither Sessions.workload >>= preparedFrom
+
+preparedFrom :: Workload.Document -> PropertyT IO Fixture
+preparedFrom document = do
     base <- workspace
     sessions <- Sessions.options base 1
     let settings = F.configured
@@ -90,15 +101,15 @@ prepared = do
         dispatching marker (firstScript, retryScript) = unlines ["if test -e " ++ quote marker ++ "; then exec /bin/sh " ++ quote retryScript ++ " \"$@\"; fi", ": > " ++ quote marker, "exec /bin/sh " ++ quote firstScript ++ " \"$@\""]
         worker = R.worker sessions
         inferring = base </> "inference.sh"
+        following = Worker.script (R.worker retried)
         backend = Loop.Backend "/bin/sh" (Worker.executable worker) inferring Nothing R.Serial (base </> "learner.sh") Learner.Process (Worker.cache worker) (R.sessions sessions)
         config = Loop.Config backend (base </> "run") (base </> "input") (base </> "reference") settings Store.RenameExclusive
     evalIO $ do
         writeFile (base </> "learner0.sh") (copying 0 ++ firstLearner)
         writeFile (base </> "learner1.sh") (copying 1 ++ retryLearner)
         writeFile (base </> "learner.sh") (dispatching (base </> "learned") (base </> "learner0.sh", base </> "learner1.sh"))
-        writeFile inferring (dispatching (base </> "inferred") (Worker.script worker, Worker.script (R.worker retried)))
-    document <- evalEither Sessions.workload
-    pure (Fixture base (Runtime.Run config 0 document) inferring)
+        writeFile inferring (dispatching (base </> "inferred") (Worker.script worker, following))
+    pure (Fixture base (Runtime.Run config 0 document) inferring following)
 
 ran :: PropertyT IO Fixture
 ran = do
@@ -256,6 +267,92 @@ interrupted = do
                 Entry.Restarted [] -> success
                 _ -> annotateShow entry >> failure
         [] -> failure
+
+reported :: PropertyT IO ()
+reported = do
+    engaged <- prepared
+    evalIO (writeFile (root engaged </> "learner.sh") "exit 3\n")
+    afterLearner <- evalIO (Runtime.run (chosen engaged) Null)
+    case afterLearner of
+        Left (Runtime.Unresolved 0 (Runtime.Learning _)) -> success
+        unexpected -> annotateShow unexpected >> failure
+    evalIO (doesDirectoryExist (root engaged </> "run" </> "generation1")) >>= (=== False)
+    untouched <- prepared
+    evalIO (writeFile (inference untouched) "exit 3\n")
+    beforeLearner <- evalIO (Runtime.run (chosen untouched) Null)
+    case beforeLearner of
+        Left (Runtime.Rollout _) -> success
+        unexpected -> annotateShow unexpected >> failure
+
+occupied :: PropertyT IO ()
+occupied = do
+    fixture <- prepared
+    let output = root fixture </> "run"
+        generation = output </> "generation1"
+    evalIO (Bytes.readFile (inference fixture) >>= Bytes.writeFile (inference fixture) . (Char.pack ("mkdir -p " ++ quote generation ++ "\n") <>))
+    outcome <- evalIO (Runtime.run (chosen fixture) Null)
+    case outcome of
+        Left _ -> success
+        Right () -> annotateShow outcome >> failure
+    entries <- traverse (evalEither . decoded) =<< evalIO (journaled output)
+    assert (Entry.Happened (Entry.Recorded 0 0) `elem` entries)
+    evalIO (listDirectory generation) >>= (=== [])
+
+cleared :: PropertyT IO ()
+cleared = do
+    fixture <- evalEither (Sessions.workloads 2) >>= preparedFrom
+    evalIO (writeFile (following fixture) "exit 3\n")
+    outcome <- evalIO (Runtime.run (chosen fixture) Null)
+    evalIO (doesDirectoryExist (root fixture </> "run" </> "generation1")) >>= (=== True)
+    case outcome of
+        Left (Runtime.Unresolved update _) -> annotate ("Update " ++ show update ++ " was named unresolved after it had committed") >> failure
+        Left _ -> success
+        Right () -> annotateShow outcome >> failure
+
+poisoned :: PropertyT IO ()
+poisoned = do
+    fixture <- prepared
+    let base = root fixture
+        learner = base </> "resident.sh"
+        -- The resident owner starts and its first exchange is rejected, which poisons it, so the failure the runtime recorded has to survive the owner's teardown.
+        resident = case chosen fixture of
+            Runtime.Run config lag document -> Runtime.Run config {Loop.backend = (Loop.backend config) {Loop.learning = learner, Loop.learningMode = Learner.Resident}} lag document
+    evalIO (writeFile learner (unlines ["IFS= read -r request || exit 21", "printf '%s\\n' not-a-resident-record", "exit 0"]))
+    outcome <- evalIO (Runtime.run resident Null)
+    case outcome of
+        Left (Runtime.Unresolved 0 (Runtime.Learning _)) -> success
+        unexpected -> annotateShow unexpected >> failure
+
+preserving :: PropertyT IO ()
+preserving = forM_ [pure (Left (Runtime.Crashed "cleanup")), ioError (userError "cleanup failed")] $ \cleanup -> do
+    recorded <- evalIO newEmptyMVar
+    evalIO (putMVar recorded (Left (Runtime.Declaration "recorded")))
+    outcome <- evalIO (Runtime.recovering recorded cleanup)
+    case outcome of
+        Left (Runtime.Declaration problem) -> problem === "recorded"
+        unexpected -> annotateShow unexpected >> failure
+
+alone :: PropertyT IO ()
+alone = forM_ [pure (Left (Runtime.Crashed "cleanup")), ioError (userError "cleanup failed")] $ \cleanup -> do
+    recorded <- evalIO newEmptyMVar
+    outcome <- evalIO (Runtime.recovering recorded cleanup)
+    case outcome of
+        Left (Runtime.Crashed _) -> success
+        unexpected -> annotateShow unexpected >> failure
+
+joint :: PropertyT IO ()
+joint = do
+    fixture <- prepared
+    let base = root fixture
+        selected = base </> "joint.sh"
+        -- One process holds both roles here, and it dies before either exchange completes, so the run has to report that failure rather than let the borrowed owners' teardown escape.
+        jointed = case chosen fixture of
+            Runtime.Run config lag document -> Runtime.Run config {Loop.backend = (Loop.backend config) {Loop.inference = selected, Loop.learning = selected, Loop.inferenceMode = R.Shared, Loop.learningMode = Learner.Shared}} lag document
+    evalIO (writeFile selected "IFS= read -r request || exit 21\nexit 22\n")
+    outcome <- evalIO (Runtime.run jointed Null)
+    case outcome of
+        Left _ -> success
+        Right () -> annotateShow outcome >> failure
 
 learnerInterval :: Entry.Entry -> Bool
 learnerInterval (Entry.Elapsed role _ _ _) = role == "learner"

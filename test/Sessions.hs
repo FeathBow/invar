@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Sessions (sessions, options, optionsFrom, workload) where
+module Sessions (sessions, options, optionsFrom, workload, workloads) where
 
 import BatchCalls (prepared, quote, session)
 import Calls qualified as Fixture
@@ -67,7 +67,10 @@ setup count offset = do
     chain chosen = zip chosen (Nothing : map Just chosen)
 
 workload :: Either String Workload.Document
-workload = Workload.decode (Lazy.toStrict (encode [object ["tasks" .= map task [0 .. members - 1], "order" .= execution, "delivery" .= arrival]]))
+workload = workloads 1
+
+workloads :: Natural -> Either String Workload.Document
+workloads count = Workload.decode (Lazy.toStrict (encode (replicate (fromIntegral count) (object ["tasks" .= map task [0 .. members - 1], "order" .= execution, "delivery" .= arrival]))))
   where
     task index = object ["name" .= ("member" ++ show index), "group" .= ("group" :: String), "prompt" .= I.prompt Fixture.request, "tokens" .= I.tokens Fixture.request, "temperature" .= I.temperature Fixture.request, "seed" .= I.seed Fixture.request, "answer" .= ("#### 12" :: String)]
 
