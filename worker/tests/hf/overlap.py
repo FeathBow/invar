@@ -175,23 +175,6 @@ class OverlapTests(unittest.TestCase):
         return {**{key: value for key, value in self.settings.items() if key not in RUNNING}, "tasks": tasks,
                 "log": self.root / (name + ".jsonl"), "sessions": 1, "exit-code": 0, "output": output}
 
-    def test_zero_staleness_publishes_the_synchronous_successor(self):
-        synchronous, left = self.train("synchronous", 1)
-        concurrent, right = self.train("concurrent", 1, staleness=0)
-        expected, = [value for value in synchronous if value.get("phase") == "published"]
-        actual, = [value for value in concurrent if value.get("phase") == "published"]
-        self.assertEqual({key: actual[key] for key in ("policy", "learner", "publication")},
-                         {key: expected[key] for key in ("policy", "learner", "publication")})
-        self.assertNotEqual(actual["policy"], self.settings["policy"])
-        self.assertEqual((right / "generation1" / "policy.json").read_bytes(), (left / "generation1" / "policy.json").read_bytes())
-        comparison = compared({**self.logged("synchronous", left, 1), **independent(self.root, left / "generation1", "synchronous")},
-                              {"run": right, **independent(self.root, right / "generation1", "concurrent")})
-        self.assertTrue(comparison["equal"])
-        self.assertTrue(comparison["schedule_equal"])
-        self.assertEqual(comparison["schedule"]["differences"], [])
-        self.assertTrue(comparison["execution"]["declared_equal"])
-        self.assertEqual([comparison["execution"][side]["recorded"]["source"] for side in ("left", "right")], ["training log", "run directory"])
-
     def test_two_cycles_at_staleness_zero_score_the_reference_and_publish_the_lockstep_history(self):
         for mode in ("serial", "resident"):
             with self.subTest(mode=mode):
@@ -206,6 +189,8 @@ class OverlapTests(unittest.TestCase):
                 self.assertTrue(comparison["equal"])
                 self.assertTrue(comparison["schedule_equal"])
                 self.assertTrue(comparison["execution"]["declared_equal"])
+                for generation in ("generation1", "generation2"):
+                    self.assertEqual((runtime / generation / "policy.json").read_bytes(), (lockstep / generation / "policy.json").read_bytes())
 
     def test_staleness_is_a_schedule_difference(self):
         _, fresh = self.train("fresh", 1, staleness=0)
