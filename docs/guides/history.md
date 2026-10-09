@@ -1,8 +1,8 @@
 # Runtime histories
 
-`invar train --staleness d` runs rollout and learning concurrently: update u learns from rollouts of version max(0, u − d) while the next rollouts run. Such a run keeps its evidence in its output directory. This guide covers what that directory holds, how to resume a run, how to admit it as a history and compare it with another run, and which files to keep.
+`invar train` runs rollout and learning through the event runtime. A non-shared run uses it at staleness zero by default, and `--staleness d` makes update u learn from rollouts of version max(0, u − d) while the next rollouts run. Such a run keeps its evidence in its output directory; a shared run without `--staleness` runs on the lockstep driver and keeps none. This guide covers what that directory holds, how to resume a run, how to admit it as a history and compare it with another run, and which files to keep.
 
-The runtime runs with the `serial`, `batch` or `resident` worker modes, and with `shared` execution at `--staleness 0`, where one process carries both roles. With `--staleness 0` every update learns from rollouts of the policy it starts from, as in the synchronous loop.
+The runtime runs with the `serial`, `batch` or `resident` worker modes, and with `shared` execution at `--staleness 0`, where one process carries both roles, as the lockstep driver does without `--staleness`. With staleness zero every update learns from rollouts of the policy it starts from, as in the synchronous loop.
 
 ## The output directory
 
