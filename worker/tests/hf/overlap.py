@@ -55,6 +55,15 @@ def transcribed(output, role):
             for line in (output / "transcripts" / f"{entry['process']}.jsonl").read_text().splitlines()]
 
 
+def references(output):
+    scored = {}
+    for record in transcribed(output, "inference"):
+        if record.get("stage") == "result":
+            for value in [json.loads(item) for item in record["calls"]] if "calls" in record else [record]:
+                scored[value["binding"]["call"]] = value["reference"]
+    return [scored[call] for call in sorted(scored)]
+
+
 def independent(root, checkpoint, name):
     described = core.invoke(["policy", "inspect", "--checkpoint", checkpoint], executable=CORE)
     final = {"digest": described["adapter"], "tokenizer-digest": described["tokenizer"], "base-digest": described["base"],
@@ -182,6 +191,21 @@ class OverlapTests(unittest.TestCase):
         self.assertEqual(comparison["schedule"]["differences"], [])
         self.assertTrue(comparison["execution"]["declared_equal"])
         self.assertEqual([comparison["execution"][side]["recorded"]["source"] for side in ("left", "right")], ["training log", "run directory"])
+
+    def test_two_cycles_at_staleness_zero_score_the_reference_and_publish_the_lockstep_history(self):
+        for mode in ("serial", "resident"):
+            with self.subTest(mode=mode):
+                _, lockstep = self.train("lockstep" + mode, 2, **{"inference-mode": mode})
+                records, runtime = self.train("runtime" + mode, 2, staleness=0, **{"inference-mode": mode})
+                published = [value["policy"] for value in records if value.get("phase") == "published"]
+                self.assertEqual(len({self.settings["policy"], *published}), 3)
+                self.assertEqual([value is not None for value in references(runtime)], [False, False, True, True])
+                left = {**self.logged("lockstep" + mode, lockstep, 2), "inference-mode": mode,
+                        **independent(self.root, lockstep / "generation2", "lockstep" + mode)}
+                comparison = compared(left, {"run": runtime, **independent(self.root, runtime / "generation2", "runtime" + mode)})
+                self.assertTrue(comparison["equal"])
+                self.assertTrue(comparison["schedule_equal"])
+                self.assertTrue(comparison["execution"]["declared_equal"])
 
     def test_staleness_is_a_schedule_difference(self):
         _, fresh = self.train("fresh", 1, staleness=0)

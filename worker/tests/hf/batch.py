@@ -13,7 +13,6 @@ import unittest
 
 from worker.batch import FORMAT, approve, capture, decode, serve
 from worker import session
-from worker.hf import inference
 from worker.tests.hf.inference import envelope
 
 
@@ -82,8 +81,6 @@ class BatchTests(unittest.TestCase):
                 session.serve(SimpleNamespace(cache=Path("unused"), adapter=Path("unused"), **partial),
                               source=io.StringIO(json.dumps(values[0]) + "\n"),
                               loader=lambda *args, **kwargs: "runtime", execute=execute, permission=None)
-        with self.assertRaisesRegex(ValueError, "forced-path scorer"):
-            inference.execute(None, None, approve=None, measure=None, reference=declared)
 
     def test_finite_input_requires_strict_nonempty_encoded_call_inventory(self):
         original = frame(requests())

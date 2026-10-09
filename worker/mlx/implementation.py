@@ -77,7 +77,7 @@ NEUTRAL = {
 UNREACHED = {
     name: "Hugging Face inference path, imported only inside the Hugging Face entry functions of hf/infer and hf/operation"
     for name in ("hf/inference.py", "hf/model.py", "hf/rollout.py", "hf/decoding.py", "hf/backend.py",
-                 "hf/assembly.py", "hf/policy.py")
+                 "hf/assembly.py", "hf/policy.py", "hf/score.py")
 }
 IRRELEVANT = {
     INFERENCE: {

@@ -17,7 +17,7 @@ from pathlib import Path
 from worker import implementation
 from worker.implementation import INFERENCE, LEARNING
 
-ENTRY_POINTS = {implementation.INFERENCE: ("worker.hf.infer", "worker.hf.session"),
+ENTRY_POINTS = {implementation.INFERENCE: ("worker.hf.infer", "worker.hf.session", "worker.hf.cohort"),
                 implementation.LEARNING: ("worker.hf.initialize", "worker.hf.step", "worker.hf.resident")}
 TIMEOUT_SECONDS = 60
 TEST_THREADS = 2
