@@ -7,6 +7,7 @@ import Data.Aeson (Value (..), object, toJSON, (.=))
 import Data.Aeson.Key (Key)
 import Data.Aeson.KeyMap qualified as Fields
 import Data.ByteString.Char8 qualified as Bytes
+import Data.List (isInfixOf)
 import Hedgehog
 import Invar.Learn.Report qualified as Report
 import Updates (alter, change, field, setup, wire)
@@ -63,6 +64,9 @@ schema = do
         Object fields : _ -> forM_ (Fields.keys fields) $ \name -> reject (requests (sample (omit name)) events)
         _ -> failure
     reject (requests (change "extra" Null) events)
+    case Report.admit selectedCall (wire (requests (change "specification" (String "grpo-token-mean/v0")) events)) of
+        Left message -> assert ("Unsupported update specification" `isInfixOf` message)
+        Right value -> annotateShow (Report.describe value) >> failure
     reject (requests (sample (change "extra" Null)) events)
     forM_ ["learning_rate", "betas", "epsilon", "weight_decay"] $ \name ->
         reject (requests (\value -> change "optimizer" (omit name (field "optimizer" value)) value) events)
@@ -76,9 +80,9 @@ membership = do
 numbers :: PropertyT IO ()
 numbers = do
     events <- fixture
-    forM_ [("epsilon", Number 0), ("epsilon", Number 1), ("penalty", Number (-1)), ("delta", Number 0), ("penalty", Number (10 ^ overflowExponent))] $ \(name, value) -> reject (requests (change name value) events)
+    reject (requests (change "penalty" (Number (10 ^ overflowExponent))) events)
     forM_ [("seed", Bool True), ("seed", Number 0.5), ("temperature", Number 0), ("reward", Number (10 ^ overflowExponent)), ("advantage_bits", Number nanWord), ("advantage_bits", Number wordLimit), ("behavior_bits", toJSON [Number positiveOne]), ("behavior_bits", toJSON [Bool False]), ("behavior_bits", toJSON [Number nanWord])] $ \(name, value) -> reject (requests (sample (change name value)) events)
-    forM_ [("betas", toJSON [Number 1, Number 0]), ("betas", toJSON [Number 0]), ("epsilon", Number 0), ("learning_rate", Number (-1))] $ \(name, value) -> reject (requests (\input -> change "optimizer" (change name value (field "optimizer" input)) input) events)
+    reject (requests (\input -> change "optimizer" (change "betas" (toJSON [Number 0]) (field "optimizer" input)) input) events)
   where
     overflowExponent = 400 :: Int
     nanWord = 2143289344

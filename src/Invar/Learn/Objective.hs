@@ -4,6 +4,7 @@ import Control.Monad (foldM, unless, when)
 import Data.Word (Word32)
 import GHC.Float (castFloatToWord32, castWord32ToFloat, double2Float, float2Double)
 import Invar.Float32 qualified as Float32
+import Invar.Learn.Algorithm qualified as Algorithm
 
 data Profile = Profile {epsilon :: Double, penalty :: Double}
     deriving (Eq, Show)
@@ -25,8 +26,8 @@ reference = "grpo-scalar-f32/v1"
 calculate :: Profile -> Int -> [Inputs] -> Either Error [Output]
 calculate profile total inputs = do
     unless (total > 0 && not (null inputs) && length inputs <= total) (Left (InvalidInput "Invalid active token count"))
-    unless (finite (epsilon profile) && epsilon profile > 0 && epsilon profile < 1) (Left (InvalidInput "Invalid clipping epsilon"))
-    unless (finite (penalty profile) && penalty profile >= 0) (Left (InvalidInput "Invalid reference penalty"))
+    unless (Algorithm.clipping (epsilon profile)) (Left (InvalidInput "Invalid clipping epsilon"))
+    unless (Algorithm.penalty (penalty profile)) (Left (InvalidInput "Invalid reference penalty"))
     constants <- Constants <$> rounded "lower clip" (1 - epsilon profile) <*> rounded "upper clip" (1 + epsilon profile) <*> rounded "penalty coefficient" (penalty profile) <*> rounded "active token count" (fromIntegral total)
     traverse (token constants) inputs
 
