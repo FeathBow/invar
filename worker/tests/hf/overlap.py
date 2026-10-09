@@ -24,7 +24,6 @@ PROMPT = "Compute the answer."
 SEEDS = (1326, 41)
 BOOTSTRAP_BINDING = 7
 FINAL_BINDING = 1000
-RUNNING = ("python", "inference-python", "inference", "learning", "cache")
 
 
 def flags(values):
@@ -169,40 +168,17 @@ class OverlapTests(unittest.TestCase):
         steps, = [item["state"]["steps"] for item in history["artifacts"]]
         self.assertTrue(steps and all(count == 2 for count in steps))
 
-    def logged(self, name, output, cycles):
-        tasks = self.root / (name + "tasks.json")
-        tasks.write_text(workload(cycles))
-        return {**{key: value for key, value in self.settings.items() if key not in RUNNING}, "tasks": tasks,
-                "log": self.root / (name + ".jsonl"), "sessions": 1, "exit-code": 0, "output": output}
-
-    def test_zero_staleness_publishes_the_synchronous_successor(self):
-        synchronous, left = self.train("synchronous", 1)
-        concurrent, right = self.train("concurrent", 1, staleness=0)
-        expected, = [value for value in synchronous if value.get("phase") == "published"]
-        actual, = [value for value in concurrent if value.get("phase") == "published"]
-        self.assertEqual({key: actual[key] for key in ("policy", "learner", "publication")},
-                         {key: expected[key] for key in ("policy", "learner", "publication")})
-        self.assertNotEqual(actual["policy"], self.settings["policy"])
-        self.assertEqual((right / "generation1" / "policy.json").read_bytes(), (left / "generation1" / "policy.json").read_bytes())
-        comparison = compared({**self.logged("synchronous", left, 1), **independent(self.root, left / "generation1", "synchronous")},
-                              {"run": right, **independent(self.root, right / "generation1", "concurrent")})
-        self.assertTrue(comparison["equal"])
-        self.assertTrue(comparison["schedule_equal"])
-        self.assertEqual(comparison["schedule"]["differences"], [])
-        self.assertTrue(comparison["execution"]["declared_equal"])
-        self.assertEqual([comparison["execution"][side]["recorded"]["source"] for side in ("left", "right")], ["training log", "run directory"])
-
-    def test_two_cycles_at_staleness_zero_score_the_reference_and_publish_the_lockstep_history(self):
+    def test_a_default_two_cycle_run_goes_through_the_runtime_scores_the_reference_and_equals_an_explicit_staleness_zero(self):
         for mode in ("serial", "resident"):
             with self.subTest(mode=mode):
-                _, lockstep = self.train("lockstep" + mode, 2, **{"inference-mode": mode})
-                records, runtime = self.train("runtime" + mode, 2, staleness=0, **{"inference-mode": mode})
+                records, default = self.train("default" + mode, 2, **{"inference-mode": mode})
+                _, explicit = self.train("explicit" + mode, 2, staleness=0, **{"inference-mode": mode})
+                self.assertEqual(journaled(default)[0]["entry"], "declaration")
                 published = [value["policy"] for value in records if value.get("phase") == "published"]
                 self.assertEqual(len({self.settings["policy"], *published}), 3)
-                self.assertEqual([value is not None for value in references(runtime)], [False, False, True, True])
-                left = {**self.logged("lockstep" + mode, lockstep, 2), "inference-mode": mode,
-                        **independent(self.root, lockstep / "generation2", "lockstep" + mode)}
-                comparison = compared(left, {"run": runtime, **independent(self.root, runtime / "generation2", "runtime" + mode)})
+                self.assertEqual([value is not None for value in references(default)], [False, False, True, True])
+                comparison = compared({"run": default, **independent(self.root, default / "generation2", "default" + mode)},
+                                      {"run": explicit, **independent(self.root, explicit / "generation2", "explicit" + mode)})
                 self.assertTrue(comparison["equal"])
                 self.assertTrue(comparison["schedule_equal"])
                 self.assertTrue(comparison["execution"]["declared_equal"])

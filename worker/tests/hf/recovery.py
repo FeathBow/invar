@@ -30,8 +30,8 @@ class RecoveryTests(unittest.TestCase):
     def setUpClass(cls):
         cls.root, cls.settings = prepared("invar-recovery-")
 
-    def train(self, name, cycles, settings):
-        records = execute([CORE, "train", *flags({**settings, "staleness": 1, "output": name})], self.root / (name + ".jsonl"),
+    def train(self, name, cycles, settings, **extra):
+        records = execute([CORE, "train", *flags({**settings, **extra, "output": name})], self.root / (name + ".jsonl"),
                           stdin=workload(cycles), cwd=self.root)
         return published(records), self.root / name
 
@@ -95,7 +95,7 @@ class RecoveryTests(unittest.TestCase):
         self.refused(output.rename(output.with_name("moved")), "The declared output directory is not the run's directory")
 
     def test_an_update_applied_without_its_receipt_is_computed_again_and_committed_updates_are_kept(self):
-        expected, output = self.train("interrupted", 2, self.settings)
+        expected, output = self.train("interrupted", 2, self.settings, staleness=1)
         first = os.readlink(output / "generation1")
         abandoned, before = self.applied(output, 1)
         self.assertTrue((output / ("staging" + str(abandoned)) / "learner.pt").exists())

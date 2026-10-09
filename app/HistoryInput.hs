@@ -140,7 +140,7 @@ pairOptions :: [OptDescr (String, String)]
 pairOptions = NativeCodec.options ++ concatMap (`O.prefixed` inputOptions) ["left-", "right-"]
 
 traceOptions :: [OptDescr (String, String)]
-traceOptions = Training.settingsOptions ++ O.descriptions [("checkpoint", "Complete initial checkpoint directory, whose policy.json declares the first generation"), ("tasks", "Frozen workload file"), ("log", "Complete training stdout"), ("sessions", "Declared physical inference owner count"), ("inference-mode", "Declared serial/batch (finite default), resident or shared inference lifetime"), ("learning-mode", "Declared process (default), resident or shared learner lifetime"), ("output", "Declared training output directory"), ("publication", "Declared rename or reference publication method"), ("exit-code", "Independently observed training process exit status")]
+traceOptions = Training.settingsOptions ++ O.descriptions [("checkpoint", "Complete initial checkpoint directory, whose policy.json declares the first generation"), ("tasks", "Frozen workload file"), ("log", "Complete stdout of a lockstep training run"), ("sessions", "Declared physical inference owner count"), ("inference-mode", "Declared serial/batch (finite default), resident or shared inference lifetime"), ("learning-mode", "Declared process (default), resident or shared learner lifetime"), ("output", "Declared training output directory"), ("publication", "Declared rename or reference publication method"), ("exit-code", "Independently observed training process exit status")]
 
 options :: [OptDescr (String, String)]
 options = inputOptions ++ NativeCodec.options
