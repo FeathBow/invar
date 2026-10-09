@@ -70,6 +70,7 @@ lagOf fields = case O.optional fields "staleness" of
     Nothing -> Right 0
     Just _ -> O.numeric fields "staleness"
 
+-- Chooses the entry point only; whichever path runs a shared run validates the cross-role agreement itself.
 shared :: Loop.Config -> Bool
 shared config = Loop.inferenceMode (Loop.backend config) == Rollout.Shared || Loop.learningMode (Loop.backend config) == Worker.Shared
 
