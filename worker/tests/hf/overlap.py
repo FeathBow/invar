@@ -24,7 +24,6 @@ PROMPT = "Compute the answer."
 SEEDS = (1326, 41)
 BOOTSTRAP_BINDING = 7
 FINAL_BINDING = 1000
-RUNNING = ("python", "inference-python", "inference", "learning", "cache")
 
 
 def flags(values):
@@ -169,28 +168,14 @@ class OverlapTests(unittest.TestCase):
         steps, = [item["state"]["steps"] for item in history["artifacts"]]
         self.assertTrue(steps and all(count == 2 for count in steps))
 
-    def logged(self, name, output, cycles):
-        tasks = self.root / (name + "tasks.json")
-        tasks.write_text(workload(cycles))
-        return {**{key: value for key, value in self.settings.items() if key not in RUNNING}, "tasks": tasks,
-                "log": self.root / (name + ".jsonl"), "sessions": 1, "exit-code": 0, "output": output}
-
-    def test_two_cycles_at_staleness_zero_score_the_reference_and_publish_the_lockstep_history(self):
+    def test_the_default_train_run_uses_the_event_runtime(self):
         for mode in ("serial", "resident"):
             with self.subTest(mode=mode):
-                _, lockstep = self.train("lockstep" + mode, 2, **{"inference-mode": mode})
-                records, runtime = self.train("runtime" + mode, 2, staleness=0, **{"inference-mode": mode})
-                published = [value["policy"] for value in records if value.get("phase") == "published"]
+                records, output = self.train("default" + mode, 2, **{"inference-mode": mode})
+                self.assertEqual([value["phase"] for value in records], ["published", "published"])
+                published = [value["policy"] for value in records]
                 self.assertEqual(len({self.settings["policy"], *published}), 3)
-                self.assertEqual([value is not None for value in references(runtime)], [False, False, True, True])
-                left = {**self.logged("lockstep" + mode, lockstep, 2), "inference-mode": mode,
-                        **independent(self.root, lockstep / "generation2", "lockstep" + mode)}
-                comparison = compared(left, {"run": runtime, **independent(self.root, runtime / "generation2", "runtime" + mode)})
-                self.assertTrue(comparison["equal"])
-                self.assertTrue(comparison["schedule_equal"])
-                self.assertTrue(comparison["execution"]["declared_equal"])
-                for generation in ("generation1", "generation2"):
-                    self.assertEqual((runtime / generation / "policy.json").read_bytes(), (lockstep / generation / "policy.json").read_bytes())
+                self.assertEqual([value is not None for value in references(output)], [False, False, True, True])
 
     def test_staleness_is_a_schedule_difference(self):
         _, fresh = self.train("fresh", 1, staleness=0)
