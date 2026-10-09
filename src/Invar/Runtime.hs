@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Runtime (Error (..), Run (..), run, resume, interpret, declaration) where
+module Invar.Runtime (Error (..), Run (..), run, resume, interpret, declaration, recovering) where
 
 import Control.Concurrent (forkFinally, killThread)
 import Control.Concurrent.Chan (Chan, newChan, readChan, writeChan)
@@ -214,18 +214,28 @@ begin selected@(Run chosen lag _) planned (Origin state commands versions next i
                     <*> pure collector
                     <*> pure updater
             execute shared commands
-        recover fallback = do
-            already <- tryReadMVar ended
-            pure (case already of Just (Left problem) -> Left problem; _ -> fallback)
     if Loop.inferenceMode engine == R.Shared
-        then do
-            owned <- Joint.withRecordedShared (sharing chosen) (sharedTranscript recording) (\pool updater -> R.withDriver (\(Internal.Driver gate counter _ _) -> running (Internal.Driver gate counter (Just pool) Nothing) updater))
-            either (recover . Left . Learning) pure owned
-        else do
+        then recovering ended $ either (Left . Learning) id <$> Joint.withRecordedShared (sharing chosen) (sharedTranscript recording) (\pool updater -> R.withDriver (\(Internal.Driver gate counter _ _) -> running (Internal.Driver gate counter (Just pool) Nothing) updater))
+        else recovering ended $ do
             outcome <- R.withRecordedDriver (Loop.inferenceMode engine) (Loop.inferenceWorker chosen initial, Loop.sessions engine) (inferenceTranscript recording) $ \collector -> do
                 owned <- Owner.withRecordedRunner (Loop.learningMode engine) (Loop.updateWorker chosen (initial, 0)) (learnerTranscript recording (Loop.learningMode engine)) (running collector)
-                either (recover . Left . Learning) pure owned
+                pure (either (Left . Learning) id owned)
             pure (either (Left . Rollout) id outcome)
+
+-- A cleanup that fails after the run has recorded its own failure must not replace it, or the report loses the update number and the cause the run was ending for; a cleanup failure on a run that recorded nothing is still the report.
+recovering :: MVar (Either Error ()) -> IO (Either Error ()) -> IO (Either Error ())
+recovering recorded action = do
+    tried <- try action
+    case tried of
+        Right (Right ()) -> pure (Right ())
+        Right (Left problem) -> prefer (Left problem)
+        Left problem
+            | Just cancelled <- fromException problem -> throwIO (cancelled :: SomeAsyncException)
+            | otherwise -> prefer (Left (Crashed (show problem)))
+  where
+    prefer fallback = do
+        already <- tryReadMVar recorded
+        pure (case already of Just (Left problem) -> Left problem; _ -> fallback)
 
 reserve :: Recorder -> Entry.Role -> Natural -> IO Natural
 reserve recording role slot = do

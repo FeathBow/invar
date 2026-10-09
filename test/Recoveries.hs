@@ -3,6 +3,7 @@
 module Recoveries (recoveries, inspections, ran, finishedRun, retriedRun) where
 
 import BatchCalls (quote)
+import Control.Concurrent.MVar (newEmptyMVar, putMVar)
 import Control.Monad (forM_, unless)
 import Data.Aeson (Value (..), encode, object, withObject, (.:), (.=))
 import Data.Aeson.KeyMap qualified as Fields
@@ -50,6 +51,9 @@ recoveries =
         , ("a publication that would replace a generation already on disk is refused and leaves it untouched", once occupied)
         , ("a failure after an update has committed is not named against that update", once cleared)
         , ("a resident learner whose owner is poisoned still names the update its failure belongs to", once poisoned)
+        , ("a cleanup that returns or throws after the run recorded its failure keeps that failure", once preserving)
+        , ("a cleanup that returns or throws on a run that recorded nothing is reported as it stands", once alone)
+        , ("a shared run whose single process dies reports a failure instead of throwing", once joint)
         ]
   where
     once = withTests 1 . property
@@ -318,6 +322,37 @@ poisoned = do
     case outcome of
         Left (Runtime.Unresolved 0 (Runtime.Learning _)) -> success
         unexpected -> annotateShow unexpected >> failure
+
+preserving :: PropertyT IO ()
+preserving = forM_ [pure (Left (Runtime.Crashed "cleanup")), ioError (userError "cleanup failed")] $ \cleanup -> do
+    recorded <- evalIO newEmptyMVar
+    evalIO (putMVar recorded (Left (Runtime.Declaration "recorded")))
+    outcome <- evalIO (Runtime.recovering recorded cleanup)
+    case outcome of
+        Left (Runtime.Declaration problem) -> problem === "recorded"
+        unexpected -> annotateShow unexpected >> failure
+
+alone :: PropertyT IO ()
+alone = forM_ [pure (Left (Runtime.Crashed "cleanup")), ioError (userError "cleanup failed")] $ \cleanup -> do
+    recorded <- evalIO newEmptyMVar
+    outcome <- evalIO (Runtime.recovering recorded cleanup)
+    case outcome of
+        Left (Runtime.Crashed _) -> success
+        unexpected -> annotateShow unexpected >> failure
+
+joint :: PropertyT IO ()
+joint = do
+    fixture <- prepared
+    let base = root fixture
+        selected = base </> "joint.sh"
+        -- One process holds both roles here, and it dies before either exchange completes, so the run has to report that failure rather than let the borrowed owners' teardown escape.
+        jointed = case chosen fixture of
+            Runtime.Run config lag document -> Runtime.Run config {Loop.backend = (Loop.backend config) {Loop.inference = selected, Loop.learning = selected, Loop.inferenceMode = R.Shared, Loop.learningMode = Learner.Shared}} lag document
+    evalIO (writeFile selected "IFS= read -r request || exit 21\nexit 22\n")
+    outcome <- evalIO (Runtime.run jointed Null)
+    case outcome of
+        Left _ -> success
+        Right () -> annotateShow outcome >> failure
 
 learnerInterval :: Entry.Entry -> Bool
 learnerInterval (Entry.Elapsed role _ _ _) = role == "learner"
