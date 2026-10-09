@@ -14,7 +14,7 @@ import Invar.Store qualified as Store
 import Invar.Transcript qualified as Transcript
 import System.FilePath (takeDirectory)
 import System.IO (SeekMode (AbsoluteSeek))
-import System.IO.Error (catchIOError, isEOFError)
+import System.IO.Error (catchIOError, isDoesNotExistError, isEOFError)
 import System.Posix.Files (setFdSize)
 import System.Posix.IO qualified as Posix
 import System.Posix.IO.ByteString qualified as Raw
@@ -32,7 +32,7 @@ create path declaration = do
     Journal <$> newMVar (Just file) <*> newMVar (Just Map.empty)
 
 resume :: FilePath -> ([Object] -> IO (Either failure accepted)) -> (accepted -> Journal -> IO value) -> IO (Either failure value)
-resume path admit action = bracket (Posix.openFd path Posix.ReadWrite Posix.defaultFileFlags {Posix.append = True}) Posix.closeFd $ \file -> do
+resume path admit action = bracket (existing path Posix.ReadWrite Posix.defaultFileFlags {Posix.append = True}) Posix.closeFd $ \file -> do
     locked Posix.WriteLock file
     encoded <- contents file
     recorded <- either (ioError . userError) pure (entries encoded)
@@ -49,7 +49,7 @@ resume path admit action = bracket (Posix.openFd path Posix.ReadWrite Posix.defa
             Right <$> action accepted journal `finally` abandon journal
 
 inspect :: FilePath -> ([Object] -> IO value) -> IO value
-inspect path action = bracket (Posix.openFd path Posix.ReadOnly Posix.defaultFileFlags) Posix.closeFd $ \file -> do
+inspect path action = bracket (existing path Posix.ReadOnly Posix.defaultFileFlags) Posix.closeFd $ \file -> do
     locked Posix.ReadLock file
     recorded <- contents file >>= either (ioError . userError) pure . entries
     when (null recorded) (ioError (userError "The journal has no complete declaration"))
@@ -86,6 +86,9 @@ transcript journal@(Journal _ open) path ending = mask_ $ do
 
 shut :: Maybe (Fd, Bool) -> IO (Maybe (Fd, Bool))
 shut held = mapM_ (Posix.closeFd . fst) held >> pure Nothing
+
+existing :: FilePath -> Posix.OpenMode -> Posix.OpenFileFlags -> IO Fd
+existing path mode flags = Posix.openFd path mode flags `catchIOError` \problem -> ioError (if isDoesNotExistError problem then userError ("There is no run journal at " ++ path) else problem)
 
 exclusive :: FilePath -> IO Fd
 exclusive path = Posix.openFd path Posix.WriteOnly Posix.defaultFileFlags {Posix.append = True, Posix.exclusive = True, Posix.creat = Just 0o644}

@@ -9,7 +9,7 @@ import Data.Bifunctor (first)
 import Data.ByteString qualified as Bytes
 import Data.ByteString.Lazy.Char8 qualified as Lazy
 import Data.Map.Strict qualified as Map
-import Data.Maybe (isJust, isNothing)
+import Data.Maybe (isJust)
 import Data.Text qualified as Text
 import Dataset qualified
 import GHC.Clock (getMonotonicTime)
@@ -33,34 +33,48 @@ run :: [String] -> IO ()
 run ["--help"] = putStrLn usage
 run supplied = do
     fields <- either die pure (O.parse options supplied)
-    case (O.optional fields "resume", O.optional fields "staleness") of
-        (Just directory, _)
+    case O.optional fields "resume" of
+        Just directory
             | Map.size fields == 1 -> Runtime.resume directory declared >>= either (die . show) pure
             | otherwise -> die "--resume takes no other option; the run declaration supplies them"
-        (Nothing, Just _) -> do
-            (config, lag) <- either die pure (concurrent fields)
-            document <- Bytes.getContents >>= either die pure . Workload.decode
-            Runtime.run (Runtime.Run config lag document) (toJSON supplied) >>= either (die . show) pure
-        (Nothing, Nothing) -> do
-            config <- either die pure (configure fields)
-            either (die . show) pure (Learn.validate (Loop.settings config))
-            let selected = selection (Loop.settings config)
-            encoded <- Bytes.getContents
-            cycles <- either die pure (Dataset.decode selected encoded)
-            synchronous config selected cycles
+        Nothing -> do
+            (config, chosen) <- either die pure (routed fields)
+            case chosen of
+                Concurrent lag -> do
+                    document <- Bytes.getContents >>= either die pure . Workload.decode
+                    Runtime.run (Runtime.Run config lag document) (toJSON supplied) >>= either (die . show) pure
+                Lockstep -> do
+                    let selected = selection (Loop.settings config)
+                    encoded <- Bytes.getContents
+                    cycles <- either die pure (Dataset.decode selected encoded)
+                    synchronous config selected cycles
+
+data Route = Concurrent Natural | Lockstep
+
+route :: Loop.Config -> Maybe Natural -> Route
+route config declaredLag = case declaredLag of
+    Just lag -> Concurrent lag
+    Nothing
+        | Loop.inferenceMode engine == Rollout.Shared || Loop.learningMode engine == Worker.Shared -> Lockstep
+        | otherwise -> Concurrent 0
+  where
+    engine = Loop.backend config
+
+routed :: O.Fields -> Either String (Loop.Config, Route)
+routed fields = do
+    config <- configure fields
+    first show (Learn.validate (Loop.settings config))
+    lag <- traverse (const (O.numeric fields "staleness")) (O.optional fields "staleness")
+    pure (config, route config lag)
 
 declared :: Value -> Either String (Loop.Config, Natural)
 declared arguments = do
     fields <- parseEither parseJSON arguments >>= O.parse options
-    when (isJust (O.optional fields "resume") || isNothing (O.optional fields "staleness")) (Left "The run declaration does not declare a concurrent run")
-    concurrent fields
-
-concurrent :: O.Fields -> Either String (Loop.Config, Natural)
-concurrent fields = do
-    config <- configure fields
-    first show (Learn.validate (Loop.settings config))
-    lag <- O.numeric fields "staleness"
-    pure (config, lag)
+    when (isJust (O.optional fields "resume")) (Left "A run declaration cannot itself resume a run")
+    (config, chosen) <- routed fields
+    case chosen of
+        Concurrent lag -> pure (config, lag)
+        Lockstep -> Left "The run declaration declares shared execution without --staleness, which runs the lockstep loop and keeps no journal"
 
 synchronous :: Loop.Config -> Dataset.Identity -> [Dataset.Cycle] -> IO ()
 synchronous config selected cycles = do
@@ -130,10 +144,10 @@ referenceSource fields = case O.optional fields "reference-source" of
     Just named -> maybe (Left "Invalid reference source: expected engine or learner") Right (Stream.readSource (Text.pack named))
 
 usage :: String
-usage = usageInfo "Usage: invar train OPTIONS < tasks.json\nAll options except --devices, --inference-config, --inference-mode, --learning-mode, --steps, --staleness and --reference-source are required. Input is a nonempty JSON array of declared cycles.\nUsage: invar train --resume DIRECTORY\nResume a run declared with --staleness from the journal in its output directory, which supplies every other option and the workload." options
+usage = usageInfo "Usage: invar train OPTIONS < tasks.json\nAll options except --devices, --inference-config, --inference-mode, --learning-mode, --steps, --staleness and --reference-source are required. Input is a nonempty JSON array of declared cycles.\nUsage: invar train --resume DIRECTORY\nResume an interrupted run of the event runtime from the journal in its output directory, which supplies every other option and the workload." options
 
 options :: [OptDescr (String, String)]
-options = O.descriptions [("publication", "Checkpoint publication: rename or reference"), ("devices", "Optional comma-separated CUDA devices, one rollout worker process per device"), ("python", "Learning Python executable"), ("inference-python", "Inference Python executable"), ("inference", "Inference worker script"), ("inference-config", "Optional inference worker launch configuration"), ("inference-mode", "Inference execution: serial (default), batch, resident or shared"), ("learning", "Update worker script"), ("learning-mode", "Learning execution: process (default), resident or shared; shared requires both roles"), ("cache", "Pinned model cache"), ("output", "New output directory"), ("checkpoint", "Initial paired checkpoint directory"), ("reference", "Fixed reference adapter file"), ("staleness", "Optional staleness d: run through the event runtime, update u learning from rollouts of version max(0, u - d) while later rollouts may run; shared inference and learning run only with d = 0"), ("resume", "Output directory of an interrupted run declared with --staleness; it takes no other option")] ++ settingsOptions
+options = O.descriptions [("publication", "Checkpoint publication: rename or reference"), ("devices", "Optional comma-separated CUDA devices, one rollout worker process per device"), ("python", "Learning Python executable"), ("inference-python", "Inference Python executable"), ("inference", "Inference worker script"), ("inference-config", "Optional inference worker launch configuration"), ("inference-mode", "Inference execution: serial (default), batch, resident or shared"), ("learning", "Update worker script"), ("learning-mode", "Learning execution: process (default), resident or shared; shared requires both roles"), ("cache", "Pinned model cache"), ("output", "New output directory"), ("checkpoint", "Initial paired checkpoint directory"), ("reference", "Fixed reference adapter file"), ("staleness", "Optional staleness d, 0 when omitted: update u learns from rollouts of version max(0, u - d) while later rollouts may run. Every run goes through the event runtime except shared inference and learning without this option, which runs the lockstep loop; shared execution runs only with d = 0"), ("resume", "Output directory of an interrupted run of the event runtime; it takes no other option")] ++ settingsOptions
 
 settingsOptions :: [OptDescr (String, String)]
 settingsOptions = O.descriptions [("policy", "Consumed canonical policy tensor SHA-256"), ("tokenizer-digest", "Tokenizer operation SHA-256"), ("base-digest", "Learner frozen model tensor SHA-256"), ("assembly-digest", "Learner model assembly SHA-256"), ("behavior-base-digest", "Actual rollout frozen model SHA-256"), ("behavior-assembly-digest", "Actual rollout model assembly SHA-256"), ("learner", "Consumed learner file SHA-256"), ("reference-digest", "Canonical reference tensor SHA-256"), ("clip", "GRPO clipping coefficient"), ("penalty", "Reference penalty coefficient"), ("delta", "Advantage normalization epsilon"), ("steps", "Optional number of optimizer steps per update over consecutive mini-batches of the logical order (default 1)"), ("rate", "AdamW learning rate"), ("beta1", "AdamW first moment coefficient"), ("beta2", "AdamW second moment coefficient"), ("optimizer-epsilon", "AdamW epsilon"), ("decay", "AdamW weight decay"), ("reference-source", "Source of the objective's reference words: engine (default) or learner")]

@@ -1,17 +1,18 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Sessions (sessions, options, optionsFrom, workload, workloads) where
+module Sessions (sessions, options, optionsFrom, optionsWith, workload, workloads) where
 
 import BatchCalls (prepared, quote, session)
 import Calls qualified as Fixture
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Monad (forM_, void)
-import Data.Aeson (Value, encode, object, (.=))
+import Data.Aeson (Value (..), encode, object, (.=))
 import Data.ByteString.Lazy qualified as Lazy
 import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.List (sort, sortOn)
 import Data.Maybe (isNothing)
+import Data.Word (Word32)
 import Hedgehog
 import Invar.Cohort qualified as C
 import Invar.Infer qualified as I
@@ -55,16 +56,21 @@ arrival = [2, 4, 0, 1, 3]
 assignment :: Int -> [[Natural]]
 assignment count = [[execution !! position | position <- [0 .. fromIntegral members - 1], position `mod` count == slot] | slot <- [0 .. count - 1]]
 
-setup :: Int -> Natural -> PropertyT IO ([(V.Call, [Value])], C.Definition)
-setup count offset = do
-    (_, events) <- Fixture.setup
-    planned <- evalEither (I.prepare Fixture.request)
+setup :: Int -> Natural -> (String, Maybe String) -> PropertyT IO ([(V.Call, [Value])], C.Definition)
+setup count offset (policy, scoring) = do
+    let chosen = Fixture.request {I.artifact = policy}
+    (_, served) <- Fixture.setupWith chosen
+    planned <- evalEither (I.prepare chosen)
     expected <- evalEither (Reward.decimal "#### 12")
+    let events = [maybe event (\digest -> Fixture.change "reference" (object ["adapter" .= digest, "bits" .= referenceBits]) event) (if Fixture.field "stage" event == String "result" then scoring else Nothing) | event <- served]
     calls <- traverse (\(index, previous) -> prepared planned events (offset + index) (fmap (offset +) previous)) (concatMap chain (assignment count))
     let tasks = [C.Task ("member" ++ show index) "group" planned expected | index <- [0 .. members - 1]]
-    pure (calls, C.Definition (replicate 64 'a') tasks)
+    pure (calls, C.Definition policy tasks)
   where
-    chain chosen = zip chosen (Nothing : map Just chosen)
+    chain picked = zip picked (Nothing : map Just picked)
+
+referenceBits :: [Word32]
+referenceBits = [0xbf400000, 0xbe000000]
 
 workload :: Either String Workload.Document
 workload = workloads 1
@@ -88,8 +94,11 @@ options :: FilePath -> Int -> PropertyT IO R.Options
 options root count = optionsFrom root count 0
 
 optionsFrom :: FilePath -> Int -> Natural -> PropertyT IO R.Options
-optionsFrom root count offset = do
-    (calls, definition) <- setup count offset
+optionsFrom root count offset = optionsWith root count offset (I.artifact Fixture.request, Nothing)
+
+optionsWith :: FilePath -> Int -> Natural -> (String, Maybe String) -> PropertyT IO R.Options
+optionsWith root count offset served = do
+    (calls, definition) <- setup count offset served
     let path = root </> ("session" ++ show count ++ "from" ++ show offset ++ ".sh")
     evalIO (writeFile path (script root calls count))
     let worker = W.Worker "/bin/sh" path root "unused" [] Nothing

@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Calls (calls, setup, request, change, field, wire, reviewPrefix, permissionInput, observe) where
+module Calls (calls, setup, setupWith, request, change, field, wire, reviewPrefix, permissionInput, observe) where
 
 import Control.Monad (forM_)
 import Data.Aeson (Value (..), eitherDecodeStrict, encode, object, (.=))
@@ -46,16 +46,20 @@ requestValue :: Value
 requestValue = object ["prompt" .= String "Compute the answer.", "tokens" .= Number 2, "temperature" .= Number 0.8, "seed" .= Number 17]
 
 setup :: PropertyT IO (C.Call, [Value])
-setup = do
-    planned <- evalEither (I.prepare request)
+setup = setupWith request
+
+setupWith :: I.Request -> PropertyT IO (C.Call, [Value])
+setupWith chosen = do
+    planned <- evalEither (I.prepare chosen)
     call <- evalEither (C.prepare bound planned)
     envelope <- evalEither (eitherDecodeStrict (encodeUtf8 (Text.pack (C.input call))))
     let program = field "program" envelope
         loading = field "load" envelope
-        image = I.image request
-        loaded = object ["stage" .= String "loaded_adapter", "binding" .= binding, "load" .= loading, "image" .= object ["artifact" .= Bytes.unpack (L.artifact image), "profile" .= Bytes.unpack (L.profile image)], "requested" .= identity, "consumed" .= identity, "tokenizer" .= replicate 64 'c', "base" .= replicate 64 'e', "assembly" .= replicate 64 'f', "model" .= String "test-model", "revision" .= String "test-revision"]
-        consumption = object ["stage" .= String "consumed", "binding" .= binding, "program" .= program, "load" .= loading, "adapter" .= identity, "tokenizer" .= replicate 64 'c', "base" .= replicate 64 'e', "assembly" .= replicate 64 'f', "request" .= requestValue]
-        result = object ["stage" .= String "result", "binding" .= binding, "adapter" .= identity, "tokenizer" .= replicate 64 'c', "base" .= replicate 64 'e', "assembly" .= replicate 64 'f', "request" .= requestValue, "tokens" .= [1, 2, 3 :: Int], "prompt_length" .= Number 1, "behavior" .= [-0.5, -0.25 :: Double], "behavior_bits" .= [0xbf000000, 0xbe800000 :: Word32], "text" .= String "#### 12", "truncated" .= True]
+        image = I.image chosen
+        served = I.artifact chosen
+        loaded = object ["stage" .= String "loaded_adapter", "binding" .= binding, "load" .= loading, "image" .= object ["artifact" .= Bytes.unpack (L.artifact image), "profile" .= Bytes.unpack (L.profile image)], "requested" .= served, "consumed" .= served, "tokenizer" .= replicate 64 'c', "base" .= replicate 64 'e', "assembly" .= replicate 64 'f', "model" .= String "test-model", "revision" .= String "test-revision"]
+        consumption = object ["stage" .= String "consumed", "binding" .= binding, "program" .= program, "load" .= loading, "adapter" .= served, "tokenizer" .= replicate 64 'c', "base" .= replicate 64 'e', "assembly" .= replicate 64 'f', "request" .= requestValue]
+        result = object ["stage" .= String "result", "binding" .= binding, "adapter" .= served, "tokenizer" .= replicate 64 'c', "base" .= replicate 64 'e', "assembly" .= replicate 64 'f', "request" .= requestValue, "tokens" .= [1, 2, 3 :: Int], "prompt_length" .= Number 1, "behavior" .= [-0.5, -0.25 :: Double], "behavior_bits" .= [0xbf000000, 0xbe800000 :: Word32], "text" .= String "#### 12", "truncated" .= True]
     field "binding" envelope === binding
     pure (call, [loaded, consumption, result])
 
