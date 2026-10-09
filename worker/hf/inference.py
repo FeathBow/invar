@@ -6,6 +6,7 @@ from worker.report import ready, result
 from worker.hf.policy import activate, read_adapter, verify as verify_adapter
 from worker.hf.model import CPU_THREADS, DEFAULT_SEED, MODEL, REVISION, load_model
 from worker.hf.metrics import measure, report
+from worker.hf.score import referenced
 from worker.hf.rollout import generate
 from worker.implementation import INFERENCE
 from worker.hf.operation import load as load_tokenizer
@@ -20,7 +21,7 @@ class Runtime:
     identity: tuple[str, str]
 
 
-def load(cache, adapter, *, expected):
+def load(cache, adapter, *, expected, emit=report):
     from huggingface_hub import snapshot_download
 
     state = read_adapter(adapter, expected["adapter"])
@@ -32,21 +33,26 @@ def load(cache, adapter, *, expected):
     path = snapshot_download(MODEL, revision=REVISION, cache_dir=cache, local_files_only=True)
     tokenizer = load_tokenizer(path)
     verify(tokenizer, expected["tokenizer"])
-    model = measure("load", lambda: load_model(path, role=INFERENCE))
+    model = measure("load", lambda: load_model(path, role=INFERENCE, emit=emit), emit=emit)
     activate(model, state, base=expected["base"], assembly=expected["assembly"], role=INFERENCE)
     return Runtime(model=model, tokenizer=tokenizer, adapter=adapter, device="cuda", identity=(MODEL, REVISION))
 
 
-def execute(runtime, call, *, approve, measure, previous=None, emit=report, reference=None):
-    if reference is not None:
-        raise ValueError("Reference scoring requires an engine forced-path scorer, which Hugging Face inference does not provide")
-    requested = call.identities
+def materialized(runtime, requested):
     tokenizer = verify(runtime.tokenizer, requested["tokenizer"])
     consumed = verify_adapter(runtime.model, requested["adapter"],
                               base=requested["base"], assembly=requested["assembly"], role=INFERENCE)
-    identities = {"adapter": consumed, "tokenizer": tokenizer, "base": requested["base"], "assembly": requested["assembly"]}
+    return {"adapter": consumed, "tokenizer": tokenizer, "base": requested["base"], "assembly": requested["assembly"]}
+
+
+def sampled(runtime, requests, reference, *, identities):
+    trajectories = tuple(generate(runtime.model, runtime.tokenizer, request, device=runtime.device) for request in requests)
+    return trajectories, referenced(runtime, trajectories, reference, identities=identities)
+
+
+def execute(runtime, call, *, approve, measure, previous=None, emit=report, reference=None):
+    identities = materialized(runtime, call.identities)
     ready(call, identities, model=runtime.identity, previous=previous, emit=emit)
     approve(call.invocation)
-    trajectory = measure("inference", lambda: generate(runtime.model, runtime.tokenizer, call.request,
-                                                        device=runtime.device))
-    result(call, trajectory, identities=identities, emit=emit)
+    (trajectory,), (scored,) = measure("inference", lambda: sampled(runtime, (call.request,), reference, identities=identities))
+    result(call, trajectory, identities=identities, emit=emit, reference=scored)
