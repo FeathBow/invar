@@ -4,7 +4,7 @@ module Invar.Runtime (Error (..), Run (..), run, resume, interpret, declaration)
 
 import Control.Concurrent (forkFinally, killThread)
 import Control.Concurrent.Chan (Chan, newChan, readChan, writeChan)
-import Control.Concurrent.MVar (MVar, modifyMVar, modifyMVar_, newEmptyMVar, newMVar, putMVar, readMVar, tryPutMVar)
+import Control.Concurrent.MVar (MVar, modifyMVar, modifyMVar_, newEmptyMVar, newMVar, putMVar, readMVar, tryPutMVar, tryReadMVar)
 import Control.Exception (SomeAsyncException, bracket, finally, fromException, throwIO, try)
 import Control.Monad (forM_, forever, unless, void, when)
 import Data.Aeson (Object, Value, encode, object, (.:), (.=))
@@ -17,6 +17,7 @@ import Data.IORef (atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (genericLength, genericTake)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
+import Data.Maybe (isJust)
 import Data.Text (Text)
 import GHC.Clock (getMonotonicTime)
 import Invar.Async.Core (Attempt (..), Command (..), Epoch (..), Event (..), Worker (..))
@@ -196,6 +197,7 @@ begin selected@(Run chosen lag _) planned (Origin state commands versions next i
     linked <- newMVar Map.empty
     prepared <- newMVar Nothing
     owner <- newMVar Nothing
+    ended <- newEmptyMVar
     let recording = Recorder recorded (Loop.root chosen </> "transcripts") counted next linked prepared owner
         running collector updater = do
             void (Internal.reserve collector identities)
@@ -207,17 +209,22 @@ begin selected@(Run chosen lag _) planned (Origin state commands versions next i
                     <*> newMVar Map.empty
                     <*> newChan
                     <*> newChan
-                    <*> newEmptyMVar
+                    <*> pure ended
                     <*> newMVar Nothing
                     <*> pure collector
                     <*> pure updater
             execute shared commands
+        recover fallback = do
+            already <- tryReadMVar ended
+            pure (case already of Just (Left problem) -> Left problem; _ -> fallback)
     if Loop.inferenceMode engine == R.Shared
-        then either (Left . Learning) id <$> Joint.withRecordedShared (sharing chosen) (sharedTranscript recording) (\pool updater -> R.withDriver (\(Internal.Driver gate counter _ _) -> running (Internal.Driver gate counter (Just pool) Nothing) updater))
+        then do
+            owned <- Joint.withRecordedShared (sharing chosen) (sharedTranscript recording) (\pool updater -> R.withDriver (\(Internal.Driver gate counter _ _) -> running (Internal.Driver gate counter (Just pool) Nothing) updater))
+            either (recover . Left . Learning) pure owned
         else do
             outcome <- R.withRecordedDriver (Loop.inferenceMode engine) (Loop.inferenceWorker chosen initial, Loop.sessions engine) (inferenceTranscript recording) $ \collector -> do
                 owned <- Owner.withRecordedRunner (Loop.learningMode engine) (Loop.updateWorker chosen (initial, 0)) (learnerTranscript recording (Loop.learningMode engine)) (running collector)
-                pure (either (Left . Learning) id owned)
+                either (recover . Left . Learning) pure owned
             pure (either (Left . Rollout) id outcome)
 
 reserve :: Recorder -> Entry.Role -> Natural -> IO Natural
@@ -288,15 +295,22 @@ guarded shared action = do
             | otherwise -> fail' shared (Crashed (show problem))
 
 finish :: Shared scope -> IO ()
-finish shared = do
+finish shared = modifyMVar_ (invoked shared) $ \current -> do
     state <- readMVar (core shared)
     when (Core.committed state == Plan.updates (plan shared)) (void (tryPutMVar (finished shared) (Right ())))
+    pure current
 
--- The core reports an attempt in flight, but only the runtime knows whether its worker may have run, which is what leaves the attempt's effects unknown; the index names that update, which at a positive staleness may not be the update the failure came from.
+-- The core reports an attempt in flight, but only the runtime knows whether its worker may have run, which is what leaves the attempt's effects unknown; the index names that update, which at a positive staleness may not be the update the failure came from. The marker, the failure it selects and the commit that clears it share one lock, so a failure is never classified against an update that has not started its learner, nor against one that has already committed.
 fail' :: Shared scope -> Error -> IO ()
-fail' shared problem = do
-    running <- readMVar (invoked shared)
-    void (tryPutMVar (finished shared) (Left (maybe problem (`Unresolved` problem) running)))
+fail' shared problem = modifyMVar_ (invoked shared) $ \current -> do
+    void (tryPutMVar (finished shared) (Left (maybe problem (`Unresolved` problem) current)))
+    pure current
+
+-- Invoking the learner excludes recording a failure: whichever takes the lock first makes the other's classification true, so the worker runs before the failure is recorded or it never runs at all.
+start :: Shared scope -> Natural -> IO Bool
+start shared update = modifyMVar (invoked shared) $ \current -> do
+    ended <- tryReadMVar (finished shared)
+    pure (if isJust ended then (current, False) else (Just update, True))
 
 transition :: Shared scope -> Event -> IO [Command]
 transition shared event = do
@@ -390,17 +404,18 @@ learn shared (update, attempt@(Attempt counter)) = do
                     opened <- newIORef Nothing
                     let hooks = W.Hooks (ready attempt) (replying attempt forwarded opened)
                         paths = Resident.Paths (Loop.directory current) (Loop.root chosen </> staging)
-                    modifyMVar_ (invoked shared) (const (pure (Just update)))
-                    executed <- Owner.run (runner shared) paths (W.hooked hooks call)
-                    case executed of
-                        Left problem -> fail' shared (Learning problem)
-                        Right observed -> do
-                            interval shared ("learner", update) started
-                            let produced = Observation.report observed
-                            close attempt forwarded (S.completions (P.stream produced))
-                            Journal.append (journal (recorder shared)) (Entry.encode (Entry.Verified update counter (P.learner produced)))
-                            commands <- transition shared (Staged (Update update) attempt (P.adapter produced))
-                            publish shared (update, attempt, ordinal) (description, produced) commands
+                    attempting <- start shared update
+                    when attempting $ do
+                        executed <- Owner.run (runner shared) paths (W.hooked hooks call)
+                        case executed of
+                            Left problem -> fail' shared (Learning problem)
+                            Right observed -> do
+                                interval shared ("learner", update) started
+                                let produced = Observation.report observed
+                                close attempt forwarded (S.completions (P.stream produced))
+                                Journal.append (journal (recorder shared)) (Entry.encode (Entry.Verified update counter (P.learner produced)))
+                                commands <- transition shared (Staged (Update update) attempt (P.adapter produced))
+                                publish shared (update, attempt, ordinal) (description, produced) commands
   where
     ready current stream = do
         void (transition shared (Ready (Update update) current (S.exchange stream) (S.identity stream) (S.opening stream)))
@@ -434,8 +449,9 @@ publish shared (update, attempt, ordinal) (description, produced) commands = do
     let checkpoint = Loop.Checkpoint (Loop.root chosen </> name) (P.adapter produced) (P.learner produced)
     modifyMVar_ (published shared) (pure . Map.insert (update + 1) (Published checkpoint successor))
     announce (object ["phase" .= ("published" :: String), "update" .= update, "version" .= (update + 1), "checkpoint" .= Loop.directory checkpoint, "policy" .= Loop.policy checkpoint, "learner" .= Loop.learner checkpoint, "publication" .= Store.methodName (Store.method receipt)])
-    void (transition shared (Committed (Update update) attempt))
-    modifyMVar_ (invoked shared) (const (pure Nothing))
+    modifyMVar_ (invoked shared) $ \_ -> do
+        void (transition shared (Committed (Update update) attempt))
+        pure Nothing
     modifyMVar_ (batches shared) (pure . Map.delete update)
     finish shared
   where

@@ -49,6 +49,7 @@ recoveries =
         , ("a failure after the learner ran names the unresolved update and one before it does not", once reported)
         , ("a publication that would replace a generation already on disk is refused and leaves it untouched", once occupied)
         , ("a failure after an update has committed is not named against that update", once cleared)
+        , ("a resident learner whose owner is poisoned still names the update its failure belongs to", once poisoned)
         ]
   where
     once = withTests 1 . property
@@ -296,14 +297,27 @@ occupied = do
 cleared :: PropertyT IO ()
 cleared = do
     fixture <- evalEither (Sessions.workloads 2) >>= preparedFrom
-    -- The second cycle's rollout is dispatched by the first commit and the marker is cleared just after it, so the worker that fails is delayed to land behind that clear.
-    evalIO (writeFile (following fixture) "sleep 1\nexit 3\n")
+    evalIO (writeFile (following fixture) "exit 3\n")
     outcome <- evalIO (Runtime.run (chosen fixture) Null)
     evalIO (doesDirectoryExist (root fixture </> "run" </> "generation1")) >>= (=== True)
     case outcome of
         Left (Runtime.Unresolved update _) -> annotate ("Update " ++ show update ++ " was named unresolved after it had committed") >> failure
         Left _ -> success
         Right () -> annotateShow outcome >> failure
+
+poisoned :: PropertyT IO ()
+poisoned = do
+    fixture <- prepared
+    let base = root fixture
+        learner = base </> "resident.sh"
+        -- The resident owner starts and its first exchange is rejected, which poisons it, so the failure the runtime recorded has to survive the owner's teardown.
+        resident = case chosen fixture of
+            Runtime.Run config lag document -> Runtime.Run config {Loop.backend = (Loop.backend config) {Loop.learning = learner, Loop.learningMode = Learner.Resident}} lag document
+    evalIO (writeFile learner (unlines ["IFS= read -r request || exit 21", "printf '%s\\n' not-a-resident-record", "exit 0"]))
+    outcome <- evalIO (Runtime.run resident Null)
+    case outcome of
+        Left (Runtime.Unresolved 0 (Runtime.Learning _)) -> success
+        unexpected -> annotateShow unexpected >> failure
 
 learnerInterval :: Entry.Entry -> Bool
 learnerInterval (Entry.Elapsed role _ _ _) = role == "learner"
