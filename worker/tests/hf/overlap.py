@@ -168,7 +168,7 @@ class OverlapTests(unittest.TestCase):
         steps, = [item["state"]["steps"] for item in history["artifacts"]]
         self.assertTrue(steps and all(count == 2 for count in steps))
 
-    def test_the_default_train_run_uses_the_event_runtime(self):
+    def test_the_default_train_run_uses_the_event_runtime_at_staleness_zero(self):
         for mode in ("serial", "resident"):
             with self.subTest(mode=mode):
                 records, output = self.train("default" + mode, 2, **{"inference-mode": mode})
@@ -176,6 +176,10 @@ class OverlapTests(unittest.TestCase):
                 published = [value["policy"] for value in records]
                 self.assertEqual(len({self.settings["policy"], *published}), 3)
                 self.assertEqual([value is not None for value in references(output)], [False, False, True, True])
+                history = inspected(self.root, output, 2, "default" + mode)
+                self.assertEqual(history["training"]["staleness"], 0)
+                resumed = execute([CORE, "train", "--resume", output], self.root / ("default" + mode + "resumed.jsonl"))
+                self.assertEqual(resumed, [{"phase": "resumed", "committed": [0, 1]}])
 
     def test_staleness_is_a_schedule_difference(self):
         _, fresh = self.train("fresh", 1, staleness=0)
