@@ -82,7 +82,7 @@ partial expected actual records = (`follow` records) <$> declaredSteps expected 
         Left problem -> (current, Just problem)
 
 cotangents :: V.Binding -> S.Reply -> Value
-cotangents binding reply = object ["stage" .= ("cotangents" :: String), "binding" .= Binding.bindingValue binding, "step" .= S.replyStep reply, "sample" .= S.replySample reply, "observation" .= S.replyObservation reply, "state" .= S.replyState reply, "objective" .= S.objective reply, "reward" .= S.reward reply]
+cotangents binding reply = object ["stage" .= ("cotangents" :: String), "binding" .= Binding.bindingValue binding, "step" .= S.replyStep reply, "sample" .= S.replySample reply, "observation" .= S.replyObservation reply, "state" .= S.replyState reply, "objective" .= S.objective reply, "surrogate" .= S.surrogate reply]
 
 loadedFact :: Permit -> L.Fact
 loadedFact (Permit _ _ _ fact) = fact
@@ -199,11 +199,10 @@ validateStats actual value = do
     let samples = S.members (Request.exchange actual)
         counts = map (length . S.behaviorWords) samples
     tokens <- parse (.: "active_tokens") value
-    nonzero <- parse (.: "nonzero_advantages") value
     gradient <- parse (.: "gradient_norm") value
-    rewardGradient <- parse (.: "reward_gradient_norm") value
-    unless (tokens == sum counts && tokens > 0 && nonzero >= (0 :: Int) && nonzero <= length samples) (Left (Mismatch "Update sample or active-token counts disagree"))
-    unless (all finite [gradient, rewardGradient] && gradient >= 0 && rewardGradient >= 0) (Left (Mismatch "Invalid numerical update summary"))
+    surrogateGradient <- parse (.: "surrogate_gradient_norm") value
+    unless (tokens == sum counts && tokens > 0) (Left (Mismatch "Update active-token count disagrees"))
+    unless (all finite [gradient, surrogateGradient] && gradient >= 0 && surrogateGradient >= 0) (Left (Mismatch "Invalid numerical update summary"))
   where
     finite number = not (isNaN (number :: Double) || isInfinite number)
 
@@ -212,7 +211,7 @@ identity = Digest.sha256
 
 diagnostic :: String -> Progress -> Either Error Progress
 diagnostic stage progress@(Awaiting _ _) | stage `elem` ["loading", "profile", "load"] = Right progress
-diagnostic stage (Consumed runtime registry fact actual steps _) | stage `elem` ["reward_update", "artifacts", "checkpoint"] = Right (Consumed runtime registry fact actual steps Nothing)
+diagnostic stage (Consumed runtime registry fact actual steps _) | stage `elem` ["update", "artifacts", "checkpoint"] = Right (Consumed runtime registry fact actual steps Nothing)
 diagnostic stage _ = Left (Unexpected ("Unknown or misplaced worker stage: " ++ stage))
 
 matching :: V.Binding -> Object -> Either Error V.Binding

@@ -124,7 +124,7 @@ completion = forM_ changes $ \modify -> do
     evalIO (doesFileExist (root </> "learner-approved0")) >>= assert
     evalIO (doesFileExist (root </> "learner-released0")) >>= (=== False)
   where
-    changes = [drop 1, (F.timer "reward_update" :), alter 0 (change "cpu_seconds" (Number (-1))), alter 1 (change "extra" Null), alter 1 (change "storage" (String "published"))]
+    changes = [drop 1, (F.timer "update" :), alter 0 (change "cpu_seconds" (Number (-1))), alter 1 (change "extra" Null), alter 1 (change "storage" (String "published"))]
 
 acknowledgement :: PropertyT IO ()
 acknowledgement = forM_ changes $ \modify -> do
@@ -218,7 +218,7 @@ processed = do
         pure (void outcome, received, concat [digests | value <- applied, Just digests <- [parseMaybe (withObject "applied" (.: "consumed")) value]])
     returned === Right ()
     let decoded = [reply | line <- Bytes.lines replies, Just reply <- [decodeStrict line]]
-        reported = [S.digest (S.Reply 0 "" "" "" objective reward) | value <- decoded, Just (objective, reward) <- [parseMaybe (withObject "cotangents" (\fields -> (,) <$> fields .: "objective" <*> fields .: "reward")) value]]
+        reported = [S.digest (S.Reply 0 "" "" "" objective surrogate) | value <- decoded, Just (objective, surrogate) <- [parseMaybe (withObject "cotangents" (\fields -> (,) <$> fields .: "objective" <*> fields .: "surrogate")) value]]
     assert (not (null digests))
     reported === digests
 

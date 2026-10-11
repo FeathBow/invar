@@ -22,20 +22,20 @@ def check_optimizer(optimizer):
         raise RuntimeError("Non-finite optimizer state")
 
 
-def capture_gradients(model, reward_gradients):
+def capture_gradients(model, surrogate_gradients):
     named = tuple((name, value) for name, value in model.named_parameters() if value.requires_grad)
     recorded = {}
-    for (name, parameter), reward in zip(named, reward_gradients, strict=True):
+    for (name, parameter), surrogate in zip(named, surrogate_gradients, strict=True):
         recorded[f"objective/{name}"] = parameter.grad.detach().cpu().contiguous().clone()
-        recorded[f"reward/{name}"] = reward.detach().cpu().contiguous().clone()
+        recorded[f"surrogate/{name}"] = surrogate.detach().cpu().contiguous().clone()
     return recorded
 
 
 def parameter_vjps(current, trainable, cotangents):
     # One batched VJP applies both cotangent rows to the same forward graph.
     gradients = torch.autograd.grad(current, trainable, grad_outputs=cotangents, is_grads_batched=True)
-    objective_values, reward_values = zip(*(value.unbind() for value in gradients), strict=True)
-    return objective_values, reward_values
+    objective_values, surrogate_values = zip(*(value.unbind() for value in gradients), strict=True)
+    return objective_values, surrogate_values
 
 
 def accumulate_objective(trainable, contribution):
@@ -67,7 +67,7 @@ def update(learner, plan):
     currents, norms, recorded = [], None, None
     for step, batch in enumerate(plan.steps):
         optimizer.zero_grad(set_to_none=True)
-        reward_gradients = tuple(torch.zeros_like(value) for value in trainable)
+        surrogate_gradients = tuple(torch.zeros_like(value) for value in trainable)
         consumed = []
         for name in batch:
             linearized = response(learner, plan.trajectories[name])
@@ -75,15 +75,15 @@ def update(learner, plan):
             if step == 0:
                 proximal[name] = observed
             currents.append((step, name, observed))
-            objective, reward = exchange.current(step=step, sample=name, words=observed, state=state)
-            cotangents = tensor(objective + reward, device=linearized.device).reshape(2, -1)
+            objective, surrogate = exchange.current(step=step, sample=name, words=observed, state=state)
+            cotangents = tensor(objective + surrogate, device=linearized.device).reshape(2, -1)
             consumed.append(observation(words(cotangents.reshape(-1))))
-            objective_values, reward_values = parameter_vjps(linearized, trainable, cotangents)
-            reward_gradients = tuple(total + addition for total, addition in zip(reward_gradients, reward_values, strict=True))
+            objective_values, surrogate_values = parameter_vjps(linearized, trainable, cotangents)
+            surrogate_gradients = tuple(total + addition for total, addition in zip(surrogate_gradients, surrogate_values, strict=True))
             accumulate_objective(trainable, objective_values)
-        measured = gradient_norm(tuple(value.grad for value in trainable)), gradient_norm(reward_gradients)
+        measured = gradient_norm(tuple(value.grad for value in trainable)), gradient_norm(surrogate_gradients)
         if step == 0:
-            norms, recorded = measured, capture_gradients(model, reward_gradients)
+            norms, recorded = measured, capture_gradients(model, surrogate_gradients)
         optimizer.step()
         check_optimizer(optimizer)
         if any(not value.isfinite().all() for value in parameters(model)):
@@ -92,9 +92,9 @@ def update(learner, plan):
         exchange.applied(step=step, before=state, after=after, consumed=consumed)
         state = after
     model.eval()
-    summary = {"gradient_norm": norms[0], "reward_gradient_norm": norms[1],
+    summary = {"gradient_norm": norms[0], "surrogate_gradient_norm": norms[1],
                "active_tokens": sum(value.behavior.numel() for value in plan.trajectories.values()),
-               "before": before, "after": state, "nonzero_advantages": plan.nonzero}
+               "before": before, "after": state}
     return Update(summary=summary, gradients=recorded, proximal=proximal, currents=tuple(currents), reference=reference)
 
 

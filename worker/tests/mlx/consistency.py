@@ -57,7 +57,7 @@ class ConsistencyTests(unittest.TestCase):
         samples = {item.request.sample: (words(item.behavior), (), scalar.word(advantage))
                    for item, advantage in zip(self.trajectories, (1.0, -0.5, 0.25), strict=True)}
         core = Core(samples, (order,), scalar.Profile(epsilon=0.2, penalty=0.04))
-        plan = Plan(trajectories={item.request.sample: item for item in self.trajectories}, steps=(order,), nonzero=3, exchange=core)
+        plan = Plan(trajectories={item.request.sample: item for item in self.trajectories}, steps=(order,), exchange=core)
         learner = Learner(model=self.runtime.model, optimizer=optim.AdamW(learning_rate=0.0001), evaluate=logprobs)
         try:
             with mlx_training.learning(mlx_numerics.PRIMARY, self.runtime.model):

@@ -32,7 +32,7 @@ data Current = Current {step :: Natural, sample :: Text, words32 :: [Word32], ob
 data Applied = Applied {appliedStep :: Natural, before :: String, after :: String, consumed :: [String]}
     deriving (Eq, Show)
 
-data Reply = Reply {replyStep :: Natural, replySample :: Text, replyObservation :: String, replyState :: String, objective :: [Word32], reward :: [Word32]}
+data Reply = Reply {replyStep :: Natural, replySample :: Text, replyObservation :: String, replyState :: String, objective :: [Word32], surrogate :: [Word32]}
     deriving (Eq, Show)
 
 data Error
@@ -145,7 +145,7 @@ current stream report = do
         FromLearner -> maybe (Left (MissingReference (sample report))) Right (Map.lookup (sample report) (references stream))
     let inputs = [Objective.Inputs {Objective.current = now, Objective.proximal = old, Objective.behavior = seen, Objective.fixed = ref, Objective.advantage = advantageWord entry} | (now, old, seen, ref) <- zip4 (words32 report) frozen (behaviorWords entry) chosen]
     outputs <- either (Left . Scalar) Right (Objective.calculate (profile stream) (fromIntegral (denominator stream batch)) inputs)
-    let reply = Reply (position stream) (sample report) (observation report) (state report) (map Objective.gradient outputs) (map Objective.rewardGradient outputs)
+    let reply = Reply (position stream) (sample report) (observation report) (state report) (map Objective.gradient outputs) (map Objective.surrogateGradient outputs)
     pure
         ( stream
             { answered = answered stream ++ [digest reply]
@@ -174,7 +174,7 @@ complete stream
     | otherwise = Left Unfinished
 
 digest :: Reply -> String
-digest reply = observationOf (objective reply ++ reward reply)
+digest reply = observationOf (objective reply ++ surrogate reply)
 
 consumedDigest :: [String] -> String
 consumedDigest values = Artifact.hex (SHA256.hash (Lazy.toStrict (Builder.toLazyByteString (foldMap (\value -> Builder.stringUtf8 value <> Builder.char7 '\n') values))))

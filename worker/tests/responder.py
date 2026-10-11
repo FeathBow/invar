@@ -28,9 +28,9 @@ class Core:
         inputs = tuple(scalar.Inputs(current=now, proximal=old, behavior=seen, reference=fixed, advantage=advantage)
                        for now, old, seen, fixed in zip(words, self.fixed[sample], behavior, chosen, strict=True))
         outputs = scalar.calculate(self.profile, total, inputs)
-        objective, reward = tuple(item.gradient for item in outputs), tuple(item.reward_gradient for item in outputs)
-        self.answered.append(observation(objective + reward))
-        return objective, reward
+        objective, surrogate = tuple(item.gradient for item in outputs), tuple(item.surrogate_gradient for item in outputs)
+        self.answered.append(observation(objective + surrogate))
+        return objective, surrogate
 
     def applied(self, *, step, before, after, consumed):
         self.records.append(("applied", step, before, after, tuple(consumed)))
@@ -45,10 +45,10 @@ class Core:
             return None
         if value.get("stage") != "current":
             return None
-        objective, reward = self.current(step=value["step"], sample=value["sample"], words=value["words"], state=value["state"])
+        objective, surrogate = self.current(step=value["step"], sample=value["sample"], words=value["words"], state=value["state"])
         answer = {"stage": "cotangents", "binding": value["binding"] if self.binding is None else self.binding,
                   **{name: value[name] for name in ("step", "sample", "observation", "state")},
-                  "objective": list(objective), "reward": list(reward)}
+                  "objective": list(objective), "surrogate": list(surrogate)}
         return json.dumps(answer) + "\n"
 
 

@@ -59,7 +59,7 @@ full = do
     (afterA, replyA) <- evalEither (S.current begun (Current 0 "a" nowA (S.observationOf nowA) "p0"))
     outputsA <- expected nowA nowA first' 3
     objective replyA === map O.gradient outputsA
-    reward replyA === map O.rewardGradient outputsA
+    surrogate replyA === map O.surrogateGradient outputsA
     (afterB, replyB) <- evalEither (S.current afterA (Current 0 "b" nowB (S.observationOf nowB) "p0"))
     outputsB <- expected nowB nowB second' 3
     objective replyB === map O.gradient outputsB

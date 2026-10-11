@@ -62,7 +62,7 @@ def batch(steps=(LOGICAL_ORDER,), advantages=ADVANTAGES, probability=math.log(0.
     samples = {name: (tuple(words(item.behavior)), () if reference is None else (scalar.word(reference),), scalar.word(value))
                for (name, item), value in zip(trajectories.items(), advantages, strict=True)}
     core = Core(samples, steps, scalar.Profile(epsilon=0.2, penalty=penalty), reference_source=reference_source)
-    return Plan(trajectories=trajectories, steps=steps, nonzero=sum(value != 0 for value in advantages),
+    return Plan(trajectories=trajectories, steps=steps,
                 exchange=core if exchange is None else exchange, reference_source=reference_source,
                 reference={} if scored is None else scored)
 
@@ -162,7 +162,7 @@ class LearningTests(unittest.TestCase):
     def test_json_exchange_rejects_cotangents_for_another_step(self):
         answers = {"binding": {**BINDING, "attempt": 12}, "step": 1, "sample": "b", "observation": "0" * 64,
                    "state": "1" * 64}
-        for name, value in [*answers.items(), ("objective", [0, 0]), ("reward", [-1]), ("stage", "current"), ("step", True)]:
+        for name, value in [*answers.items(), ("objective", [0, 0]), ("surrogate", [-1]), ("stage", "current"), ("step", True)]:
             with self.subTest(field=name):
                 learner = make_learner()
                 before = adapter_state(learner.model)
@@ -227,10 +227,10 @@ class LearningTests(unittest.TestCase):
         learner = make_learner()
         result = update(learner, batch())
         named = {name: parameter for name, parameter in learner.model.named_parameters() if parameter.requires_grad}
-        self.assertEqual(set(result.gradients), {f"{role}/{name}" for role in ("objective", "reward") for name in named})
+        self.assertEqual(set(result.gradients), {f"{role}/{name}" for role in ("objective", "surrogate") for name in named})
         for name, parameter in named.items():
             assert_equal(parameter.grad, result.gradients[f"objective/{name}"])
-            assert_equal(parameter.grad, result.gradients[f"reward/{name}"])
+            assert_equal(parameter.grad, result.gradients[f"surrogate/{name}"])
         staged = make_learner()
         later = update(staged, batch(steps=(LOGICAL_ORDER, LOGICAL_ORDER)))
         assert_equal(later.gradients, result.gradients)
@@ -273,13 +273,12 @@ class LearningTests(unittest.TestCase):
         assert_equal(before, adapter_state(learner.model))
         assert_equal(previous_step, slots["step"])
 
-    def test_small_advantage_reaches_the_reward_gradient(self):
+    def test_small_advantage_reaches_the_surrogate_gradient(self):
         expected = run(batch())
         analytic_norm = SMALL_ADVANTAGE * math.sqrt(2) / (2 * len(LOGICAL_ORDER))
-        self.assertAlmostEqual(expected[0]["reward_gradient_norm"], analytic_norm, places=15)
-        self.assertGreater(expected[0]["reward_gradient_norm"], 0)
+        self.assertAlmostEqual(expected[0]["surrogate_gradient_norm"], analytic_norm, places=15)
+        self.assertGreater(expected[0]["surrogate_gradient_norm"], 0)
         self.assertEqual(expected[0]["active_tokens"], len(LOGICAL_ORDER))
-        self.assertEqual(expected[0]["nonzero_advantages"], len(LOGICAL_ORDER))
 
     def test_declared_step_order_is_the_accumulation_order(self):
         original, reordered = run(batch()), run(batch(steps=(("a", "c", "b"),)))

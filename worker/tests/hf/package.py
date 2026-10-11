@@ -107,7 +107,7 @@ class PackageTests(unittest.TestCase):
         prior = original.source["adapter"]
         for generation in range(2):
             updated = update(self.learner, batch())
-            self.assertGreater(updated.summary["reward_gradient_norm"], 0)
+            self.assertGreater(updated.summary["surrogate_gradient_norm"], 0)
             state = adapter_state(self.model)
             path = self.directory.parent / f"adapter-{generation}.safetensors"
             save_file(state, path)

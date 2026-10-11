@@ -18,7 +18,7 @@ import Invar.Policy.Header qualified as Header
 import Prelude hiding (compare)
 
 roles :: [Text]
-roles = ["objective", "reward"]
+roles = ["objective", "surrogate"]
 
 data Observed = Observed Report.Report [File.Scan]
 
@@ -28,7 +28,7 @@ observe parameters (report, path) = File.withFile path $ \file -> do
     validate report raw file
     complete (roleInventory parameters) file
     let nonzero role = [File.scanName scan | scan <- scans, File.scanNonzero scan, (role <> "/") `Names.isPrefixOf` File.scanName scan]
-    pure (object ["digest" .= Report.gradient report, "tensors" .= length scans, "nonzero_objective_tensors" .= nonzero "objective", "nonzero_reward_tensors" .= nonzero "reward"], Observed report scans)
+    pure (object ["digest" .= Report.gradient report, "tensors" .= length scans, "nonzero_objective_tensors" .= nonzero "objective", "nonzero_surrogate_tensors" .= nonzero "surrogate"], Observed report scans)
 
 compare :: FilePath -> (Report.Report, FilePath) -> (Report.Report, FilePath) -> IO Value
 compare policy (first, left) (second, right) = do
@@ -69,7 +69,7 @@ validate report actual file = do
     expected <- either invalid pure (Report.consumedPolicy report)
     unless (Names.unpack policy == expected) (invalid "Gradient metadata policy differs from its consumed input")
     observation <- field "observation" attributes
-    unless (observation == "objective and reward gradients before AdamW") (invalid "Gradient observation is not the declared pre-AdamW snapshot")
+    unless (observation == "objective and surrogate gradients before AdamW") (invalid "Gradient observation is not the declared pre-AdamW snapshot")
   where
     field name = maybe (invalid "Missing gradient metadata") pure . Map.lookup name
 

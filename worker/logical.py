@@ -21,7 +21,6 @@ class Learner(Generic[Model, Optimizer, Tensor]):
 class Plan(Generic[Tensor]):
     trajectories: dict[str, Trajectory[Tensor]]
     steps: tuple[tuple[str, ...], ...]
-    nonzero: int
     exchange: Exchange
     reference_source: str = "engine"
     reference: dict[str, Tensor] = field(default_factory=dict)
@@ -37,6 +36,5 @@ class Update(Generic[Tensor]):
 
 
 def plan(request, trajectories, exchange, reference=None):
-    return Plan(trajectories={item.request.sample: item for item in trajectories}, steps=request.steps,
-                nonzero=sum(item.advantage_bits & 0x7FFFFFFF != 0 for item in request.samples), exchange=exchange,
+    return Plan(trajectories={item.request.sample: item for item in trajectories}, steps=request.steps, exchange=exchange,
                 reference_source=request.reference_source, reference={} if reference is None else reference)

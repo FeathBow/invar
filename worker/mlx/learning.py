@@ -56,7 +56,7 @@ def update(learner, plan, *, linearize):
     for step, batch in enumerate(plan.steps):
         parameters = adapter(model)
         accumulated = {role: {name: mx.zeros_like(value) for name, value in parameters.items()}
-                       for role in ("objective", "reward")}
+                       for role in ("objective", "surrogate")}
         consumed = []
         for name in batch:
             current, differentiate = response(model, plan.trajectories[name], evaluate=learner.evaluate, linearize=linearize)
@@ -64,8 +64,8 @@ def update(learner, plan, *, linearize):
             if step == 0:
                 proximal[name] = observed
             currents.append((step, name, observed))
-            objective, reward = exchange.current(step=step, sample=name, words=observed, state=state)
-            cotangents = (("objective", probability.tensor(objective)), ("reward", probability.tensor(reward)))
+            objective, surrogate = exchange.current(step=step, sample=name, words=observed, state=state)
+            cotangents = (("objective", probability.tensor(objective)), ("surrogate", probability.tensor(surrogate)))
             consumed.append(observation(tuple(word for _, value in cotangents for word in probability.words(value))))
             for role, cotangent in cotangents:
                 contribution = differentiate(cotangent=cotangent)
@@ -75,7 +75,7 @@ def update(learner, plan, *, linearize):
                 accumulated[role] = {key: value + contribution[key] for key, value in accumulated[role].items()}
                 mx.eval(accumulated[role])
             del differentiate, contribution
-        measured = norm(accumulated["objective"]), norm(accumulated["reward"])
+        measured = norm(accumulated["objective"]), norm(accumulated["surrogate"])
         if step == 0:
             norms = measured
             recorded = {role + "/" + key: value for role, values in accumulated.items() for key, value in values.items()}
@@ -86,7 +86,7 @@ def update(learner, plan, *, linearize):
         exchange.applied(step=step, before=state, after=after, consumed=consumed)
         state = after
     model.eval()
-    summary = {"gradient_norm": norms[0], "reward_gradient_norm": norms[1],
+    summary = {"gradient_norm": norms[0], "surrogate_gradient_norm": norms[1],
                "active_tokens": sum(item.behavior.size for item in plan.trajectories.values()),
-               "before": before, "after": state, "nonzero_advantages": plan.nonzero}
+               "before": before, "after": state}
     return Update(summary=summary, gradients=recorded, proximal=proximal, currents=tuple(currents))

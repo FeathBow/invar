@@ -12,7 +12,7 @@ data Profile = Profile {epsilon :: Double, penalty :: Double}
 data Inputs = Inputs {current :: Word32, proximal :: Word32, behavior :: Word32, fixed :: Word32, advantage :: Word32}
     deriving (Eq, Show)
 
-data Output = Output {term :: Word32, gradient :: Word32, rewardGradient :: Word32}
+data Output = Output {term :: Word32, gradient :: Word32, surrogateGradient :: Word32}
     deriving (Eq, Show)
 
 data Error = InvalidInput String | NonFinite String
@@ -43,17 +43,17 @@ token constants inputs = do
     difference <- binary ("reference difference", (-)) q p
     referenceRatio <- exponential difference
     (selected, slope) <- surrogate constants ratio a
-    reward <- binary ("reward term", (*)) (-weight) selected
+    surrogateTerm <- binary ("surrogate term", (*)) (-weight) selected
     distance <- binary ("reference ratio minus difference", (-)) referenceRatio difference >>= \value -> binary ("reference distance", (-)) value 1
     regularizer <- binary ("reference penalty", (*)) (coefficient constants) distance
-    value <- binary ("objective term", (+)) reward regularizer
+    value <- binary ("objective term", (+)) surrogateTerm regularizer
     currentSlope <- binary ("surrogate current slope", (*)) slope ratio
-    rewardSlope <- binary ("reward slope", (*)) (-weight) currentSlope
+    surrogateSlope <- binary ("surrogate slope", (*)) (-weight) currentSlope
     referenceSlope <- binary ("reference slope", (-)) 1 referenceRatio >>= binary ("penalty slope", (*)) (coefficient constants)
-    objectiveSlope <- binary ("objective slope", (+)) rewardSlope referenceSlope
+    objectiveSlope <- binary ("objective slope", (+)) surrogateSlope referenceSlope
     normalized <- binary ("normalized objective slope", (/)) objectiveSlope (count constants)
-    normalizedReward <- binary ("normalized reward slope", (/)) rewardSlope (count constants)
-    pure (Output (castFloatToWord32 value) (castFloatToWord32 normalized) (castFloatToWord32 normalizedReward))
+    normalizedSurrogate <- binary ("normalized surrogate slope", (/)) surrogateSlope (count constants)
+    pure (Output (castFloatToWord32 value) (castFloatToWord32 normalized) (castFloatToWord32 normalizedSurrogate))
 
 surrogate :: Constants -> Float -> Float -> Either Error (Float, Float)
 surrogate constants ratio a = do

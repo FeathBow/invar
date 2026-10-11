@@ -151,7 +151,7 @@ def execute(learner, call, output, *, plan, actual, tokenizer, measure):
 
     request = call.request
     bound = call.invocation.binding()
-    result = measure("reward_update", lambda: update(learner, plan))
+    result = measure("update", lambda: update(learner, plan))
     probability_digest = save_probabilities(output / "probabilities.json", request.order, result,
                                             invocation={"binding": bound, "program": call.invocation.program},
                                             request=actual)
@@ -159,7 +159,7 @@ def execute(learner, call, output, *, plan, actual, tokenizer, measure):
     save_file(result.gradients, gradients, metadata={"binding": json.dumps(bound, sort_keys=True),
                                                    "program": call.invocation.program,
                                                    "policy": request.policy,
-                                                   "observation": "objective and reward gradients before AdamW"})
+                                                   "observation": "objective and surrogate gradients before AdamW"})
     saved = checkpoint_update(learner, request, output, tokenizer=tokenizer, summary=result.summary)
     return {"binding": bound, "request": actual, "update": result.summary,
             "gradients": file_digest(gradients), "probabilities": probability_digest,

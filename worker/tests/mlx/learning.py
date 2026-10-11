@@ -88,7 +88,7 @@ def batch(model, *, reference=None):
         samples[reward.sample] = (mlx_probability.words(probability), () if reference is None else reference[index - 1],
                                   scalar.word(normalized[reward.sample]))
     order = tuple(reward.sample for reward in REWARDS)
-    return Plan(trajectories=trajectories, steps=(order,), nonzero=sum(value != 0 for value in normalized.values()),
+    return Plan(trajectories=trajectories, steps=(order,),
                 exchange=Core(samples, (order,), scalar.Profile(epsilon=0.2, penalty=0.01)))
 
 
@@ -126,7 +126,7 @@ def report(directory, result, logical, *, binding, input_state, reference):
     gradients = directory / "gradients.safetensors"
     with gradients.open("xb") as target:
         mx.save_safetensors(target, result.gradients, metadata={"binding": json.dumps(bound), "program": program,
-                                                               "policy": input_state[0], "observation": "objective and reward gradients before AdamW"})
+                                                               "policy": input_state[0], "observation": "objective and surrogate gradients before AdamW"})
     probability = probability_record.save(directory / "probabilities.json", order, result,
                                            invocation={"binding": bound, "program": program}, request=request)
     policy = mlx_tensors.digest(mlx_tensors.policy(directory / "adapter.safetensors", result.summary["after"]))
@@ -150,7 +150,7 @@ class LearningTests(unittest.TestCase):
         reference = mlx_tensors.digest(mlx_learning.adapter(live.model))
         result = mlx_learning.update(live, first, linearize=derivative.linearize)
         quarter = scalar.word(scalar.rounded(scalar.number(first.exchange.samples["a"][2])) / 4)
-        self.assertEqual(mlx_probability.words(result.gradients["reward/projection.lora_b"].reshape(-1)),
+        self.assertEqual(mlx_probability.words(result.gradients["surrogate/projection.lora_b"].reshape(-1)),
                          (quarter, scalar.word(-scalar.number(quarter))))
         self.assertNotEqual(result.summary["before"], result.summary["after"])
         saved = save(directory / "first", live)
