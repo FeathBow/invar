@@ -36,7 +36,7 @@ class PolicyTests(unittest.TestCase):
             read_adapter(path, "not-a-digest")
 
     def test_invalid_adapter_contents_are_rejected_before_loading(self):
-        cases = [{}, {"adapter": torch.tensor([float("nan")])},
+        cases = [{"adapter": torch.tensor([float("nan")])},
                  {"adapter": torch.tensor([float("inf")])},
                  {"adapter": torch.tensor([1.0], dtype=torch.float64)}]
         for index, state in enumerate(cases):

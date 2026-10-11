@@ -20,7 +20,7 @@ def validate_identity(expected):
 
 def validate_state(state, expected):
     validate_identity(expected)
-    if not state or any(value.dtype != torch.float32 or not value.isfinite().all()
+    if any(value.dtype != torch.float32 or not value.isfinite().all()
                         for value in state.values()):
         raise ValueError("Adapter must contain finite FP32 tensors")
     if digest(state) != expected:
@@ -56,7 +56,8 @@ def activate(model, state, *, base, assembly, role):
     model_assembly.verify(model, assembly, role)
     frozen.verify(model, base)
     validate_schema(adapter_state(model), state)
-    set_peft_model_state_dict(model, state)
+    if state:
+        set_peft_model_state_dict(model, state)
     loaded = adapter_state(model)
     assert_equal(state, loaded)
     return digest(loaded)

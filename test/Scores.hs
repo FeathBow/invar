@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Scores (scores, fixtureFor, fixtureWith, changeObservation, nativeExecutionValue) where
+module Scores (scores, fixtureFor, fixtureWith, changeObservation, nativeExecutionValue, transformersExecutionValue) where
 
 import Calls (change, field, request, wire)
 import Control.Monad (forM_)
@@ -31,6 +31,7 @@ scores =
         , ("malformed nonfinite and incomplete score reports fail", once malformed)
         , ("completion must retain its authorized prefix and successful process", once lifecycle)
         , ("native scoring preserves its own execution and row accounting contract", once nativeExecution)
+        , ("Hugging Face forced-path scoring declares a fresh cache per path", once transformersExecution)
         ]
   where
     once = withTests 1 . property
@@ -184,6 +185,18 @@ nativeExecution = do
 
 nativeExecutionValue :: Value
 nativeExecutionValue = object ["engine" .= String "vllm.v1.worker.gpu_model_runner.GPUModelRunner", "cache_origin" .= String "target-owned native request caches; no source cache input", "path_control" .= String "replace sampled ids after native probability calculation", "native_sample_rows" .= (5 :: Int), "ignored_prefill_rows" .= (3 :: Int), "truncated" .= True]
+
+transformersExecution :: PropertyT IO ()
+transformersExecution = do
+    (call, events) <- fixture
+    let execution = transformersExecutionValue
+        changed key value = changeObservation (change "execution" (change key value execution)) events
+    report <- evalEither (Score.admit call 0 (wire (changeObservation (change "execution" execution) events)))
+    Score.logRatio report === Score.Finite 0
+    forM_ [("engine", String "transformers.generate"), ("cache_origin", String "source cache"), ("truncated", Bool False), ("path_control", String "replace sampled ids after native probability calculation")] $ \(key, value) -> reject call (changed key value)
+
+transformersExecutionValue :: Value
+transformersExecutionValue = object ["engine" .= String "transformers.forced_path", "cache_origin" .= String "fresh model cache per path; no source cache input", "truncated" .= True]
 
 alter :: Int -> (a -> a) -> [a] -> [a]
 alter selected modify = zipWith (\index value -> if index == selected then modify value else value) [0 ..]

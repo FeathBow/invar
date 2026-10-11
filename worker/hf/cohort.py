@@ -27,11 +27,10 @@ def execute_batch(runtime, calls, *, approve, measure, emit, reference=None):
 
 
 def activate(runtime, adapter, *, expected):
-    from worker.hf.policy import activate as install, read_adapter
-    from worker.implementation import INFERENCE
+    from worker.hf.inference import installed
+    from worker.hf.policy import read_adapter
 
-    install(runtime.model, read_adapter(adapter, expected["adapter"]), base=expected["base"], assembly=expected["assembly"],
-            role=INFERENCE)
+    installed(runtime.model, read_adapter(adapter, expected["adapter"]), expected)
     return replace(runtime, adapter=adapter)
 
 
