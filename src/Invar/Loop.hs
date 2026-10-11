@@ -1,6 +1,6 @@
 {-# LANGUAGE RoleAnnotations #-}
 
-module Invar.Loop (Backend (..), Config (..), Cycle (..), Checkpoint (..), Driver, Generation, Status (..), Error (..), withDriver, run, status, current, result, plan, receipt, inferenceWorker, updateWorker, scoring, stagedName, bindTasks, instantiate) where
+module Invar.Loop (Backend (..), Config (..), CycleOf (..), Cycle, Checkpoint (..), Driver, Generation, Status (..), Error (..), withDriver, run, status, current, result, plan, receipt, inferenceWorker, updateWorker, scoring, stagedName, bindTasks, instantiate) where
 
 import Control.Concurrent.MVar (MVar, newMVar, withMVar)
 import Control.Exception (mask, onException)
@@ -41,7 +41,8 @@ data Backend = Backend
     , sessions :: [[(String, String)]]
     }
 data Config = Config {backend :: Backend, root :: FilePath, checkpoint :: FilePath, reference :: FilePath, settings :: L.Settings, publication :: S.Method}
-data Cycle = Cycle {tasks :: [C.Task], order :: [Natural], delivery :: [Natural]}
+data CycleOf grade = Cycle {tasks :: [C.TaskOf grade], order :: [Natural], delivery :: [Natural]}
+type Cycle = CycleOf C.Graded
 data Checkpoint = Checkpoint {directory :: FilePath, policy :: String, learner :: String}
     deriving (Eq, Show)
 
@@ -142,14 +143,14 @@ collect driver (cursor@(Cursor _ selected description), workload) = do
         unless (actual == description) (Left (Policy "Selected policy description changed after publication or initial selection"))
         bindTasks description (tasks workload)
 
-bindTasks :: Policy.Description -> [C.Task] -> Either Error [C.Task]
+bindTasks :: Policy.Description -> [C.TaskOf grade] -> Either Error [C.TaskOf grade]
 bindTasks description = traverse bind
   where
     bind task = do
         planned <- first (Policy . show) (I.bindPolicy description (C.plan task))
         pure task {C.plan = planned}
 
-instantiate :: (String, String, String, String) -> Workload.Cycle -> Either String Cycle
+instantiate :: (C.Grade grade) => (String, String, String, String) -> Workload.CycleOf grade -> Either String (CycleOf grade)
 instantiate (policy', tokenizer, base, assembly) workload = do
     tasks' <- traverse prepare (Workload.tasks workload)
     first show (C.withCohort (C.Definition policy' tasks') (const ()))

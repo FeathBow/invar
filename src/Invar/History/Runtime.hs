@@ -92,11 +92,12 @@ identities :: Checked -> Natural
 identities (Checked _ _ replayed _ _ _) = Replay.identity (Replay.floors replayed)
 
 profiles :: Checked -> [Profile.Observation]
-profiles (Checked _ _ replayed _ _ _) = concat [Profile.fromPrefix (role chosen) loading | (chosen, loading) <- Map.elems (Replay.loaded replayed)]
+profiles (Checked _ _ replayed _ _ _) = concat [Profile.fromPrefix selected loading | (chosen, loading) <- Map.elems (Replay.loaded replayed), selected <- role chosen]
   where
-    role Entry.Inference = Resident.Inference
-    role Entry.Learner = Resident.Learning
-    role Entry.Shared = Resident.Shared
+    role Entry.Inference = [Resident.Inference]
+    role Entry.Learner = [Resident.Learning]
+    role Entry.Shared = [Resident.Shared]
+    role Entry.Teacher = []
 
 loads :: Checked -> [Value]
 loads (Checked _ _ replayed _ _ _) = [Object fields | (_, loading) <- Map.elems (Replay.loaded replayed), fields <- loading]

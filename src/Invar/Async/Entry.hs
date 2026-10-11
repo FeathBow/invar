@@ -20,7 +20,7 @@ import Invar.Transcript (Outcome (..), Output (..))
 import Numeric.Natural (Natural)
 import System.Exit (ExitCode (..))
 
-data Role = Inference | Learner | Shared
+data Role = Inference | Learner | Shared | Teacher
     deriving (Eq, Show)
 
 data Claim
@@ -49,6 +49,8 @@ data Entry
     | Finished Natural Outcome
     | Happened Claim
     | Stored Natural V.Binding String
+    | Taught Natural V.Binding Natural
+    | Read Natural V.Binding String
     | Verified Natural Natural String
     | Restarted [Generation]
     | Elapsed Text Natural Double Double
@@ -81,6 +83,8 @@ encode recorded = case recorded of
     Finished number ended -> entry "exit" (("process" .= number) : outcomeFields ended)
     Happened event -> entry "event" ["event" .= claimValue event]
     Stored request bound digest -> entry "result" ["request" .= request, "binding" .= Wire.bindingValue bound, "digest" .= digest]
+    Taught request bound process -> entry "teacher" ["request" .= request, "binding" .= Wire.bindingValue bound, "process" .= process]
+    Read request bound digest -> entry "reading" ["request" .= request, "binding" .= Wire.bindingValue bound, "digest" .= digest]
     Verified update attempt digest -> entry "checkpoint" ["update" .= update, "attempt" .= attempt, "learner" .= digest]
     Restarted observed -> entry "restart" ["generations" .= map generationValue observed]
     Elapsed kind update started ended -> entry "interval" ["role" .= kind, "update" .= update, "start" .= started, "end" .= ended]
@@ -102,6 +106,8 @@ decode fields = do
         "exit" -> Finished <$> fields .: "process" <*> outcome fields
         "event" -> exactly ["event"] >> Happened <$> (fields .: "event" >>= withObject "journaled event" claimed)
         "result" -> exactly ["request", "binding", "digest"] >> Stored <$> fields .: "request" <*> binding fields <*> fields .: "digest"
+        "teacher" -> exactly ["request", "binding", "process"] >> Taught <$> fields .: "request" <*> binding fields <*> fields .: "process"
+        "reading" -> exactly ["request", "binding", "digest"] >> Read <$> fields .: "request" <*> binding fields <*> fields .: "digest"
         "checkpoint" -> exactly ["update", "attempt", "learner"] >> Verified <$> fields .: "update" <*> fields .: "attempt" <*> fields .: "learner"
         "restart" -> exactly ["generations"] >> Restarted <$> (fields .: "generations" >>= traverse (withObject "observed generation" generation))
         "interval" -> exactly ["role", "update", "start", "end"] >> Elapsed <$> fields .: "role" <*> fields .: "update" <*> fields .: "start" <*> fields .: "end"
@@ -125,11 +131,13 @@ roleName :: Role -> Text
 roleName Inference = "inference"
 roleName Learner = "learner"
 roleName Shared = "shared"
+roleName Teacher = "teacher"
 
 roleOf :: Text -> Parser Role
 roleOf "inference" = pure Inference
 roleOf "learner" = pure Learner
 roleOf "shared" = pure Shared
+roleOf "teacher" = pure Teacher
 roleOf other = fail ("Unknown process role: " ++ show other)
 
 outcomeFields :: Outcome -> [Pair]

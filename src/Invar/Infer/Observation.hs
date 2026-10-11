@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Infer.Observation (Report, Source, view, source, sourceLog, sourceTrajectory, result, binding, logDigest, trajectory, policyDescription, describe, describeSource, sourcePolicy) where
+module Invar.Infer.Observation (Report, Source, view, source, sampled, sourceLog, sourceTrajectory, result, binding, logDigest, trajectory, policyDescription, describe, describeSource, sourcePolicy) where
 
 import Data.Aeson (Value, object, (.=))
 import Invar.Infer qualified as Infer
@@ -33,6 +33,9 @@ logDigest (Report logged) = Replay.source logged
 
 source :: Report -> Source
 source report = Source (logDigest report) (trajectory report)
+
+sampled :: Trajectory -> Source
+sampled admitted = Source (Trajectory.digest admitted) admitted
 
 sourceLog :: Source -> String
 sourceLog (Source digest _) = digest

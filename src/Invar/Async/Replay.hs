@@ -214,6 +214,8 @@ entry declared transcripts fold recorded = case recorded of
         pure fold {tries = Map.adjust (\chosen -> chosen {verified = Just digest}) (update, tried) (tries fold)}
     Entry.Restarted observed -> fst <$> restarted fold observed
     Entry.Elapsed {} -> pure fold
+    Entry.Taught {} -> Left "A teacher call belongs to a distillation run, whose journal is not replayed"
+    Entry.Read {} -> Left "A teacher reading belongs to a distillation run, whose journal is not replayed"
 
 running :: Fold -> Natural -> (Entry.Role, Natural, Natural) -> Either String ()
 running fold number (expected, worker, used) = case Map.lookup number (processes fold) of
