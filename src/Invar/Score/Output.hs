@@ -19,6 +19,7 @@ import Invar.Float32 qualified as Float32
 import Invar.Infer qualified as Infer
 import Invar.Infer.Observation qualified as Inference
 import Invar.Infer.Result qualified as Result
+import Invar.Infer.Trajectory qualified as Trajectory
 import Invar.Json qualified as Json
 import Invar.Policy qualified as Policy
 import Invar.Score.Execution qualified as Execution
@@ -28,7 +29,7 @@ import Invar.Spec.Score (LogRatio (..))
 import Invar.Spec.Score qualified as S
 import Numeric.Natural (Natural)
 
-data Input = Input {source :: Inference.Report, target :: Infer.Request, inspection :: ByteString, materialization :: Policy.Description, probeSteps :: [Natural], measurements :: [Object]}
+data Input = Input {source :: Inference.Source, target :: Infer.Request, inspection :: ByteString, materialization :: Policy.Description, probeSteps :: [Natural], measurements :: [Object]}
 
 data Body = Body {probabilityWords :: [Word32], logRatio :: LogRatio, fullVocabulary :: Maybe S.Distribution, observation :: Value}
     deriving (Eq, Show)
@@ -45,8 +46,8 @@ parse inputs value fields = do
     equals fields "role" (if full then "cached_behavior_full_vocabulary" else "cached_behavior_cross_score" :: String)
     equals fields "use_admission" ("not_evaluated" :: String)
     equals fields "source_inspection_sha256" (Artifact.hex (SHA256.hash (inspection inputs)))
-    equals fields "source" (Inference.describe (source inputs))
-    let original = Inference.result (source inputs)
+    equals fields "source" (Inference.describeSource (source inputs))
+    let original = Trajectory.result (Inference.sourceTrajectory (source inputs))
         requested = target inputs
         (prefix, response) = splitAt (fromIntegral (Result.promptLength original)) (Result.tokens original)
     equals fields "prefix_tokens" prefix

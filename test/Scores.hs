@@ -23,7 +23,7 @@ scores :: Group
 scores =
     Group
         "Bound cached path scores"
-        [ ("actual source request is required before constructing a score", once sourceInputs)
+        [ ("a score takes the path, prompt, horizon, temperature and seed from its source and refuses a target with another tokenizer", once sourceInputs)
         , ("checked load and consumption produce a distinct score completion", once admitted)
         , ("path ratios preserve finite arithmetic signed zero and zero support", once arithmetic)
         , ("score bindings programs and materializations cannot be relabeled", once bindings)
@@ -48,7 +48,7 @@ fixtureWith configure original target = do
     sourcePlan <- evalEither (Infer.prepare request)
     source <- evalEither (Source.admitted sourcePlan Source.bound (wire original))
     targetPlan <- evalEither (Infer.prepare target)
-    planned <- evalEither (Score.prepare 0 source targetPlan >>= configure)
+    planned <- evalEither (Score.prepare (Inference.source source) (Score.targetOf targetPlan) >>= configure)
     call <- evalEither (Score.bind (V.Binding (V.CallId 20) (V.AttemptId 21) (V.Instance 22)) planned)
     envelope <- evalEither (eitherDecodeStrict (Score.input call))
     sourceLoaded <- case filter ((== String "loaded_adapter") . field "stage") original of
@@ -88,14 +88,14 @@ sourceInputs = do
     original <- Source.fixture
     planned <- evalEither (Infer.prepare request)
     source <- evalEither (Source.admitted planned Source.bound (wire original))
-    case Score.prepare 3 source planned of
-        Left (Score.SourceProcessFailed 3) -> success
-        _ -> failure
-    forM_ [request {Infer.prompt = "different"}, request {Infer.tokens = 9}, request {Infer.temperature = 1.1}, request {Infer.seed = 999}, request {Infer.tokenizer = replicate 64 'e'}] $ \input -> do
+    other <- evalEither (Infer.prepare request {Infer.tokenizer = replicate 64 'e'})
+    case Score.prepare (Inference.source source) (Score.targetOf other) of
+        Left (Score.Incompatible "tokenizer") -> success
+        unexpected -> annotateShow (fmap (Infer.requested . Score.target) unexpected) >> failure
+    forM_ [request {Infer.prompt = "different"}, request {Infer.tokens = 9}, request {Infer.temperature = 1.1}, request {Infer.seed = 999}] $ \input -> do
         target <- evalEither (Infer.prepare input)
-        case Score.prepare 0 source target of
-            Left (Score.Incompatible _) -> success
-            _ -> failure
+        scored <- evalEither (Score.prepare (Inference.source source) (Score.targetOf target))
+        Infer.requested (Score.target scored) === request
 
 admitted :: PropertyT IO ()
 admitted = do

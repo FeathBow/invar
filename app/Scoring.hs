@@ -7,11 +7,9 @@ import Data.ByteString.Lazy.Char8 qualified as Lazy
 import HistoryInput qualified
 import InferenceInput qualified
 import Invar.History qualified as History
-import Invar.Infer qualified as Infer
 import Invar.Infer.Invocation qualified as Call
 import Invar.Infer.Observation qualified as Inference
 import Invar.Infer.Replay qualified as Replay
-import Invar.Infer.Result qualified as Result
 import Invar.Infer.Session qualified as Session
 import Invar.Score qualified as Score
 import Invar.Score.Worker qualified as Execution
@@ -48,14 +46,12 @@ run supplied = do
 
 prepare :: O.Fields -> IO Score.Call
 prepare fields = do
-    (sourceStatus, source) <- maybe (standalone fields) (const (rollout fields)) (O.optional fields "source-generation")
+    source <- maybe (standalone fields) (const (rollout fields)) (O.optional fields "source-generation")
     adapter <- either die pure (O.required fields "target-digest")
     tokenizer <- either die pure (O.required fields "target-tokenizer-digest")
     base <- either die pure (O.required fields "target-base-digest")
     assembly <- either die pure (O.required fields "target-assembly-digest")
-    let requested = (Result.consumed (Inference.result source)) {Infer.artifact = adapter, Infer.tokenizer = tokenizer, Infer.base = base, Infer.assembly = assembly}
-    selected <- either (die . show) pure (Infer.prepare requested)
-    basePlan <- either (die . show) pure (Score.prepare sourceStatus source selected)
+    basePlan <- either (die . show) pure (Score.prepare (Inference.source source) (Score.Target (adapter, tokenizer, base, assembly) Nothing))
     planned <- case O.optional fields "probe-steps" of
         Nothing -> pure basePlan
         Just selection -> do
@@ -64,7 +60,7 @@ prepare fields = do
     bound <- either die pure (InferenceInput.binding fields)
     either (die . show) pure (Score.bind bound planned)
 
-standalone :: O.Fields -> IO (Int, Inference.Report)
+standalone :: O.Fields -> IO Inference.Report
 standalone fields = do
     sourcePlan <- InferenceInput.declaredWith "source-" fields
     sourceBinding <- either die pure (InferenceInput.bindingWith "source-" fields)
@@ -74,10 +70,10 @@ standalone fields = do
     encoded <- Bytes.readFile sourcePath
     admitted <- either (die . show) pure (Replay.standalone Session.Single (Session.Declaration [call] Nothing) (Replay.declared sourceStatus) encoded)
     case admitted of
-        [single] -> pure (sourceStatus, Inference.view single)
+        [single] -> pure (Inference.view single)
         _ -> die "Expected one admitted source inference"
 
-rollout :: O.Fields -> IO (Int, Inference.Report)
+rollout :: O.Fields -> IO Inference.Report
 rollout fields = do
     generation <- either die pure (O.numeric fields "source-generation")
     sample <- either die pure (O.required fields "source-sample")
@@ -86,7 +82,7 @@ rollout fields = do
     (declared, output) <- HistoryInput.load selected
     observed <- History.admit decoder declared output
     reports <- either die pure (History.rollouts observed generation)
-    maybe (die "The generation has no rollout for that sample") (pure . (,) 0) (lookup sample reports)
+    maybe (die "The generation has no rollout for that sample") pure (lookup sample reports)
 
 common :: [OptDescr (String, String)]
 common =
