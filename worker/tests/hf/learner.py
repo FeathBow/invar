@@ -67,7 +67,7 @@ def fixture(*, directory=None, taught=False):
               "reference": digest(state), "samples": samples, "order": ["s0", "s1"], "steps": [["s0", "s1"]]}
     if taught:
         actual = {**{key: item for key, item in actual.items() if key != "delta"}, "specification": DISTILLATION,
-                  "teacher": {"model": "teacher-model", "revision": "teacher-revision", "tokenizer": saved["tokenizer"],
+                  "teacher": {"model": "teacher-model", "revision": "teacher-revision", "adapter": "6" * 64, "tokenizer": saved["tokenizer"],
                               "base": "7" * 64, "assembly": "8" * 64, "profile": "9" * 64, "temperature": 0.8,
                               "truncation": "none", "logprobs": "processed", "path": "forced"},
                   "samples": [{**{key: item for key, item in sample.items() if key not in ("group", "reward", "advantage_bits")},
