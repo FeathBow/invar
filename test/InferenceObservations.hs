@@ -189,7 +189,7 @@ batchMatching = do
         Observation.logDigest observed === digest
         Observation.result changed === Observation.result observed
         assert (Observation.logDigest changed /= Observation.logDigest observed)
-        scoring <- evalEither (Score.prepare 0 observed planned)
+        scoring <- evalEither (Score.prepare (Observation.source observed) (Score.targetOf planned))
         inspection <- evalEither (eitherDecodeStrict (Score.sourceInspection scoring))
         inspection === Observation.describe observed
     compared <- evalEither (Numerical.observe (Numerical.BoundRun (Numerical.Run planned bound 0 (withLoad original) Nothing) (Numerical.Run planned bound 0 encoded (Just declared))))

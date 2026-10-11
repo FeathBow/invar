@@ -2,12 +2,14 @@
 
 module Invar.Score (
     Plan,
+    Target (..),
     Call,
     Permit,
     Report,
     Error (..),
     LogRatio (..),
     prepare,
+    targetOf,
     withProbe,
     bind,
     input,
@@ -43,6 +45,7 @@ import Invar.Artifact qualified as Artifact
 import Invar.Infer qualified as Infer
 import Invar.Infer.Observation qualified as Inference
 import Invar.Infer.Result qualified as Result
+import Invar.Infer.Trajectory qualified as Trajectory
 import Invar.Infer.Wire qualified as Wire
 import Invar.Json qualified as Json
 import Invar.Load qualified as Load
@@ -56,28 +59,33 @@ import Invar.Spec.Load qualified as L
 import Invar.Spec.Score qualified as S
 import Numeric.Natural (Natural)
 
-data Plan = Plan Inference.Report Infer.Plan ByteString [Natural]
+data Plan = Plan Inference.Source Infer.Plan ByteString [Natural]
+
+data Target = Target {targetIdentity :: (String, String, String, String), targetPolicy :: Maybe Policy.Description}
 data Call = Call Plan V.Binding ByteString V.Runtime Load.Plan
 data Permit = Permit Call ByteString [(ByteString, Object)] V.Runtime L.Fact Policy.Description
 data Report = Report V.Completion L.Fact Output.Body S.Fact
     deriving (Eq, Show)
 
-data Error = Incompatible String | Construction String | Protocol String | Lifecycle V.Error | Loading Load.Error | Registry L.Error | SourceProcessFailed Int | ProcessFailed Int
+data Error = Incompatible String | Construction String | Protocol String | Lifecycle V.Error | Loading Load.Error | Registry L.Error | ProcessFailed Int
     deriving (Eq, Show)
 
-prepare :: Int -> Inference.Report -> Infer.Plan -> Either Error Plan
-prepare sourceStatus source planned = do
-    unless (sourceStatus == 0) (Left (SourceProcessFailed sourceStatus))
-    let before = Result.consumed (Inference.result source)
-        after = Infer.requested planned
-    mapM_
-        (\(name, equal) -> unless equal (Left (Incompatible name)))
-        [("tokenizer", Infer.tokenizer before == Infer.tokenizer after), ("prompt", Infer.prompt before == Infer.prompt after), ("horizon", Infer.tokens before == Infer.tokens after), ("temperature", Infer.temperature before == Infer.temperature after), ("logical seed", Infer.seed before == Infer.seed after)]
-    pure (Plan source planned (Lazy.toStrict (encode (Inference.describe source)) <> "\n") [])
+targetOf :: Infer.Plan -> Target
+targetOf chosen = Target (Infer.artifact requested, Infer.tokenizer requested, Infer.base requested, Infer.assembly requested) (Infer.boundPolicy chosen)
+  where
+    requested = Infer.requested chosen
+
+prepare :: Inference.Source -> Target -> Either Error Plan
+prepare source (Target (artifact, tokenizer, base, assembly) policy) = do
+    let before = Trajectory.request (Inference.sourceTrajectory source)
+    unless (tokenizer == Infer.tokenizer before) (Left (Incompatible "tokenizer"))
+    unbound <- first (Construction . show) (Infer.prepare before {Infer.artifact = artifact, Infer.tokenizer = tokenizer, Infer.base = base, Infer.assembly = assembly})
+    planned <- maybe (Right unbound) (\description -> first (Construction . show) (Infer.bindPolicy description unbound)) policy
+    pure (Plan source planned (Lazy.toStrict (encode (Inference.describeSource source)) <> "\n") [])
 
 withProbe :: [Natural] -> Plan -> Either Error Plan
 withProbe steps (Plan source planned inspection _) = do
-    let original = Inference.result source
+    let original = Trajectory.result (Inference.sourceTrajectory source)
         horizon = fromIntegral (length (Result.tokens original)) - Result.promptLength original
     first Incompatible (Probe.selection horizon steps)
     pure (Plan source planned inspection steps)
@@ -93,9 +101,9 @@ target (Plan _ planned _ _) = planned
 
 bind :: V.Binding -> Plan -> Either Error Call
 bind bound planned@(Plan source selected _ probes) = do
-    let observed = Inference.result source
+    let observed = Trajectory.result (Inference.sourceTrajectory source)
         (prefix, response) = splitAt (fromIntegral (Result.promptLength observed)) (Result.tokens observed)
-        path = Program.Path (Inference.logDigest source) (sourceDigest planned) prefix response probes
+        path = Program.Path (Inference.sourceLog source) (sourceDigest planned) prefix response probes
     (program, runtime) <- first Construction (Program.prepare bound (Infer.requested selected) path)
     loading <- first Loading (Load.prepare bound (Infer.image (Infer.requested selected)))
     pure (Call planned bound program runtime loading)
@@ -166,9 +174,10 @@ observeRecords (Permit call@(Call (Plan source selected inspection probes) bound
     completed <- first Lifecycle (V.completion finished (V.boundAttempt bound))
     case completed of
         Just resultCompletion -> do
-            sourceDescription <- first Protocol (Inference.policyDescription source)
+            sourceDescription <- first Protocol (Inference.sourcePolicy source)
             let digest = Artifact.hex (SHA256.hash encoded)
-                original = S.Source (Result.consumed (Inference.result source)) (Inference.binding source) sourceDescription (Inference.logDigest source)
+                admitted = Inference.sourceTrajectory source
+                original = S.Source (Trajectory.request admitted) (Trajectory.binding admitted) sourceDescription (Inference.sourceLog source)
                 scored = S.Source (Infer.requested selected) bound description digest
                 measured = S.Fact original scored (Output.probabilityWords body) (Output.logRatio body) (Lazy.toStrict (encode (Output.observation body)))
             pure (Report resultCompletion loadedFact body measured)

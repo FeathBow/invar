@@ -92,12 +92,12 @@ score fields side (source, target) = do
     prefix = case side of N.Reference -> "reference-score-"; N.Candidate -> "candidate-score-"
 
 scoreInput :: O.Fields -> String -> ((N.Run, Inference.Report), N.Run, Maybe [Natural]) -> IO (Maybe Score.Report)
-scoreInput fields prefix ((source, original), target, probes) = case O.optional fields (prefix ++ "log") of
+scoreInput fields prefix ((_, original), target, probes) = case O.optional fields (prefix ++ "log") of
     Nothing -> do
         when (any (\key -> isJust (O.optional fields (prefix ++ key))) ["call", "attempt", "instance", "exit-code", "probe-steps"]) (die ("Missing " ++ prefix ++ "log"))
         pure Nothing
     Just path -> do
-        base <- either (die . show) pure (Score.prepare (N.exitCode source) original (N.planned target))
+        base <- either (die . show) pure (Score.prepare (Inference.source original) (Score.targetOf (N.planned target)))
         planned <- either (die . show) pure (maybe (Right base) (`Score.withProbe` base) probes)
         binding <- either die pure (InferenceInput.bindingWith prefix fields)
         call <- either (die . show) pure (Score.bind binding planned)

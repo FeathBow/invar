@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Infer.Observation (Report, view, result, binding, logDigest, trajectory, policyDescription, describe) where
+module Invar.Infer.Observation (Report, Source, view, source, sourceLog, sourceTrajectory, result, binding, logDigest, trajectory, policyDescription, describe, describeSource, sourcePolicy) where
 
 import Data.Aeson (Value, object, (.=))
 import Invar.Infer qualified as Infer
@@ -13,6 +13,8 @@ import Invar.Policy qualified as Policy
 import Invar.Spec.Invocation qualified as V
 
 newtype Report = Report Replay.Logged
+
+data Source = Source String Trajectory
 
 view :: Replay.Logged -> Report
 view = Report
@@ -29,17 +31,31 @@ binding = Trajectory.binding . trajectory
 logDigest :: Report -> String
 logDigest (Report logged) = Replay.source logged
 
+source :: Report -> Source
+source report = Source (logDigest report) (trajectory report)
+
+sourceLog :: Source -> String
+sourceLog (Source digest _) = digest
+
+sourceTrajectory :: Source -> Trajectory
+sourceTrajectory (Source _ admitted) = admitted
+
 policyDescription :: Report -> Either String Policy.Description
-policyDescription report = do
-    let admitted = trajectory report
-        requested = Trajectory.request admitted
-    Policy.describe (Trajectory.model admitted, Trajectory.revision admitted) (Infer.artifact requested, Infer.tokenizer requested, Infer.base requested, Infer.assembly requested)
+policyDescription = sourcePolicy . source
+
+sourcePolicy :: Source -> Either String Policy.Description
+sourcePolicy (Source _ admitted) = Policy.describe (Trajectory.model admitted, Trajectory.revision admitted) (Infer.artifact requested, Infer.tokenizer requested, Infer.base requested, Infer.assembly requested)
+  where
+    requested = Trajectory.request admitted
 
 describe :: Report -> Value
-describe report =
+describe = describeSource . source
+
+describeSource :: Source -> Value
+describeSource (Source digest admitted) =
     object
-        [ "log_sha256" .= logDigest report
-        , "binding" .= Wire.bindingValue (binding report)
+        [ "log_sha256" .= digest
+        , "binding" .= Wire.bindingValue (Trajectory.binding admitted)
         , "tokens" .= Trajectory.tokens admitted
         , "behavior_bits" .= Trajectory.behaviorBits admitted
         , "prompt_length" .= Trajectory.promptLength admitted
@@ -54,5 +70,4 @@ describe report =
         , "request" .= object ["prompt" .= Infer.prompt requested, "tokens" .= Infer.tokens requested, "temperature" .= Infer.temperature requested, "seed" .= Infer.seed requested]
         ]
   where
-    admitted = trajectory report
     requested = Trajectory.request admitted
