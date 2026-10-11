@@ -7,13 +7,15 @@ except ImportError as missing:
 
 import hashlib
 import json
+import shutil
+import subprocess
 
 import torch
 from safetensors.torch import save_file
 
 from worker import float32
 from worker.hf.score import scored
-from worker.tests.hf.overlap import CORE, PROMPT, SEEDS, execute, flags, journaled, prepared, transcribed
+from worker.tests.hf.overlap import CHILD_SECONDS, CORE, PROMPT, SEEDS, execute, flags, journaled, prepared, transcribed
 from worker.tests.hf.scoring import MODELS, SCORE_ENTRY, TEACHER, identities
 
 TEMPERATURE = 0.8
@@ -23,6 +25,64 @@ def workload(cycles):
     tasks = [{"name": str(index), "prompt": PROMPT, "tokens": 4, "seed": seed, "temperature": TEMPERATURE}
              for index, seed in enumerate(SEEDS)]
     return json.dumps([{"tasks": tasks, "order": [0, 1], "delivery": [1, 0]} for _ in range(cycles)])
+
+
+def crashed(output, lines):
+    (output / "journal.jsonl").write_bytes(b"".join(lines))
+    reserved = {entry["process"] for entry in map(json.loads, lines) if entry["entry"] == "process"}
+    for path in (output / "transcripts").iterdir():
+        if int(path.stem) not in reserved:
+            path.unlink()
+    for path in output.iterdir():
+        if path.name.startswith("generation"):
+            path.unlink()
+        elif path.name.startswith("staging"):
+            shutil.rmtree(path)
+
+
+def snapshot(root):
+    return {path: path.read_bytes() for path in sorted(root.rglob("*")) if path.is_file()}
+
+
+def moved(lines, line, reading):
+    kept = [value for value in lines if json.loads(value) != json.loads(line)]
+    after = next(index for index, value in enumerate(kept) if json.loads(value) == reading)
+    return kept[:after + 1] + [line] + kept[after + 1:]
+
+
+def rebound(value, old, new):
+    if value == old:
+        return new
+    if isinstance(value, dict):
+        return {key: rebound(item, old, new) for key, item in value.items()}
+    if isinstance(value, list):
+        return [rebound(item, old, new) for item in value]
+    return value
+
+
+def joined(trajectory, call, records):
+    words = next(record["observation"]["log_probability_bits"] for record in records if record["stage"] == "score_result" and record["binding"] == call)
+    encoded = json.dumps({"format": "invar-distilled-result-v1", "trajectory": trajectory, "teacher": {"call": call, "words": words}}, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def replacement(output, entries, reading):
+    taught = next(entry for entry in entries if entry["entry"] == "teacher" and entry["binding"] == reading["binding"])
+    number = 1 + max(entry["process"] for entry in entries if entry["entry"] == "process")
+    bound = dict.fromkeys(("attempt", "call", "instance"), 1 + max(entry["binding"]["call"] for entry in entries if "binding" in entry))
+    records = [rebound(json.loads(line), taught["binding"], bound) for line in (output / "transcripts" / f"{taught['process']}.jsonl").read_bytes().splitlines()]
+    stored = next(entry["digest"] for entry in entries if entry["entry"] == "result" and entry["request"] == reading["request"])
+    digest = joined(stored, bound, records)
+    copied = [{**next(entry for entry in entries if entry["entry"] == kind and entry["process"] == taught["process"]), "process": number} for kind in ("process", "exit")]
+    added = [copied[0], {**taught, "binding": bound, "process": number}, copied[1], {**reading, "binding": bound, "digest": digest}]
+    completed = next(index for index, entry in enumerate(entries) if entry["entry"] == "event" and entry["event"]["kind"] == "completed" and entry["event"]["request"] == reading["request"])
+
+    def journal(encoded):
+        lines = encoded.splitlines(keepends=True)
+        return b"".join(lines[:completed + 1] + [json.dumps(entry).encode() + b"\n" for entry in added] + lines[completed + 1:])
+
+    return {output / "journal.jsonl": journal,
+            output / "transcripts" / f"{number}.jsonl": lambda _: b"".join(json.dumps(record).encode() + b"\n" for record in records)}
 
 
 class DistillationTests(unittest.TestCase):
@@ -41,11 +101,12 @@ class DistillationTests(unittest.TestCase):
                         "teacher-base-digest": identity["base"], "teacher-assembly-digest": identity["assembly"],
                         "teacher-profile-digest": hashlib.sha256(b"cpu fixture teacher profile").hexdigest(),
                         "teacher-temperature": TEMPERATURE}
+        cls.output = cls.root / "distilled"
+        cls.records = execute([CORE, "train", *flags({**cls.settings, "output": cls.output, "staleness": 0})],
+                              cls.root / "distilled.jsonl", stdin=workload(2))
 
     def test_each_rollout_completes_after_its_teacher_reading_and_the_update_learns_from_those_words(self):
-        output = self.root / "distilled"
-        records = execute([CORE, "train", *flags({**self.settings, "output": output, "staleness": 0})],
-                          self.root / "distilled.jsonl", stdin=workload(2))
+        output, records = self.output, self.records
         self.assertEqual([(value["phase"], value["update"]) for value in records], [("published", 0), ("published", 1)])
         entries = journaled(output)
         teachers = {entry["process"] for entry in entries if entry["entry"] == "process" and entry["role"] == "teacher"}
@@ -77,6 +138,84 @@ class DistillationTests(unittest.TestCase):
             self.assertEqual(sample["teacher_bits"], [float32.word(value) for value in direct.tolist()])
             self.assertNotEqual(sample["teacher_bits"], sample["behavior_bits"])
 
+    def refused(self, output, changes):
+        originals = {path: path.read_bytes() if path.exists() else None for path in changes}
+        for path, change in changes.items():
+            changed = change(originals[path])
+            if changed is None:
+                path.unlink()
+            else:
+                path.write_bytes(changed)
+        before = snapshot(output)
+        try:
+            outcome = subprocess.run([CORE, "train", "--resume", str(output)], capture_output=True, text=True, timeout=CHILD_SECONDS)
+            self.assertNotEqual(outcome.returncode, 0)
+            self.assertEqual(snapshot(output), before)
+            return outcome.stderr
+        finally:
+            for path, original in originals.items():
+                if original is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    path.write_bytes(original)
+
+    def test_a_finished_run_resumes_by_replaying_every_teacher_transcript(self):
+        entries = journaled(self.output)
+        journal = self.output / "journal.jsonl"
+        reading = next(entry for entry in entries if entry["entry"] == "reading")
+        changed = self.refused(self.output, {journal: lambda encoded: encoded.replace(reading["digest"].encode(), b"0" * 64, 1)})
+        self.assertIn("A teacher reading differs from the teacher's admitted score", changed)
+        teacher = next(entry["process"] for entry in entries if entry["entry"] == "process" and entry["role"] == "teacher")
+        transcript = self.output / "transcripts" / f"{teacher}.jsonl"
+        lines = transcript.read_bytes().splitlines(keepends=True)
+        result = json.loads(lines[-1])
+        words = result["observation"]["log_probability_bits"]
+        result["observation"]["log_probability_bits"] = [words[0] + 1, *words[1:]]
+        forged = self.refused(self.output, {transcript: lambda _: b"".join(lines[:-1]) + json.dumps(result).encode() + b"\n"})
+        self.assertIn("A teacher reading differs from the teacher's admitted score", forged)
+        teachers = [entry["process"] for entry in entries if entry["entry"] == "process" and entry["role"] == "teacher"]
+        exit_line = next(json.dumps(entry) for entry in entries if entry["entry"] == "exit" and entry["process"] == teachers[0])
+        cases = {"A teacher reading is journaled before its process exited cleanly": lambda lines: moved(lines, exit_line, reading),
+                 "A teacher call names a process that is not a running teacher": lambda lines: [json.dumps({**json.loads(line), "role": "inference"}) if json.loads(line).get("entry") == "process" and json.loads(line)["process"] == teachers[0] else line for line in lines],
+                 "A completed request has no stored result with its digest": lambda lines: [line.replace(reading["digest"], "1" * 64) if '"completed"' in line else line for line in lines]}
+        for expected, change in cases.items():
+            with self.subTest(expected=expected):
+                outcome = self.refused(self.output, {journal: lambda encoded: ("\n".join(change(encoded.decode().splitlines())) + "\n").encode()})
+                self.assertIn(expected, outcome)
+        call = next(entry for entry in entries if entry["entry"] == "teacher")
+        cut = self.refused(self.output, {journal: lambda encoded: b"".join(encoded.splitlines(keepends=True)[:entries.index(call) + 1]),
+                            self.output / "transcripts" / f"{call['process']}.jsonl": lambda _: None})
+        self.assertIn("An entry names a process whose transcript is missing", cut)
+        replaced = self.refused(self.output, replacement(self.output, entries, reading))
+        self.assertIn("A rollout's teacher reading is journaled twice", replaced)
+        resumed = execute([CORE, "train", "--resume", self.output], self.root / "resumed.jsonl")
+        self.assertEqual(resumed, [{"phase": "resumed", "committed": [0, 1]}])
+        self.assertEqual([entry["entry"] for entry in journaled(self.output)[len(entries):]], ["restart"])
+
+    def test_a_teacher_call_journaled_before_a_restart_reads_only_the_rollout_it_was_journaled_for(self):
+        output = self.root / "restarted"
+        journal = output / "journal.jsonl"
+        execute([CORE, "train", *flags({**self.settings, "output": output, "staleness": 0})], self.root / "restarted.jsonl", stdin=workload(1))
+        entries = journaled(output)
+        first = next(entry for entry in entries if entry["entry"] == "teacher")
+        kept = 1 + next(index for index, entry in enumerate(entries) if entry["entry"] == "exit" and entry["process"] == first["process"])
+        crashed(output, journal.read_bytes().splitlines(keepends=True)[:kept])
+        execute([CORE, "train", "--resume", output], self.root / "restartedresumed.jsonl")
+        entries = journaled(output)
+        restart = next(index for index, entry in enumerate(entries) if entry["entry"] == "restart")
+        reading = next(index for index, entry in enumerate(entries) if index > restart and entry["entry"] == "reading" and entry["request"] == first["request"])
+        completed = next(index for index, entry in enumerate(entries) if index > restart and entry["entry"] == "event" and entry["event"]["kind"] == "completed" and entry["event"]["request"] == first["request"])
+        taught = next(entry for entry in entries if entry["entry"] == "teacher" and entry["binding"] == entries[reading]["binding"])
+        stored = next(entry["digest"] for entry in entries[restart:] if entry["entry"] == "result" and entry["request"] == first["request"])
+        records = [rebound(json.loads(line), taught["binding"], first["binding"]) for line in (output / "transcripts" / f"{taught['process']}.jsonl").read_bytes().splitlines()]
+        (output / "transcripts" / f"{first['process']}.jsonl").write_bytes(b"".join(json.dumps(record).encode() + b"\n" for record in records))
+        digest = joined(stored, first["binding"], records)
+        replaced = {reading: {**entries[reading], "binding": first["binding"], "digest": digest},
+                    completed: {**entries[completed], "event": {**entries[completed]["event"], "digest": digest}}}
+        dropped = {index for index, entry in enumerate(entries) if entry["entry"] in ("process", "teacher", "exit") and entry["process"] == taught["process"]}
+        lines = journal.read_bytes().splitlines(keepends=True)
+        crashed(output, [json.dumps(replaced[index]).encode() + b"\n" if index in replaced else lines[index] for index in range(completed + 1) if index not in dropped])
+        self.assertIn("Score consumption differs from the complete declared call", self.refused(output, {}))
 
 if __name__ == "__main__":
     unittest.main()

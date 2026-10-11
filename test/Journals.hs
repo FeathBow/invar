@@ -87,12 +87,12 @@ directories = do
     document <- evalEither Sessions.workload
     evalIO (Journal.with (output </> "journal.jsonl") (Entry.encode (Entry.Declared started (Fields.fromList ["arguments" .= Null, "workload" .= Workload.value document]))) (const (pure ())))
     caller <- evalIO getCurrentDirectory
-    refused <- evalIO (Runtime.resume output (const (Left "refused")))
+    refused <- evalIO (Runtime.resume output (const (Left "refused")) (const (Left "refused")))
     case refused of
         Left (Runtime.Declaration "refused") -> success
         _ -> annotate "the declaration was not refused" >> failure
     evalIO getCurrentDirectory >>= (=== caller)
-    failed <- evalIO (try (Runtime.resume output (const (error "interpretation failed"))))
+    failed <- evalIO (try (Runtime.resume output (const (error "interpretation failed")) (const (error "interpretation failed"))))
     case failed of
         Left (ErrorCall _) -> success
         Right _ -> annotate "the failing interpretation returned" >> failure
@@ -104,7 +104,7 @@ missing = do
     let output = root </> "run"
         journal = output </> "journal.jsonl"
     evalIO (createDirectory output)
-    resuming <- evalIO (tryIOError (Runtime.resume output (const (Left "unread"))))
+    resuming <- evalIO (tryIOError (Runtime.resume output (const (Left "unread")) (const (Left "unread"))))
     inspecting <- evalIO (tryIOError (History.inspect output (const (Left "unread"))))
     target <- evalIO (canonicalizePath output)
     let named = Left ("There is no run journal at " ++ target </> "journal.jsonl")

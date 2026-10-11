@@ -140,7 +140,7 @@ copied source target = do
         if directory then copied (source </> name) (target </> name) else copyFile (source </> name) (target </> name)
 
 resumed :: Fixture -> FilePath -> IO (Either Runtime.Error ())
-resumed fixture directory = Runtime.resume directory (interpreter fixture directory)
+resumed fixture directory = Runtime.resume directory (interpreter fixture directory) (const (Left "A GRPO run has no teacher"))
 
 finished :: PropertyT IO ()
 finished = do

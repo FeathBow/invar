@@ -17,6 +17,7 @@ import Invar.Async.Plan (Declared (..), Request (..), Update (..), Version (..))
 import Invar.Async.Plan qualified as Plan
 import Invar.Async.Recorded qualified as Recorded
 import Invar.Async.Replay qualified as Replay
+import Invar.Cohort qualified as C
 import Invar.History.Generation qualified as Generation
 import Invar.History.Profile qualified as Profile
 import Invar.Infer.Wire qualified as Wire
@@ -32,7 +33,7 @@ import System.Directory (canonicalizePath, makeAbsolute, withCurrentDirectory)
 import System.FilePath ((</>))
 import System.IO.Error (tryIOError)
 
-data Checked = Checked Runtime.Run Replay.Declaration Replay.Replayed [Generation.Generation] Policy.Description [[Entry.Generation]]
+data Checked = Checked Runtime.Run (Replay.Declaration C.Graded) (Replay.Replayed C.Graded) [Generation.Generation] Policy.Description [[Entry.Generation]]
 
 inspect :: FilePath -> (Value -> Either String (Loop.Config, Natural)) -> IO (Either String Checked)
 inspect directory interpreter = do
@@ -56,7 +57,7 @@ inspect directory interpreter = do
         reference <- makeAbsolute (Loop.reference chosen)
         pure (Runtime.Run chosen {Loop.root = target, Loop.checkpoint = checkpoint, Loop.reference = reference} lag document)
 
-admit :: Runtime.Run -> Replay.Declaration -> [Entry.Entry] -> Map Natural ByteString -> [Entry.Generation] -> Either String Checked
+admit :: Runtime.Run -> Replay.Declaration C.Graded -> [Entry.Entry] -> Map Natural ByteString -> [Entry.Generation] -> Either String Checked
 admit selected declared entries transcribed observed = do
     replayed <- Replay.replay declared entries transcribed
     let chosen = Replay.config declared
@@ -115,7 +116,7 @@ describe (Checked _ declared replayed built _ restarts) =
 recorded :: Checked -> Value
 recorded (Checked _ _ replayed _ _ restarts) = object ["source" .= ("run directory" :: Text), "processes" .= length (Replay.reserved replayed), "attempts" .= attempts replayed, "restarts" .= length restarts]
 
-attempts :: Replay.Replayed -> [Value]
+attempts :: Replay.Replayed grade -> [Value]
 attempts replayed = [object ["update" .= update, "attempt" .= tried, "binding" .= Wire.bindingValue (Replay.binding learned), "process" .= Replay.process learned, "consumed" .= map Wire.bindingValue (Replay.consumed learned), "outcome" .= outcome (Replay.outcome learned)] | ((update, tried), learned) <- Map.toList (Replay.learned replayed)]
   where
     outcome :: Replay.Outcome -> Object

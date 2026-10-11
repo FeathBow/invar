@@ -42,7 +42,7 @@ distillations =
         , ("a distillation input needs distillation settings and exactly one reading per sample, and a GRPO input refuses distillation settings", once refused)
         , ("the GRPO loop and runtime refuse distillation settings before they create a directory or launch a worker", once guarded)
         , ("a distillation plan runs through the checked learner exchange", once executed)
-        , ("a distillation run is declared with distillation settings and tasks sampled at the teacher's temperature, and its journal is not resumed", once declared)
+        , ("a distillation run is declared with distillation settings and tasks sampled at the teacher's temperature, and history does not inspect its journal", once declared)
         ]
   where
     once = withTests 1 . property
@@ -147,7 +147,7 @@ declared = do
     refusal "The run's workload and its learning settings name different algorithms" =<< evalIO (Runtime.run (Runtime.Run (configured taught) 0 graded) Null)
     refusal "A distillation run needs distillation settings" =<< evalIO (Runtime.distill scorer (Runtime.Run (configured F.configured) 0 unanswered) Null)
     refusal "Every task must be sampled at the teacher's temperature" =<< evalIO (Runtime.distill scorer (Runtime.Run (configured cooler) 0 unanswered) Null)
-    refusal "A distillation run is not resumed or inspected from its journal" =<< evalIO (Runtime.interpret root (const (Right (configured taught, 0))) (Fields.fromList ["arguments" .= Null, "workload" .= Workload.value unanswered]))
+    refusal "A distillation run is not inspected from its journal" =<< evalIO (Runtime.interpret root (const (Right (configured taught, 0))) (Fields.fromList ["arguments" .= Null, "workload" .= Workload.value unanswered]))
   where
     refusal expected = \case
         Left (Runtime.Declaration problem) -> problem === expected
