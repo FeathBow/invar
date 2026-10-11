@@ -53,7 +53,7 @@ regularization = do
         source = (inputs (-logTwo) (-logTwo) 0) {O.fixed = word 0}
     [actual] <- evalEither (O.calculate (O.Profile 0.5 0.25) 2 [source])
     O.gradient actual === word (-0.125)
-    O.rewardGradient actual === word (-0.0)
+    O.surrogateGradient actual === word (-0.0)
     O.term actual === word ((2 - logTwo - 1) * 0.25)
 
 aggregation :: PropertyT IO ()
@@ -72,8 +72,8 @@ zeros = do
     [negative] <- evalEither (O.calculate (O.Profile 0.2 0) 1 [inputs 0 0 (-0.0)])
     O.term positive === word 0
     O.term negative === word 0
-    O.rewardGradient positive === word (-0.0)
-    O.rewardGradient negative === word 0
+    O.surrogateGradient positive === word (-0.0)
+    O.surrogateGradient negative === word 0
     O.mean32 [word (-0.0)] === Right (word 0)
     let halfway = 2 ** (-24)
     O.mean32 (map word [1, halfway, -1]) === Right (word 0)

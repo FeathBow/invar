@@ -36,11 +36,11 @@ class Exchange:
                     "observation": observation(words), "state": state}
         self.emit("current", {**reported, "words": list(words)})
         reply = json.loads(self.receive(), object_pairs_hook=unique)
-        if not isinstance(reply, dict) or set(reply) != {"stage", *reported, "objective", "reward"}:
+        if not isinstance(reply, dict) or set(reply) != {"stage", *reported, "objective", "surrogate"}:
             raise ValueError("Expected the core's cotangents for the reported step")
         if reply["stage"] != "cotangents" or type(reply["step"]) is not int or any(reply[name] != value for name, value in reported.items()):
             raise ValueError("Cotangents answer a different learner step")
-        return cotangent_words(reply["objective"], len(words)), cotangent_words(reply["reward"], len(words))
+        return cotangent_words(reply["objective"], len(words)), cotangent_words(reply["surrogate"], len(words))
 
     def applied(self, *, step, before, after, consumed):
         self.emit("applied", {"binding": self.binding, "step": step, "before": before, "after": after,

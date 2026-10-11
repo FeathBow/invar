@@ -76,7 +76,7 @@ attempt settings (bound, program, request) frames = do
         (Nothing, updated : remaining) -> either (attempted Nothing . Just) (`attempted` Nothing) (concluding checked advanced (Frame.fields updated) remaining)
   where
     concluding checked advanced updated remaining = do
-        stage "reward_update" updated
+        stage "update" updated
         let (staged, ending) = span (staging . Frame.fields) remaining
         mapM_ ((\fields -> when (Fields.member "phase" fields) (Left "Unexpected learner observation stage")) . Frame.fields) staged
         case ending of
@@ -104,7 +104,7 @@ completion :: Object -> Either String ()
 completion finished = do
     stage "result" finished
     parseEither (Json.fields ["stage", "binding", "request", "update", "gradients", "probabilities", "adapter", "learner", "storage"]) finished
-    parseEither (\fields -> fields .: "update" >>= withObject "update summary" (Json.fields ["gradient_norm", "reward_gradient_norm", "active_tokens", "before", "after", "nonzero_advantages"])) finished
+    parseEither (\fields -> fields .: "update" >>= withObject "update summary" (Json.fields ["gradient_norm", "surrogate_gradient_norm", "active_tokens", "before", "after"])) finished
 
 stage :: Text.Text -> Object -> Either String ()
 stage expected fields = unless (Fields.lookup "stage" fields == Just (String expected) && not (Fields.member "phase" fields)) (Left "Unexpected learner observation stage")

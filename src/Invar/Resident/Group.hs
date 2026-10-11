@@ -31,7 +31,7 @@ observe (selected, index, bound) records acknowledged = do
     initialLoad <- measurement "load" leading
     selectedActivation <- measurement "activation" leading
     released <- Boundary.measured "released" (Frame.raw acknowledged)
-    measured <- traverse timing (filter ((`elem` map (Just . String) ["load", "activation", "inference", "reward_update", "artifacts", "checkpoint"]) . Frame.stageName) records)
+    measured <- traverse timing (filter ((`elem` map (Just . String) ["load", "activation", "inference", "update", "artifacts", "checkpoint"]) . Frame.stageName) records)
     pure (Group selected index leading execution bound acknowledged initialLoad selectedActivation released (measured ++ [released]))
 
 measurement :: Text -> [Frame.Frame] -> Either String (Maybe Duration.Duration)

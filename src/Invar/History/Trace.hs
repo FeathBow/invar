@@ -90,7 +90,7 @@ advance run (current, described, offset, accepted, state, remaining) (index, wor
     policy <- Report.artifact "adapter" reported
     learner <- Report.artifact "learner" reported
     successor <- Policy.successor policy described
-    let diagnostic = [observedFrame | observedFrame@(Frame _ fields) <- body, Fields.lookup "stage" fields `elem` map (Just . String) (["loading", "profile", "load", "activation", "released", "loaded_learner", "inference"] ++ Step.stages ++ ["reward_update", "artifacts", "checkpoint"])]
+    let diagnostic = [observedFrame | observedFrame@(Frame _ fields) <- body, Fields.lookup "stage" fields `elem` map (Just . String) (["loading", "profile", "load", "activation", "released", "loaded_learner", "inference"] ++ Step.stages ++ ["update", "artifacts", "checkpoint"])]
     pure (current {Learn.policy, Learn.learner, Learn.schedule = Learn.synchronous (index + 1) policy}, successor, call + 1, Waiting current tasks offset executed reported finished diagnostic : accepted, next, rest)
 
 phase :: Text -> Frame -> Bool

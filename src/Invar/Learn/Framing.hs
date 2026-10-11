@@ -44,9 +44,9 @@ loadingPrefix records = do
 completion :: ByteString -> Either String ()
 completion encoded = do
     records <- Frame.decode encoded
-    case dropWhile ((/= Just (String "reward_update")) . stageName) (dropWhile ((/= Just (String "consumed")) . stageName) records) of
+    case dropWhile ((/= Just (String "update")) . stageName) (dropWhile ((/= Just (String "consumed")) . stageName) records) of
         updated : remaining@(_ : _) -> do
-            unless (stageName updated == Just (String "reward_update")) (Left "Expected one actual reward update measurement")
+            unless (stageName updated == Just (String "update")) (Left "Expected one actual update measurement")
             let (staging, ending) = span (\record -> stageName record `elem` map (Just . String) ["artifacts", "checkpoint"]) remaining
             mapM_ timing (updated : staging)
             case ending of
@@ -59,7 +59,7 @@ finite settings declared records = do
     (prefix, events) <- loadingPrefix records
     when (null events) (Left "Missing learner execution after the model load")
     attempted <- Trace.attempt settings declared events
-    pure (prefix, either (`Trace.stop` attempted) (const attempted) (mapM_ timing (filter (staged ["reward_update", "artifacts", "checkpoint"]) events)))
+    pure (prefix, either (`Trace.stop` attempted) (const attempted) (mapM_ timing (filter (staged ["update", "artifacts", "checkpoint"]) events)))
 
 resident :: Learn.Settings -> Owner.State -> (V.Binding, Text, Value) -> [Frame.Frame] -> Either String (Trace.Attempt, [Frame.Frame], Either String Released)
 resident settings physical declared@(bound, _, request) records = do

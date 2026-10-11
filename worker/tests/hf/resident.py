@@ -103,7 +103,7 @@ class LearnerResidentTests(unittest.TestCase):
         assert_equal(binding.observation(saved[0]), binding.observation(saved[1]))
         results = [value for line in observations[0].getvalue().splitlines() if (value := json.loads(line))["stage"] == "result"]
         self.assertEqual(len(results), 2)
-        self.assertTrue(all(value["update"]["reward_gradient_norm"] > 0 for value in results))
+        self.assertTrue(all(value["update"]["surrogate_gradient_norm"] > 0 for value in results))
 
     def test_permission_time_state_change_prevents_another_numerical_forward(self):
         runtime, call, paths, observations = prepare()
@@ -125,7 +125,7 @@ class LearnerResidentTests(unittest.TestCase):
         self.assertEqual(call.request.reference, call.request.policy)
         self.assertEqual(evaluated, [])
         self.assertEqual(list(paths.output.iterdir()), [])
-        self.assertNotIn('"stage": "reward_update"', observations[0].getvalue())
+        self.assertNotIn('"stage": "update"', observations[0].getvalue())
         self.assertNotIn('"stage": "result"', observations[0].getvalue())
 
     def test_next_update_requires_the_actual_completed_successor_and_fixed_reference(self):

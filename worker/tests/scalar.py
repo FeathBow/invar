@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from worker.float32 import InvalidInput, NonFinite, number, probability, rounded, word
 
 REFERENCE = "grpo-scalar-f32/v1"
-FIELDS = (("terms", "term"), ("current_gradient", "gradient"), ("reward_gradient", "reward_gradient"))
+FIELDS = (("terms", "term"), ("current_gradient", "gradient"), ("surrogate_gradient", "surrogate_gradient"))
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -32,7 +32,7 @@ class Inputs:
 class Output:
     term: int
     gradient: int
-    reward_gradient: int
+    surrogate_gradient: int
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -80,16 +80,16 @@ def token(constants, inputs):
     difference = rounded(reference - current)
     reference_ratio = exponential(difference)
     selected, slope = surrogate(constants, ratio, advantage)
-    reward = rounded(-weight * selected)
+    surrogate_term = rounded(-weight * selected)
     distance = rounded(rounded(reference_ratio - difference) - 1)
     regularizer = rounded(constants.penalty * distance)
-    value = rounded(reward + regularizer)
+    value = rounded(surrogate_term + regularizer)
     current_slope = rounded(slope * ratio)
-    reward_slope = rounded(-weight * current_slope)
+    surrogate_slope = rounded(-weight * current_slope)
     reference_slope = rounded(constants.penalty * rounded(1 - reference_ratio))
-    objective_slope = rounded(reward_slope + reference_slope)
+    objective_slope = rounded(surrogate_slope + reference_slope)
     return Output(term=word(value), gradient=word(rounded(objective_slope / constants.count)),
-                  reward_gradient=word(rounded(reward_slope / constants.count)))
+                  surrogate_gradient=word(rounded(surrogate_slope / constants.count)))
 
 
 def mean32(encoded):

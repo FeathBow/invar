@@ -79,7 +79,7 @@ def records(output, stage):
 
 
 class LearnerLoadTests(unittest.TestCase):
-    def test_actual_restoration_and_consumption_precede_reward_update(self):
+    def test_actual_restoration_and_consumption_precede_the_update(self):
         call, options = fixture()
         self.assertEqual([item.reward for item in call.request.samples], [1, 0])
         loaded = model()
@@ -104,7 +104,7 @@ class LearnerLoadTests(unittest.TestCase):
                          [list(item.behavior_bits) for item in call.request.samples])
         self.assertEqual(result["update"]["before"], call.request.policy)
         self.assertNotEqual(result["adapter"], call.request.policy)
-        self.assertGreater(result["update"]["reward_gradient_norm"], 0)
+        self.assertGreater(result["update"]["surrogate_gradient_norm"], 0)
         saved = torch.load(options.output / "learner.pt", weights_only=True)
         self.assertEqual(saved["adapter"], result["adapter"])
         self.assertTrue(all(slot["step"].item() == 1 for slot in saved["optimizer"]["state"].values()))
@@ -120,7 +120,7 @@ class LearnerLoadTests(unittest.TestCase):
                 measure=measured, permission=partial(approve, source=permission),
                 evaluate=partial(logprobs, device="cpu"), receive=receiver(output, request_core(call.request)))
         self.assertEqual(len(records(output, "consumed")), 1)
-        self.assertFalse(records(output, "reward_update"))
+        self.assertFalse(records(output, "update"))
         self.assertFalse(records(output, "result"))
         self.assertEqual(list(options.output.iterdir()), [])
         assert_equal(before, adapter_state(loaded))

@@ -35,9 +35,9 @@ class BatchedRoleTests(unittest.TestCase):
         learner, expected = make_learner(), make_learner()
         result = update(learner, batch(reference=math.log(0.5) - REFERENCE_LOG_SHIFT, penalty=PENALTY))
         named = {name: parameter for name, parameter in expected.model.named_parameters() if parameter.requires_grad}
-        self.assertTrue(any(not torch.equal(result.gradients[f"objective/{name}"], result.gradients[f"reward/{name}"])
+        self.assertTrue(any(not torch.equal(result.gradients[f"objective/{name}"], result.gradients[f"surrogate/{name}"])
                             for name in named))
-        self.assertGreater(result.summary["reward_gradient_norm"], 0)
+        self.assertGreater(result.summary["surrogate_gradient_norm"], 0)
         self.assertGreater(result.summary["gradient_norm"], 0)
         for name, parameter in named.items():
             parameter.grad = result.gradients[f"objective/{name}"].clone()

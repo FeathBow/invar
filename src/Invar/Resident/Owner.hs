@@ -79,4 +79,4 @@ preparation :: [Text]
 preparation = ["loading", "profile", "load", "activation"]
 
 measuredStages :: [Text]
-measuredStages = ["load", "activation", "inference", "reward_update", "artifacts", "checkpoint"]
+measuredStages = ["load", "activation", "inference", "update", "artifacts", "checkpoint"]

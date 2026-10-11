@@ -29,7 +29,7 @@ class ScalarTests(unittest.TestCase):
     def test_equal_roles_have_the_analytic_result(self):
         result = scalar.calculate(Profile(epsilon=0.2, penalty=0.125), 2, (inputs(-1, -1, 2),) * 2)
         self.assertEqual(result, (scalar.Output(term=scalar.word(-2), gradient=scalar.word(-1),
-                                                reward_gradient=scalar.word(-1)),) * 2)
+                                                surrogate_gradient=scalar.word(-1)),) * 2)
 
     def test_clipped_branches_and_rounded_minimum_ties(self):
         profile = Profile(epsilon=0.5, penalty=0)

@@ -579,7 +579,7 @@ results = do
             , written <> "{\"stage\""
             , resulting (Calls.change "binding" other)
             , resulting (\record -> Calls.change "request" (Calls.change "extra" (toJSON (0 :: Int)) (Calls.field "request" record)) record)
-            , staging "reward_update" (Calls.change "cpu_seconds" (toJSON (-1 :: Double)))
+            , staging "update" (Calls.change "cpu_seconds" (toJSON (-1 :: Double)))
             ]
     forM_ changes $ \learning -> do
         let transcribed = Map.insert learner' learning (transcripts run)
@@ -630,7 +630,7 @@ cut :: PropertyT IO ()
 cut = do
     run <- serial
     let applying = [recorded | recorded@(Entry.Happened Entry.Applied {}) <- entries run]
-        shortened = takeWhile ((/= Just "reward_update") . F.stage) (records run)
+        shortened = takeWhile ((/= Just "update") . F.stage) (records run)
         unapplied = takeWhile ((/= Just "applied") . F.stage) (records run)
         partial = Bytes.take (Bytes.length (F.wire shortened) + 7) (F.wire (records run))
     current <- firstOf [recorded | recorded@(Entry.Happened Entry.Current {}) <- entries run]

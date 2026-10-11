@@ -82,7 +82,7 @@ def execute(runtime, learner, call, output, *, trajectories, actual, measure, em
     bound = call.invocation.binding()
     planned = plan(request, trajectories, Exchange(binding=bound, emit=emit, receive=receive))
     with learning(runtime.numerics, learner.model):
-        result = measure("reward_update", partial(mlx_learning.update, learner, planned, linearize=mlx_backward.linearize))
+        result = measure("update", partial(mlx_learning.update, learner, planned, linearize=mlx_backward.linearize))
     if result.summary["before"] != request.policy:
         raise RuntimeError("Native update input differs from the declared policy")
     gradients = output / "gradients.safetensors"
@@ -93,7 +93,7 @@ def execute(runtime, learner, call, output, *, trajectories, actual, measure, em
         with gradients.open("xb") as target:
             mx.save_safetensors(target, result.gradients, metadata={"binding": json.dumps(bound, sort_keys=True),
                                 "program": call.invocation.program, "policy": request.policy,
-                                "observation": "objective and reward gradients before AdamW"})
+                                "observation": "objective and surrogate gradients before AdamW"})
         return digest, file_digest(gradients)
 
     probability, gradient_digest = measure("artifacts", artifacts)
