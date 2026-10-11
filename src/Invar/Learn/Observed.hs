@@ -27,4 +27,4 @@ task :: Learn.Settings -> Maybe Policy.Description -> Workload.Task -> Either St
 task settings description selected = do
     let requested = Infer.Request (Learn.behaviorPolicy (Learn.schedule settings)) (Learn.tokenizer settings) (Learn.behaviorBase settings) (Learn.behaviorAssembly settings) (Workload.prompt selected) (Workload.tokens selected) (Workload.temperature selected) (Workload.seed selected)
     planned <- first show (Infer.prepare requested >>= maybe Right Infer.bindPolicy description)
-    pure (Cohort.Task (Workload.name selected) (Workload.group selected) planned (Workload.rule selected))
+    pure (Cohort.Task (Workload.name selected) planned (Workload.grade selected))

@@ -32,7 +32,7 @@ options root = do
     expected <- evalEither (Reward.decimal "#### 12")
     script <- evalIO (makeAbsolute "test/fail.sh")
     let worker = W.Worker "/bin/sh" script root "unused" [] Nothing
-        tasks = [C.Task "first" "question" planned expected, C.Task "second" "question" planned expected]
+        tasks = [C.Task "first" planned (C.Graded "question" expected), C.Task "second" planned (C.Graded "question" expected)]
     pure R.Options {R.worker = worker, R.mode = R.Serial, R.sessions = [[]], R.definition = C.Definition identity tasks, R.order = [0, 1], R.delivery = [0, 1], R.reference = Nothing}
 
 run :: R.Driver scope -> R.Options -> IO (Either R.Error ())

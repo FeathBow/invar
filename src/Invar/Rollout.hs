@@ -1,6 +1,7 @@
 {-# LANGUAGE RoleAnnotations #-}
+{-# LANGUAGE TypeFamilies #-}
 
-module Invar.Rollout (Driver, Mode (..), Options (..), Observer (..), Batch, Sample, Error (..), withDriver, withConfiguredDriver, withRecordedDriver, run, runObserved, silent, samples, delivered, name, group, trajectory, reward, scored) where
+module Invar.Rollout (Driver, Mode (..), OptionsOf (..), Options, Observer (..), BatchOf, Batch, SampleOf, Sample, Error (..), withDriver, withConfiguredDriver, withRecordedDriver, run, runObserved, silent, samples, delivered, name, group, trajectory, reward, scored) where
 
 import Control.Concurrent (forkIOWithUnmask, killThread)
 import Control.Concurrent.MVar (newEmptyMVar, newMVar, putMVar, readMVar, withMVar)
@@ -24,17 +25,23 @@ import Numeric.Natural (Natural)
 
 data Mode = Serial | Batched | Resident | Shared deriving (Eq, Show)
 
-data Options = Options {worker :: W.Worker, mode :: Mode, sessions :: [[(String, String)]], definition :: C.Definition, order :: [Natural], delivery :: [Natural], reference :: Maybe Batch.Reference}
+data OptionsOf grade = Options {worker :: W.Worker, mode :: Mode, sessions :: [[(String, String)]], definition :: C.DefinitionOf grade, order :: [Natural], delivery :: [Natural], reference :: Maybe Batch.Reference}
+
+type Options = OptionsOf C.Graded
 
 data Observer = Observer {dispatched :: Natural -> [(Natural, V.Binding)] -> IO (), checked :: Natural -> Trajectory -> IO ()}
 
 silent :: Observer
 silent = Observer (\_ _ -> pure ()) (\_ _ -> pure ())
 
-type role Batch nominal
-data Batch scope = Batch [Sample] [V.Binding]
+type role BatchOf nominal nominal
+data BatchOf scope grade = Batch [SampleOf grade] [V.Binding]
 
-data Sample = Sample C.Task Trajectory Reward.Scored
+type Batch scope = BatchOf scope C.Graded
+
+data SampleOf grade = Sample (C.TaskOf grade) Trajectory (C.Assessment grade)
+
+type Sample = SampleOf C.Graded
 
 data Error = Declaration C.Error | Scheduling S.Error | Dispatch String | Preparation I.Error | Execution W.Failure | Admission C.Error
     deriving (Eq, Show)
@@ -61,15 +68,15 @@ configured Resident configuration@(_, overlays) recorded action
 configured Shared _ _ _ = pure (Left (Dispatch "Shared inference requires a joint inference and learning owner"))
 configured _ _ recorded action = Right <$> driven Nothing recorded action
 
-run :: Driver scope -> Options -> IO (Either Error (Batch scope))
+run :: (C.Grade grade) => Driver scope -> OptionsOf grade -> IO (Either Error (BatchOf scope grade))
 run driver = runObserved driver silent
 
-runObserved :: Driver scope -> Observer -> Options -> IO (Either Error (Batch scope))
+runObserved :: (C.Grade grade) => Driver scope -> Observer -> OptionsOf grade -> IO (Either Error (BatchOf scope grade))
 runObserved driver observer options = case C.withCohort (definition options) (collect driver observer options) of
     Left problem -> pure (Left (Declaration problem))
     Right action -> action
 
-collect :: Driver scope -> Observer -> Options -> C.Cohort cohort -> IO (Either Error (Batch scope))
+collect :: (C.Grade grade) => Driver scope -> Observer -> OptionsOf grade -> C.CohortOf cohort grade -> IO (Either Error (BatchOf scope grade))
 collect driver@(Driver lock _ _ _) observer options cohort = case planning of
     Left problem -> pure (Left problem)
     Right (plan, selected) -> withMVar lock $ \() -> do
@@ -87,7 +94,7 @@ collect driver@(Driver lock _ _ _) observer options cohort = case planning of
         selected <- first Scheduling (S.execute plan members)
         pure (plan, selected)
 
-execute :: Driver driver -> Observer -> Options -> (Natural, [(Natural, C.Member scope)]) -> IO (Either Error [(Natural, C.Observation scope, Trajectory)])
+execute :: (C.Grade grade) => Driver driver -> Observer -> OptionsOf grade -> (Natural, [(Natural, C.MemberOf scope grade)]) -> IO (Either Error [(Natural, C.ObservationOf scope grade, Trajectory)])
 execute driver@(Driver _ _ pool recorded) observer options (base, selected) = case prepared of
     Left problem -> pure (Left problem)
     Right (calls, workers) -> dispatch calls workers `finally` mapM_ Resident.flush pool
@@ -124,7 +131,7 @@ execute driver@(Driver _ _ pool recorded) observer options (base, selected) = ca
 
 data Runner = Finite (Transcript.Transcript -> [I.Call] -> IO (Either W.Failure [Trajectory])) | Owned ([I.Call] -> IO (Either W.Failure [Trajectory]))
 
-runners :: Driver scope -> Options -> Either Error [Runner]
+runners :: Driver scope -> OptionsOf grade -> Either Error [Runner]
 runners (Driver _ _ pool _) options = case (mode options, pool) of
     (selected, Just owned)
         | selected `elem` [Resident, Shared] ->
@@ -139,13 +146,13 @@ runners (Driver _ _ pool _) options = case (mode options, pool) of
   where
     finite (launch, overlay) = Finite (launch ((worker options) {W.environment = overlay}) (reference options))
 
-prepareCall :: Natural -> (Natural, C.Member scope) -> Either Error I.Call
+prepareCall :: Natural -> (Natural, C.MemberOf scope grade) -> Either Error I.Call
 prepareCall base (index, member) =
     let identity = base + index
         bound = V.ordinal identity
      in first Preparation (I.prepare bound (C.planned member))
 
-finishSession :: [(Natural, C.Member scope)] -> Either W.Failure [Trajectory] -> Either Error [(Natural, C.Observation scope, Trajectory)]
+finishSession :: (C.Grade grade) => [(Natural, C.MemberOf scope grade)] -> Either W.Failure [Trajectory] -> Either Error [(Natural, C.ObservationOf scope grade, Trajectory)]
 finishSession selected returned = do
     completed <- first Execution returned
     if length completed == length selected
@@ -173,7 +180,7 @@ concurrently actions = mask $ \restore -> do
     attempt = try
     recall launched = uninterruptibleMask_ (mapM_ (killThread . fst) launched >> mapM_ (readMVar . snd) launched)
 
-finish :: C.Definition -> C.Cohort cohort -> [(Natural, C.Observation cohort, Trajectory)] -> Either Error (Batch scope)
+finish :: C.DefinitionOf grade -> C.CohortOf cohort grade -> [(Natural, C.ObservationOf cohort grade, Trajectory)] -> Either Error (BatchOf scope grade)
 finish definition cohort completed = do
     _ <- first Admission (C.admit cohort [observed | (_, observed, _) <- completed])
     let logical = zipWith sample (C.tasks definition) (sortOn (\(index, _, _) -> index) completed)
@@ -182,13 +189,13 @@ finish definition cohort completed = do
   where
     sample task (_, observed, executed) = Sample task executed (C.scored observed)
 
-samples :: Batch scope -> [Sample]
+samples :: BatchOf scope grade -> [SampleOf grade]
 samples (Batch values _) = values
 
-delivered :: Batch scope -> [V.Binding]
+delivered :: BatchOf scope grade -> [V.Binding]
 delivered (Batch _ bindings) = bindings
 
-name :: Sample -> String
+name :: SampleOf grade -> String
 name (Sample task _ _) = C.name task
 
 group :: Sample -> String
@@ -197,8 +204,8 @@ group (Sample task _ _) = C.group task
 reward :: Sample -> Rational
 reward = Reward.value . scored
 
-scored :: Sample -> Reward.Scored
+scored :: SampleOf grade -> C.Assessment grade
 scored (Sample _ _ evaluated) = evaluated
 
-trajectory :: Sample -> Trajectory
+trajectory :: SampleOf grade -> Trajectory
 trajectory (Sample _ executed _) = executed

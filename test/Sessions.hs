@@ -40,6 +40,7 @@ sessions =
         , ("cancelling the cohort after one session returned stops the others", once returned)
         , ("each request is reported when dispatched to a session and each result after its check", once observed)
         , ("a session without requests opens no transcript, and every opened transcript learns its outcome", once transcribed)
+        , ("an ungraded cohort runs through the same driver and its samples carry no score", once ungraded)
         ]
   where
     once = withTests 1 . property
@@ -64,7 +65,7 @@ setup count offset (policy, scoring) = do
     expected <- evalEither (Reward.decimal "#### 12")
     let events = [maybe event (\digest -> Fixture.change "reference" (object ["adapter" .= digest, "bits" .= referenceBits]) event) (if Fixture.field "stage" event == String "result" then scoring else Nothing) | event <- served]
     calls <- traverse (\(index, previous) -> prepared planned events (offset + index) (fmap (offset +) previous)) (concatMap chain (assignment count))
-    let tasks = [C.Task ("member" ++ show index) "group" planned expected | index <- [0 .. members - 1]]
+    let tasks = [C.Task ("member" ++ show index) planned (C.Graded "group" expected) | index <- [0 .. members - 1]]
     pure (calls, C.Definition policy tasks)
   where
     chain picked = zip picked (Nothing : map Just picked)
@@ -209,3 +210,14 @@ transcribed = do
     sortOn fst outcomes === [(slot, Transcript.Exited ExitSuccess Transcript.Complete) | slot <- [0 .. members - 1]]
     launched <- evalIO (readFile (root </> "launched"))
     length (lines launched) === fromIntegral members
+
+ungraded :: PropertyT IO ()
+ungraded = do
+    root <- workspace
+    single <- options root 1
+    let plain = single {R.definition = (R.definition single) {C.tasks = [task {C.grade = C.Ungraded} | task <- C.tasks (R.definition single)]}}
+    graded <- evalIO (R.withDriver (\driver -> fmap R.samples <$> R.run driver single)) >>= evalEither
+    taught <- evalIO (R.withDriver (\driver -> fmap R.samples <$> R.run driver plain)) >>= evalEither
+    map R.name taught === map R.name graded
+    map (Trajectory.behaviorBits . R.trajectory) taught === map (Trajectory.behaviorBits . R.trajectory) graded
+    map R.scored taught === map (const ()) graded

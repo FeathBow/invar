@@ -135,7 +135,7 @@ admit expected selected encoded = do
         (Just _, []) -> Left "Missing final resident process close"
     task (policyIdentity, tokenizer, base, assembly) chosen = do
         planned <- first show (Infer.prepare (Infer.Request policyIdentity tokenizer base assembly (Workload.prompt chosen) (Workload.tokens chosen) (Workload.temperature chosen) (Workload.seed chosen)) >>= maybe Right Infer.bindPolicy (description selected))
-        pure (Cohort.Task (Workload.name chosen) (Workload.group chosen) planned (Workload.rule chosen))
+        pure (Cohort.Task (Workload.name chosen) planned (Workload.grade chosen))
     joined (Waiting offset tasks pending logged reported) = do
         delimited <- first show (concat <$> traverse Replay.delimit pending)
         let admitted = map Replay.trajectory (delimited ++ logged)

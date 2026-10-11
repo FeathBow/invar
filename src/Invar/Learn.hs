@@ -1,6 +1,6 @@
 {-# LANGUAGE RoleAnnotations #-}
 
-module Invar.Learn (Optimizer (..), Schedule (..), ReferenceSource (..), Settings (..), Plan, Error (..), synchronous, validate, materialization, prepare, observedInput, input, program, emission, rollout, invocation) where
+module Invar.Learn (Optimizer (..), Schedule (..), ReferenceSource (..), Algorithm (..), Settings (..), Reading (..), PlanOf, Plan, Error (..), synchronous, validate, materialization, prepare, distilled, observedInput, input, program, emission, rollout, invocation) where
 
 import Control.Monad (unless)
 import Data.Aeson (encode)
@@ -9,7 +9,9 @@ import Data.ByteString.Lazy qualified as Lazy
 import Data.Char (ord)
 import Data.List (sortOn)
 import Data.Map.Strict qualified as Map
+import Data.Set qualified as Set
 import Data.Text qualified as Text
+import Data.Word (Word32)
 import Invar.Cohort qualified as Cohort
 import Invar.Construct qualified as C
 import Invar.Digest qualified as Digest
@@ -51,7 +53,7 @@ data Settings = Settings
     , behaviorAssembly :: String
     , clip :: Double
     , penalty :: Double
-    , delta :: Double
+    , algorithm :: Algorithm
     , steps :: Natural
     , optimizer :: Optimizer
     , schedule :: Schedule
@@ -59,12 +61,20 @@ data Settings = Settings
     }
     deriving (Eq, Show)
 
+data Algorithm = Grpo Double | Opd Algorithm.Teacher
+    deriving (Eq, Show)
+
 data InputSample = InputSample {sampleGroup :: String, sampleTrajectory :: Trajectory, sampleReward :: Rational}
 
-type role Plan nominal
-data Plan scope = Plan {planBatch :: R.Batch scope, planChecked :: A.Checked, planWorld :: E.World, planEmission :: E.Emission, planInput :: ByteString}
+data Reading = Reading {readingCall :: V.Binding, readingWords :: [Word32]}
+    deriving (Eq, Show)
 
-data Error = InvalidSettings String | PolicyMismatch | ReferenceMismatch | TokenizerMismatch | MaterializationMismatch | Construction C.BuildError | Evaluation E.Error | Lowering Wire.Error | Lifecycle V.Error | InvalidEmission
+type role PlanOf nominal nominal
+data PlanOf scope grade = Plan {planBatch :: R.BatchOf scope grade, planChecked :: A.Checked, planWorld :: E.World, planEmission :: E.Emission, planInput :: ByteString}
+
+type Plan scope = PlanOf scope Cohort.Graded
+
+data Error = InvalidSettings String | PolicyMismatch | ReferenceMismatch | TokenizerMismatch | MaterializationMismatch | UnmatchedReadings | Construction C.BuildError | Evaluation E.Error | Lowering Wire.Error | Lifecycle V.Error | InvalidEmission
     deriving (Eq, Show)
 
 prepare :: Settings -> R.Batch scope -> Either Error (Plan scope)
@@ -79,14 +89,44 @@ observedInput settings batch = do
     (checked, _, _, payload) <- compileInput settings samples
     pure (A.bytes checked, payload)
 
+distilled :: Settings -> Map.Map String Reading -> R.BatchOf scope Cohort.Ungraded -> Either Error (PlanOf scope Cohort.Ungraded)
+distilled settings readings batch = do
+    validate settings
+    chosen <- case algorithm settings of
+        Opd teacher -> Right teacher
+        Grpo _ -> Left (InvalidSettings "A distillation update needs distillation settings")
+    unless (Map.keysSet readings == Set.fromList (map R.name (R.samples batch))) (Left UnmatchedReadings)
+    let trajectories = map R.trajectory (R.samples batch)
+        read' = [readings Map.! R.name sample | sample <- R.samples batch]
+        keyed project = Mapping (Map.fromList (zip [0 ..] (map project read')))
+        coefficients = record [("epsilon", number (clip settings)), ("penalty", number (penalty settings)), ("steps", Atom (Number (fromIntegral (steps settings))))]
+        own = Map.fromList [(Semantic "algorithm", coefficients), (Semantic "teacher", teacherValue chosen), (Semantic "teacher_scores", keyed (Sequence . map (Atom . Bits32) . readingWords)), (Semantic "teacher_calls", keyed (bindingValue . readingCall))]
+    admitted settings trajectories
+    (checked, sources, command, payload) <- emitted P.distilled (Map.union own (sharedWorld settings trajectories))
+    pure Plan {planBatch = batch, planChecked = checked, planWorld = sources, planEmission = command, planInput = payload}
+
 compileInput :: Settings -> [InputSample] -> Either Error (A.Checked, E.World, E.Emission, ByteString)
 compileInput settings samples = do
     validate settings
-    unless (all ((== behaviorPolicy (schedule settings)) . I.artifact . Trajectory.request . sampleTrajectory) samples) (Left PolicyMismatch)
-    mapM_ (materialization settings . Trajectory.request . sampleTrajectory) samples
-    unless (all (scoredBy settings . Trajectory.reference . sampleTrajectory) samples) (Left ReferenceMismatch)
-    checked <- either (Left . Construction) Right P.checked
-    let sources = world settings samples
+    chosenDelta <- case algorithm settings of
+        Grpo value -> Right value
+        Opd _ -> Left (InvalidSettings "A GRPO update needs GRPO settings")
+    admitted settings (map sampleTrajectory samples)
+    let indexed = zip [0 ..] samples
+        keyed project = Mapping (Map.fromList [(index, project sample) | (index, sample) <- indexed])
+        coefficients = record [("epsilon", number (clip settings)), ("penalty", number (penalty settings)), ("delta", number chosenDelta), ("steps", Atom (Number (fromIntegral (steps settings))))]
+        own = Map.fromList [(Semantic "algorithm", coefficients), (Semantic "rewards", keyed (Atom . Number . sampleReward)), (Semantic "groups", groupValues indexed)]
+    emitted P.checked (Map.union own (sharedWorld settings (map sampleTrajectory samples)))
+
+admitted :: Settings -> [Trajectory] -> Either Error ()
+admitted settings trajectories = do
+    unless (all ((== behaviorPolicy (schedule settings)) . I.artifact . Trajectory.request) trajectories) (Left PolicyMismatch)
+    mapM_ (materialization settings . Trajectory.request) trajectories
+    unless (all (scoredBy settings . Trajectory.reference) trajectories) (Left ReferenceMismatch)
+
+emitted :: Either C.BuildError A.Checked -> E.World -> Either Error (A.Checked, E.World, E.Emission, ByteString)
+emitted declared sources = do
+    checked <- either (Left . Construction) Right declared
     commands <- either (Left . Evaluation) Right (A.run checked sources)
     case commands of
         [command] -> do
@@ -103,7 +143,11 @@ validate :: Settings -> Either Error ()
 validate settings = do
     unless (all identity [policy settings, learner settings, reference settings, base settings, assembly settings, behaviorBase settings, behaviorAssembly settings]) (Left (InvalidSettings "Expected lowercase SHA-256 artifact identities"))
     unless (identity (tokenizer settings)) (Left (InvalidSettings "Expected a lowercase SHA-256 tokenizer identity"))
-    unless (Algorithm.coefficients (clip settings) (penalty settings) (delta settings)) (Left (InvalidSettings "Invalid GRPO coefficients"))
+    case algorithm settings of
+        Grpo chosenDelta -> unless (Algorithm.coefficients (clip settings) (penalty settings) chosenDelta) (Left (InvalidSettings "Invalid GRPO coefficients"))
+        Opd teacher -> do
+            unless (Algorithm.clipping (clip settings) && Algorithm.penalty (penalty settings)) (Left (InvalidSettings "Invalid distillation coefficients"))
+            either (Left . InvalidSettings) Right (Algorithm.teacher (tokenizer settings) teacher)
     unless (steps settings > 0) (Left (InvalidSettings "An update needs at least one optimizer step"))
     unless (identity (behaviorPolicy chosenSchedule)) (Left (InvalidSettings "Expected a lowercase SHA-256 behavior policy identity"))
     unless (version chosenSchedule == (if update chosenSchedule > staleness chosenSchedule then update chosenSchedule - staleness chosenSchedule else 0)) (Left (InvalidSettings "Samples must come from version max(0, update - staleness)"))
@@ -118,16 +162,21 @@ materialization settings requested = do
     unless (tokenizer settings == I.tokenizer requested) (Left TokenizerMismatch)
     unless (behaviorBase settings == I.base requested && behaviorAssembly settings == I.assembly requested) (Left MaterializationMismatch)
 
-world :: Settings -> [InputSample] -> E.World
-world settings samples = Map.fromList [(Semantic "policy", Load.imageValue image), (Semantic "learner", learnerValue settings), (Semantic "reference", text (reference settings)), (Semantic "reference_source", text (Text.unpack (S.sourceName (referenceSource settings)))), (Semantic "algorithm", algorithm), (Semantic "trajectories", keyed (trajectory . Trajectory.result . sampleTrajectory)), (Semantic "behavior_model", behaviorModel), (Semantic "schedule", record [("update", Atom (Token (update chosenSchedule))), ("staleness", Atom (Token (staleness chosenSchedule)))]), (Semantic "generations", keyed (const generation)), (Semantic "behavior", keyed (Sequence . map (Atom . Bits32) . Trajectory.behaviorBits . sampleTrajectory)), (Semantic "reference_scores", keyed (Sequence . map (Atom . Bits32) . maybe [] Output.scores . Trajectory.reference . sampleTrajectory)), (Semantic "rewards", keyed (Atom . Number . sampleReward)), (Semantic "groups", groupValues indexed), (Semantic "order", Sequence [Mapping (Map.singleton index marker) | (index, _) <- indexed])]
+sharedWorld :: Settings -> [Trajectory] -> E.World
+sharedWorld settings trajectories = Map.fromList [(Semantic "policy", Load.imageValue image), (Semantic "learner", learnerValue settings), (Semantic "reference", text (reference settings)), (Semantic "reference_source", text (Text.unpack (S.sourceName (referenceSource settings)))), (Semantic "trajectories", keyed (trajectory . Trajectory.result)), (Semantic "behavior_model", behaviorModel), (Semantic "schedule", record [("update", Atom (Token (update chosenSchedule))), ("staleness", Atom (Token (staleness chosenSchedule)))]), (Semantic "generations", keyed (const generation)), (Semantic "behavior", keyed (Sequence . map (Atom . Bits32) . Trajectory.behaviorBits)), (Semantic "reference_scores", keyed (Sequence . map (Atom . Bits32) . maybe [] Output.scores . Trajectory.reference)), (Semantic "order", Sequence [Mapping (Map.singleton index marker) | (index, _) <- indexed])]
   where
     image = Materialization.learning (policy settings, learner settings, tokenizer settings, base settings, assembly settings, reference settings)
     behaviorModel = record [("base", text (behaviorBase settings)), ("assembly", text (behaviorAssembly settings))]
     chosenSchedule = schedule settings
     generation = record [("version", Atom (Token (version chosenSchedule))), ("policy", text (behaviorPolicy chosenSchedule))]
-    indexed = zip [0 ..] samples
+    indexed = zip [0 :: Natural ..] trajectories
     keyed project = Mapping (Map.fromList [(index, project sample) | (index, sample) <- indexed])
-    algorithm = record [("epsilon", number (clip settings)), ("penalty", number (penalty settings)), ("delta", number (delta settings)), ("steps", Atom (Number (fromIntegral (steps settings))))]
+
+teacherValue :: Algorithm.Teacher -> Value Natural
+teacherValue chosen = record (("temperature", number (Algorithm.teacherTemperature chosen)) : [(name, text (field chosen)) | (name, field) <- [("model", Algorithm.teacherModel), ("revision", Algorithm.teacherRevision), ("tokenizer", Algorithm.teacherTokenizer), ("base", Algorithm.teacherBase), ("assembly", Algorithm.teacherAssembly), ("profile", Algorithm.teacherProfile), ("truncation", Algorithm.teacherTruncation), ("logprobs", Algorithm.teacherLogprobs), ("path", Algorithm.teacherPath)]])
+
+bindingValue :: V.Binding -> Value Natural
+bindingValue (V.Binding (V.CallId call) (V.AttemptId attempt) (V.Instance instance')) = record [("call", Atom (Token call)), ("attempt", Atom (Token attempt)), ("instance", Atom (Token instance'))]
 
 learnerValue :: Settings -> Value Natural
 learnerValue settings = record [("policy", text (policy settings)), ("learner", text (learner settings)), ("tokenizer", text (tokenizer settings)), ("base", text (base settings)), ("assembly", text (assembly settings)), ("optimizer", parameters)]
@@ -162,19 +211,19 @@ text = Sequence . map (Atom . Token . fromIntegral . ord)
 number :: Double -> Value Natural
 number = Atom . Number . toRational
 
-input :: Plan scope -> ByteString
+input :: PlanOf scope grade -> ByteString
 input = planInput
 
-program :: Plan scope -> ByteString
+program :: PlanOf scope grade -> ByteString
 program = A.bytes . planChecked
 
-emission :: Plan scope -> E.Emission
+emission :: PlanOf scope grade -> E.Emission
 emission = planEmission
 
-rollout :: Plan scope -> R.Batch scope
+rollout :: PlanOf scope grade -> R.BatchOf scope grade
 rollout = planBatch
 
-invocation :: V.Binding -> Plan scope -> Either Error V.Runtime
+invocation :: V.Binding -> PlanOf scope grade -> Either Error V.Runtime
 invocation bound planned = do
     lifecycle (V.prepare (V.Selection (V.boundCall bound) (planWorld planned)) (V.start (planChecked planned) command))
   where
