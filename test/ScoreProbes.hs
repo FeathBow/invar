@@ -113,6 +113,7 @@ admitted = do
     checked <- evalEither (Score.observe permit (wire events))
     checked === result
     reject call (Scores.changeObservation (change "execution" Scores.nativeExecutionValue) events)
+    reject call (Scores.changeObservation (change "execution" Scores.transformersExecutionValue) events)
 
 inventory :: PropertyT IO ()
 inventory = do

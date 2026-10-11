@@ -2,6 +2,7 @@ import hashlib
 import json
 
 import torch
+from peft import PeftModel
 from peft.tuners.lora.layer import LoraLayer
 from transformers import PreTrainedConfig
 
@@ -74,6 +75,7 @@ def parameters(model):
 
 def description(model, role):
     modules = dict(model.named_modules(remove_duplicate=False))
+    adapted = isinstance(model, PeftModel)
     generation = {"generation": decoding.description()} if role == implementation.INFERENCE else {"probabilities": PROBABILITIES}
     return {"format": FORMAT, "role": role, "numerical": backend.description(), "implementation": implementation.current(role),
             **generation,
@@ -81,8 +83,8 @@ def description(model, role):
             "parameters": parameters(model),
             "module_settings": {name: {key: getattr(value, key) for key in MODULE_SETTINGS if hasattr(value, key)}
                                 for name, value in modules.items()},
-            "model": configuration(getattr(model.get_base_model(), "config", None)),
-            "adapters": {name: configuration(value) for name, value in model.peft_config.items()},
+            "model": configuration(getattr(model.get_base_model() if adapted else model, "config", None)),
+            "adapters": {name: configuration(value) for name, value in model.peft_config.items()} if adapted else {},
             "layers": {name: layer(value) for name, value in modules.items() if isinstance(value, LoraLayer)}}
 
 

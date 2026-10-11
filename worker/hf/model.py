@@ -1,5 +1,5 @@
 import torch
-from peft import LoraConfig, get_peft_model, get_peft_model_state_dict
+from peft import LoraConfig, PeftModel, get_peft_model, get_peft_model_state_dict
 from transformers import BitsAndBytesConfig, Qwen3_5ForConditionalGeneration
 
 from worker.hf import backend
@@ -24,7 +24,7 @@ def check_loading(loading, *, emit=report):
         raise RuntimeError("Checkpoint loading did not match the selected architecture")
 
 
-def load_model(path, *, role, emit=report):
+def load_model(path, *, role, emit=report, adapted=True, identity=(MODEL, REVISION)):
     quantization = BitsAndBytesConfig(
         load_in_4bit=True, bnb_4bit_quant_type="nf4",
         bnb_4bit_use_double_quant=True, bnb_4bit_compute_dtype=torch.bfloat16,
@@ -38,19 +38,21 @@ def load_model(path, *, role, emit=report):
     check_loading(loading, emit=emit)
     for parameter in model.parameters():
         parameter.requires_grad_(False)
-    targets = [name for name, _ in model.named_modules()
-               if name.startswith("model.language_model.layers.")
-               and name.rsplit(".", 1)[-1] in {"gate_proj", "up_proj", "down_proj"}]
-    if not targets:
-        raise RuntimeError("No language-model adapter targets resolved")
-    config = LoraConfig(r=LORA_RANK, lora_alpha=LORA_ALPHA, target_modules=targets,
-                        lora_dropout=0.0, bias="none", task_type="CAUSAL_LM")
-    model = get_peft_model(model, config)
+    targets = []
+    if adapted:
+        targets = [name for name, _ in model.named_modules()
+                   if name.startswith("model.language_model.layers.")
+                   and name.rsplit(".", 1)[-1] in {"gate_proj", "up_proj", "down_proj"}]
+        if not targets:
+            raise RuntimeError("No language-model adapter targets resolved")
+        config = LoraConfig(r=LORA_RANK, lora_alpha=LORA_ALPHA, target_modules=targets,
+                            lora_dropout=0.0, bias="none", task_type="CAUSAL_LM")
+        model = get_peft_model(model, config)
     if any(p.requires_grad and p.dtype != torch.float32 for p in model.parameters()):
         raise RuntimeError("Adapter parameters do not match the FP32 training profile")
     model.gradient_checkpointing_disable()
     model.eval()
-    emit("profile", {"model": MODEL, "revision": REVISION, "targets": targets,
+    emit("profile", {"model": identity[0], "revision": identity[1], "targets": targets,
                        "generation": decoding.description(),
                        "numerical": backend.description(), "implementation": implementation.current(role),
                        "quantization": quantization.to_dict(),
@@ -65,5 +67,7 @@ def load_model(path, *, role, emit=report):
 
 
 def adapter_state(model):
+    if not isinstance(model, PeftModel):
+        return {}
     return {name: value.detach().cpu().contiguous().clone()
             for name, value in get_peft_model_state_dict(model).items()}

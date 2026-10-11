@@ -41,14 +41,15 @@ TOKEN_LIMIT = 4
 IDENTITY = ("local-test/Llama-tiny", "deterministic-cpu-fixture")
 
 
-def model():
+def model(*, seed=MODEL_SEED, adapted=True):
     with torch.random.fork_rng():
-        torch.manual_seed(MODEL_SEED)
+        torch.manual_seed(seed)
         config = LlamaConfig(vocab_size=len(WORDS), hidden_size=HIDDEN_SIZE,
                              intermediate_size=INTERMEDIATE_SIZE, num_hidden_layers=1,
                              num_attention_heads=2, num_key_value_heads=2)
-        base = LlamaForCausalLM(config)
-        result = get_peft_model(base, LoraConfig(r=2, lora_alpha=2, target_modules=["q_proj", "v_proj"]))
+        result = LlamaForCausalLM(config).requires_grad_(False)
+        if adapted:
+            result = get_peft_model(result, LoraConfig(r=2, lora_alpha=2, target_modules=["q_proj", "v_proj"]))
     return result.eval()
 
 

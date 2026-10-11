@@ -17,6 +17,7 @@ observe expected fields = do
     case engine :: String of
         "mlx_lm.generate.BatchGenerator" -> LogOfMass <$ mlx expected fields
         "vllm.v1.worker.gpu_model_runner.GPUModelRunner" -> SeparateLogSoftmax <$ vllm expected fields
+        "transformers.forced_path" -> LogOfMass <$ transformers expected fields
         _ -> fail "Unsupported cached score execution engine"
 
 mlx :: Expected -> Object -> Parser ()
@@ -46,6 +47,13 @@ vllm expected fields = do
     ignored <- fields .: "ignored_prefill_rows"
     unless (ignored >= (0 :: Integer) && rows - ignored == fromIntegral (responseTokens expected)) (fail "Native scoring rows do not cover the prescribed response")
     when (fullVocabulary expected) (fields .: "distribution" >>= withObject "native mass/log measurement" distribution)
+
+transformers :: Expected -> Object -> Parser ()
+transformers expected fields = do
+    when (fullVocabulary expected) (fail "Hugging Face scoring records no full-vocabulary probe")
+    Json.fields ["engine", "cache_origin", "truncated"] fields
+    equals fields "cache_origin" ("fresh model cache per path; no source cache input" :: String)
+    equals fields "truncated" (truncated expected)
 
 distribution :: Object -> Parser ()
 distribution fields = do
