@@ -21,7 +21,6 @@ from worker.mlx import training as mlx_training
 
 MODEL = "mlx-community/Qwen3.8-27B-4bit"
 REVISION = "3e6447f082e89cc7f0bc6e5441afd38dfce760ff"
-LAYERS = 64
 DEFAULT_SEED = 17
 CACHE_BYTES = 256 * 1024 * 1024
 PREFILL_STEP = 512
@@ -36,6 +35,8 @@ class Configuration:
     prefill_step: int = PREFILL_STEP
     cache_bytes: int = CACHE_BYTES
     numerics: str = "primary"
+    model: str = MODEL
+    revision: str = REVISION
 
     def __post_init__(self):
         if any(type(value) is not int or value <= 0 for value in (self.batch_size, self.prefill_step)) or type(self.cache_bytes) is not int or self.cache_bytes < 0:
@@ -45,6 +46,9 @@ class Configuration:
 
     def profile(self):
         return PROFILES[self.numerics]
+
+    def identity(self):
+        return self.model, self.revision
 
     def sampling(self):
         return Sampling(batch_size=self.batch_size, prefill_step=self.prefill_step)
@@ -63,16 +67,17 @@ def configuration(path):
     if path is None:
         return Configuration()
     value = core.decode(Path(path).read_text())
-    fields(value, "format batch_size prefill_step cache_bytes" + (" numerics" if "numerics" in value else ""))
+    declared = " model revision" if "model" in value or "revision" in value else ""
+    fields(value, "format batch_size prefill_step cache_bytes" + (" numerics" if "numerics" in value else "") + declared)
     if value["format"] != "invar-mlx-runtime-v1":
         raise ValueError("Expected native MLX runtime configuration")
     return Configuration(**{name: item for name, item in value.items() if name != "format"})
 
 
-def resolve(cache):
+def resolve(cache, identity):
     from huggingface_hub import snapshot_download
 
-    return Path(snapshot_download(MODEL, revision=REVISION, cache_dir=cache, local_files_only=True))
+    return Path(snapshot_download(identity[0], revision=identity[1], cache_dir=cache, local_files_only=True))
 
 
 def load(cache, *, scope, configuration, measure, emit, seed=DEFAULT_SEED, initial=None, identified=False):
@@ -81,22 +86,26 @@ def load(cache, *, scope, configuration, measure, emit, seed=DEFAULT_SEED, initi
         raise RuntimeError("The native MLX Metal device is required")
     previous = mx.set_cache_limit(configuration.cache_bytes)
     scope.callback(mx.set_cache_limit, previous)
-    path = resolve(cache)
+    identity = configuration.identity()
+    path = resolve(cache, identity)
+    adapted = initial is None or initial[1]["adapter"] != mlx_tensors.digest({})
     mx.random.seed(seed)
 
     def prepare():
-        emit("loading", {"model": MODEL, "revision": REVISION})
+        emit("loading", {"model": identity[0], "revision": identity[1]})
         model, config = load_model(path, lazy=False, strict=True)
-        if len(model.layers) != LAYERS or config["text_config"]["num_hidden_layers"] != LAYERS:
-            raise ValueError("The native loader requires the complete declared model")
-        mlx_adapter.create(model, layers=LAYERS)
+        layers = len(model.layers)
+        if adapted:
+            mlx_adapter.create(model, layers=layers)
+        else:
+            model.freeze()
         numerics.install(model)
         model.eval()
         scope.enter_context(wired_limit(model))
-        loaded = Loaded(model=model, tokenizer=operation.load(path), config=config, identity=(MODEL, REVISION), numerics=numerics)
+        loaded = Loaded(model=model, tokenizer=operation.load(path), config=config, identity=identity, numerics=numerics)
         if initial is not None:
             activate(loaded, initial[0], expected=initial[1])
-        reported = profile(configuration, numerics=numerics.name)
+        reported = profile(configuration, numerics=numerics.name, layers=layers if adapted else None)
         if identified:
             reported["inference"] = mlx_adapter.images(model, config, numerics=described(loaded, INFERENCE))
         emit("profile", reported)
@@ -105,14 +114,14 @@ def load(cache, *, scope, configuration, measure, emit, seed=DEFAULT_SEED, initi
     return measure("load", prepare)
 
 
-def profile(configuration, *, numerics):
-    return {"model": MODEL, "revision": REVISION,
+def profile(configuration, *, numerics, layers):
+    return {"model": configuration.model, "revision": configuration.revision,
             "native": {"device": mx.device_info()["device_name"],
                        "numerics": numerics,
                        "packages": {name: version(name) for name in ("mlx", "mlx-lm", "transformers")},
                        "quantization": {"mode": "affine", "bits": 4, "group_size": 64},
-                       "adapter": {"layers": LAYERS, "targets": list(mlx_adapter.PROJECTIONS),
-                                   "rank": mlx_adapter.RANK, "scale": mlx_adapter.SCALE, "dtype": "mlx.core.float32"},
+                       "adapter": None if layers is None else {"layers": layers, "targets": list(mlx_adapter.PROJECTIONS),
+                                                                   "rank": mlx_adapter.RANK, "scale": mlx_adapter.SCALE, "dtype": "mlx.core.float32"},
                        "batch_size": configuration.batch_size, "prefill_step": configuration.prefill_step,
                        "free_buffer_cache_bytes": configuration.cache_bytes,
                        "wired_limit_bytes": mx.device_info()["max_recommended_working_set_size"],

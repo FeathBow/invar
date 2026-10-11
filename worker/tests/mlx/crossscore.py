@@ -31,9 +31,9 @@ SAMPLING = Sampling(batch_size=2, prefill_step=2)
 ZERO_SUPPORT = 0xff800000
 
 
-def loaded(seed):
+def loaded(seed, *, adapted=True):
     mx.random.seed(seed)
-    numerical, config = model(uniform_head=False)
+    numerical, config = model(uniform_head=False, adapted=adapted)
     numerics.PRIMARY.install(numerical)
     numerical.eval()
     return mlx_model.Loaded(model=numerical, tokenizer=tokenizer(), config=config,

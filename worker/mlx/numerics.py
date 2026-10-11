@@ -32,7 +32,7 @@ class Profile:
     def install(self, model):
         replacements = tuple((inventory(model, family), family, selected) for family, selected in self.families())
         for modules, family, _ in replacements:
-            if not modules or any(type(module) is not family for module in modules.values()):
+            if not (modules or family is LoRALinear) or any(type(module) is not family for module in modules.values()):
                 raise TypeError("Native numerical installation requires the pinned module inventory")
         for module in replacements[0][0].values():
             if (module.bits, module.group_size, module.mode) != (BITS, GROUP_SIZE, MODE):
@@ -50,7 +50,7 @@ class Profile:
         observed = {}
         for family, selected in self.families():
             modules = inventory(model, family)
-            if not modules or any(type(module) is not selected for module in modules.values()):
+            if not (modules or family is LoRALinear) or any(type(module) is not selected for module in modules.values()):
                 raise TypeError("Actual native arithmetic differs from the selected numerical profile")
             if family is nn.QuantizedLinear and any((module.bits, module.group_size, module.mode) != (BITS, GROUP_SIZE, MODE)
                                                    for module in modules.values()):

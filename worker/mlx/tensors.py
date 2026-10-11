@@ -22,8 +22,6 @@ def view(value):
 
 def digest(state):
     result = hashlib.sha256()
-    if not state:
-        raise ValueError("Expected a nonempty native MLX policy")
     for name, value in sorted(state.items()):
         if value.dtype != mx.float32 or not np.isfinite(np.asarray(value)).all():
             raise ValueError("Expected finite FP32 native MLX policy tensors")
