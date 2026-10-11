@@ -8,6 +8,7 @@ import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Data.Word (Word32)
 import Invar.Construct qualified as C
+import Invar.Learn.Algorithm qualified as Algorithm
 import Invar.Spec.Artifact qualified as A
 import Invar.Spec.Evaluate qualified as E
 import Invar.Spec.Program qualified as P
@@ -24,7 +25,7 @@ type Generation = C.Record '[ '("version", Natural), '("policy", [Natural])]
 type Allowed = '[ 'C.Semantic "policy", 'C.Semantic "learner", 'C.Semantic "reference", 'C.Semantic "reference_source", 'C.Semantic "algorithm", 'C.Semantic "trajectories", 'C.Semantic "behavior_model", 'C.Semantic "schedule", 'C.Semantic "generations", 'C.Semantic "behavior", 'C.Semantic "reference_scores", 'C.Semantic "rewards", 'C.Semantic "groups", 'C.Semantic "order"]
 
 checked :: Either C.BuildError A.Checked
-checked = C.compile (E.Semantics schema Map.empty) [C.emit @"update" @"grpo-token-mean/v1" @Allowed expression]
+checked = C.compile (E.Semantics schema Map.empty) [C.emit @Algorithm.Sink @Algorithm.Specification @Allowed expression]
   where
     expression =
         C.record
@@ -44,10 +45,10 @@ checked = C.compile (E.Semantics schema Map.empty) [C.emit @"update" @"grpo-toke
             $ C.field @"order" (C.sequenceSource @('C.Semantic "order") @(Map Natural Bool)) C.emptyFields
 
 schema :: P.Schema
-schema = P.Schema sources Map.empty (Map.singleton "update" sink)
+schema = P.Schema sources Map.empty (Map.singleton Algorithm.sink sink)
   where
     sources = Map.mapKeys P.Semantic fields
-    sink = P.Sink "grpo-token-mean/v1" (P.RecordType fields) (Map.keysSet sources) Set.empty
+    sink = P.Sink Algorithm.specification (P.RecordType fields) (Map.keysSet sources) Set.empty
 
 fields :: Map String P.Type
 fields = Map.fromList [("policy", record [("artifact", text), ("profile", text)]), ("learner", learner), ("reference", text), ("reference_source", text), ("algorithm", algorithm), ("trajectories", P.MapType trajectory), ("behavior_model", record [("base", text), ("assembly", text)]), ("schedule", record [("update", P.TokenType), ("staleness", P.TokenType)]), ("generations", P.MapType (record [("version", P.TokenType), ("policy", text)])), ("behavior", P.MapType (P.SequenceType P.BitsType)), ("reference_scores", P.MapType (P.SequenceType P.BitsType)), ("rewards", P.MapType P.NumberType), ("groups", selectors), ("order", selectors)]

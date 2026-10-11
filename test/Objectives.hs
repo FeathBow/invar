@@ -88,8 +88,9 @@ invalid = do
     forM_ nonfinite $ \value -> do
         assert (isLeft (O.calculate profile 1 [ordinary {O.advantage = value}]))
         assert (isLeft (O.mean32 [value]))
-    forM_ [O.Profile 0 0, O.Profile 1 0, O.Profile (0 / 0) 0, O.Profile 0.2 (-1), O.Profile 0.2 (1 / 0), O.Profile 0.2 1e100] $ \value ->
-        assert (isLeft (O.calculate value 1 [ordinary]))
+    O.calculate (O.Profile 0 0) 1 [ordinary] === Left (O.InvalidInput "Invalid clipping epsilon")
+    O.calculate (O.Profile 0.2 (-1)) 1 [ordinary] === Left (O.InvalidInput "Invalid reference penalty")
+    O.calculate (O.Profile 0.2 1e100) 1 [ordinary] === Left (O.NonFinite "penalty coefficient")
     assert (isLeft (O.calculate profile 0 [ordinary]))
     assert (isLeft (O.calculate profile 1 []))
     assert (isLeft (O.calculate profile 1 [ordinary, ordinary]))

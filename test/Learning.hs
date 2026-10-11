@@ -21,7 +21,7 @@ import Numeric.Natural (Natural)
 import Properties (campaign)
 
 learning :: Group
-learning = Group "Keyed learning emissions" [("lowering preserves the declared update request", once request), ("joint key renaming preserves the numerical payload", campaign renaming), ("one-source relabeling changes sample reward association", once association), ("groups order and probability roles cannot be substituted", once membership), ("interleaved samples retain their declared groups", once groups), ("source types reject non-bit behavior and operational inputs", once types), ("behavior bit patterns are not converted to numeric floats", once bits), ("load image must agree with each materialized input identity", once materialized), ("behavior representation is distinct from the learner load", once representations), ("reference scores are present exactly when the reference differs from the policy", once scored), ("optimizer steps split the logical order into consecutive mini-batches", once steps), ("samples come from version max(0, u - d) and need reference scores only when their behavior policy is not the reference", once versions), ("an undeclared reference source is refused where the request is parsed", once undeclared)]
+learning = Group "Keyed learning emissions" [("lowering preserves the declared update request", once request), ("joint key renaming preserves the numerical payload", campaign renaming), ("one-source relabeling changes sample reward association", once association), ("groups order and probability roles cannot be substituted", once membership), ("interleaved samples retain their declared groups", once groups), ("source types reject non-bit behavior and operational inputs", once types), ("behavior bit patterns are not converted to numeric floats", once bits), ("load image must agree with each materialized input identity", once materialized), ("behavior representation is distinct from the learner load", once representations), ("reference scores are present exactly when the reference differs from the policy", once scored), ("optimizer steps split the logical order into consecutive mini-batches", once steps), ("samples come from version max(0, u - d) and need reference scores only when their behavior policy is not the reference", once versions), ("an undeclared reference source is refused where the request is parsed", once undeclared), ("invalid GRPO and AdamW coefficients are refused where the request is parsed", once coefficients), ("lowering takes only the update emission of the declared specification", once identified)]
   where
     once = withTests 1 . property
 
@@ -200,6 +200,24 @@ undeclared = do
         case W.lower command of
             Left (W.Shape message) -> assert ("reference source" `isInfixOf` message)
             unexpected -> annotateShow unexpected >> failure
+
+identified :: PropertyT IO ()
+identified = do
+    command <- emission world
+    forM_ [command {E.sinkName = "other"}, command {E.sinkSpecification = "grpo-token-mean/v0"}] $ \changed -> do
+        W.lower changed === Left (W.Shape "Expected the GRPO update emission")
+        W.image changed === Left (W.Shape "Expected the GRPO update emission")
+
+coefficients :: PropertyT IO ()
+coefficients = forM_ [(("algorithm", ["epsilon"]), "Invalid GRPO coefficient configuration"), (("learner", ["optimizer", "learning_rate"]), "Invalid AdamW scalar configuration")] $ \((source, path), refusal) -> do
+    command <- emission (Map.adjust (nested path (number (-1))) (S.Semantic source) world)
+    case W.lower command of
+        Left (W.Shape message) -> assert (refusal `isInfixOf` message)
+        unexpected -> annotateShow unexpected >> failure
+  where
+    nested [name] replacement (Record fields) = Record (Map.insert name replacement fields)
+    nested (name : rest) replacement (Record fields) = Record (Map.adjust (nested rest replacement) name fields)
+    nested _ _ value = value
 
 versions :: PropertyT IO ()
 versions = do

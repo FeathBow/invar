@@ -18,6 +18,8 @@ import Invar.Infer.Output qualified as Output
 import Invar.Infer.Result qualified as Result
 import Invar.Infer.Trajectory (Trajectory)
 import Invar.Infer.Trajectory qualified as Trajectory
+import Invar.Learn.Algorithm (Optimizer (..))
+import Invar.Learn.Algorithm qualified as Algorithm
 import Invar.Learn.Program qualified as P
 import Invar.Learn.Stream (ReferenceSource (..))
 import Invar.Learn.Stream qualified as S
@@ -31,9 +33,6 @@ import Invar.Spec.Load qualified as Load
 import Invar.Spec.Program (Source (Semantic))
 import Invar.Spec.Value (Scalar (..), Value (..))
 import Numeric.Natural (Natural)
-
-data Optimizer = Optimizer {learningRate :: Double, firstMoment :: Double, secondMoment :: Double, epsilon :: Double, weightDecay :: Double}
-    deriving (Eq, Show)
 
 data Schedule = Schedule {update :: Natural, staleness :: Natural, version :: Natural, behaviorPolicy :: String}
     deriving (Eq, Show)
@@ -104,22 +103,15 @@ validate :: Settings -> Either Error ()
 validate settings = do
     unless (all identity [policy settings, learner settings, reference settings, base settings, assembly settings, behaviorBase settings, behaviorAssembly settings]) (Left (InvalidSettings "Expected lowercase SHA-256 artifact identities"))
     unless (identity (tokenizer settings)) (Left (InvalidSettings "Expected a lowercase SHA-256 tokenizer identity"))
-    unless algorithm (Left (InvalidSettings "Invalid GRPO coefficients"))
+    unless (Algorithm.coefficients (clip settings) (penalty settings) (delta settings)) (Left (InvalidSettings "Invalid GRPO coefficients"))
     unless (steps settings > 0) (Left (InvalidSettings "An update needs at least one optimizer step"))
     unless (identity (behaviorPolicy chosenSchedule)) (Left (InvalidSettings "Expected a lowercase SHA-256 behavior policy identity"))
     unless (version chosenSchedule == (if update chosenSchedule > staleness chosenSchedule then update chosenSchedule - staleness chosenSchedule else 0)) (Left (InvalidSettings "Samples must come from version max(0, update - staleness)"))
     unless (version chosenSchedule /= update chosenSchedule || behaviorPolicy chosenSchedule == policy settings) (Left (InvalidSettings "Samples of the update's own version must come from the policy being updated"))
-    unless adamw (Left (InvalidSettings "Invalid AdamW coefficients"))
+    unless (Algorithm.optimizer (optimizer settings)) (Left (InvalidSettings "Invalid AdamW coefficients"))
   where
-    algorithm = finite (clip settings) && clip settings > 0 && clip settings < 1 && nonnegative (penalty settings) && positive (delta settings)
-    adamw = nonnegative (learningRate chosen) && positive (epsilon chosen) && nonnegative (weightDecay chosen) && all moment [firstMoment chosen, secondMoment chosen]
-    chosen = optimizer settings
     chosenSchedule = schedule settings
     identity = Digest.sha256
-    finite value = not (isNaN value || isInfinite value)
-    positive value = finite value && value > 0
-    nonnegative value = finite value && value >= 0
-    moment value = nonnegative value && value < 1
 
 materialization :: Settings -> I.Request -> Either Error ()
 materialization settings requested = do

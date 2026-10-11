@@ -13,6 +13,7 @@ import Data.Ratio (denominator, numerator)
 import Data.Set qualified as Set
 import Data.Word (Word32)
 import Invar.Learn.Advantage qualified as Advantage
+import Invar.Learn.Algorithm qualified as Algorithm
 import Invar.Learn.Request qualified as Request
 import Invar.Materialization qualified as Materialization
 import Invar.Spec.Evaluate qualified as E
@@ -26,7 +27,8 @@ data Error = Shape String | Membership String | Numerical Advantage.Error
 data Inputs = Inputs {trajectories :: Map Natural (V.Value Natural), generations :: Map Natural (V.Value Natural), behavior :: Map Natural (V.Value Natural), scores :: Map Natural (V.Value Natural), rewards :: Map Natural (V.Value Natural), groups :: Map Natural String, order :: [Natural]}
 
 lower :: E.Emission -> Either Error Value
-lower command@(E.Emission "update" "grpo-token-mean/v1" payload) = do
+lower command = do
+    payload <- emitted command
     _ <- image command
     samples <- inputs payload
     learner <- field "learner" payload
@@ -50,12 +52,12 @@ lower command@(E.Emission "update" "grpo-token-mean/v1" payload) = do
     expected <- first Numerical (Advantage.calculate delta supplied)
     entries <- traverse (sample samples expected) ordered
     unless (count > 0 && count <= toInteger (length entries)) (Left (Shape "Optimizer steps must be between one and the number of samples"))
-    let encoded = object ["specification" .= ("grpo-token-mean/v1" :: String), "policy" .= policy, "learner" .= checkpoint, "tokenizer" .= tokenizer, "base" .= base, "assembly" .= assembly, "behavior_model" .= behavior, "schedule" .= schedule, "reference" .= reference, "reference_source" .= source, "optimizer" .= optimizer, "epsilon" .= epsilon, "penalty" .= penalty, "delta" .= delta, "steps" .= batches count (map label [0 .. length entries - 1]), "samples" .= entries, "order" .= map label [0 .. length entries - 1]]
+    let encoded = object ["specification" .= Algorithm.specification, "policy" .= policy, "learner" .= checkpoint, "tokenizer" .= tokenizer, "base" .= base, "assembly" .= assembly, "behavior_model" .= behavior, "schedule" .= schedule, "reference" .= reference, "reference_source" .= source, "optimizer" .= optimizer, "epsilon" .= epsilon, "penalty" .= penalty, "delta" .= delta, "steps" .= batches count (map label [0 .. length entries - 1]), "samples" .= entries, "order" .= map label [0 .. length entries - 1]]
     Request.value <$> first Shape (parseEither Request.parse encoded)
-lower _ = Left (Shape "Expected the GRPO update emission")
 
 image :: E.Emission -> Either Error Load.Image
-image (E.Emission "update" "grpo-token-mean/v1" payload) = do
+image command = do
+    payload <- emitted command
     learner <- field "learner" payload
     policy <- field "policy" learner >>= text
     checkpoint <- field "learner" learner >>= text
@@ -67,7 +69,11 @@ image (E.Emission "update" "grpo-token-mean/v1" payload) = do
     let expected = Materialization.learning (policy, checkpoint, tokenizer, base, assembly, reference)
     unless (actual == Load.imageValue expected) (Left (Shape "Learning load image differs from its actual input identities"))
     pure expected
-image _ = Left (Shape "Expected the GRPO update emission")
+
+emitted :: E.Emission -> Either Error (V.Value Natural)
+emitted (E.Emission name chosen payload)
+    | name == Algorithm.sink && chosen == Algorithm.specification = Right payload
+emitted _ = Left (Shape "Expected the GRPO update emission")
 
 inputs :: V.Value Natural -> Either Error Inputs
 inputs payload = do

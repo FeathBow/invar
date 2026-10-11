@@ -13,6 +13,7 @@ import Data.Text qualified as Text
 import Data.Word (Word32)
 import Invar.Float32 qualified as Float32
 import Invar.Json qualified as Json
+import Invar.Learn.Algorithm qualified as Algorithm
 import Invar.Learn.Objective qualified as Objective
 import Invar.Learn.Stream qualified as S
 import Invar.Materialization qualified as Materialization
@@ -50,7 +51,7 @@ parse :: Value -> Parser Request
 parse = withObject "numerical update request" $ \fields -> do
     Json.fields ["specification", "policy", "learner", "reference", "reference_source", "tokenizer", "base", "assembly", "behavior_model", "schedule", "samples", "order", "steps", "epsilon", "penalty", "delta", "optimizer"] fields
     specification <- fields .: "specification"
-    unless (specification == ("grpo-token-mean/v1" :: Text)) (fail "Unsupported update specification")
+    unless (specification == Text.pack Algorithm.specification) (fail "Unsupported update specification")
     source <- fields .: "reference_source" >>= maybe (fail "Unknown reference source") pure . S.readSource
     [policy, checkpoint, reference, tokenizer, base, assembly] <- traverse ((.:) fields >=> Json.identity) ["policy", "learner", "reference", "tokenizer", "base", "assembly"]
     fields .: "behavior_model" >>= model
@@ -74,7 +75,7 @@ parse = withObject "numerical update request" $ \fields -> do
     epsilon <- fields .: "epsilon" >>= Json.finite
     penalty <- fields .: "penalty" >>= Json.finite
     delta <- fields .: "delta" >>= Json.finite
-    unless (epsilon > 0 && epsilon < 1 && penalty >= 0 && delta > 0) (fail "Invalid GRPO coefficient configuration")
+    unless (Algorithm.coefficients epsilon penalty delta) (fail "Invalid GRPO coefficient configuration")
     fields .: "optimizer" >>= optimizer
     let planned = S.Plan (Objective.Profile epsilon penalty) policy (map sampleWords delivered) steps source
         image = Materialization.learning (policy, checkpoint, tokenizer, base, assembly, reference)
@@ -137,5 +138,6 @@ optimizer = withObject "AdamW configuration" $ \fields -> do
     betas <- (fields .: "betas" :: Parser [Value]) >>= traverse Json.finite
     epsilon <- fields .: "epsilon" >>= Json.finite
     decay <- fields .: "weight_decay" >>= Json.finite
-    let moments = 2
-    unless (rate >= 0 && epsilon > 0 && decay >= 0 && length betas == moments && all (\beta -> beta >= 0 && beta < 1) betas) (fail "Invalid AdamW scalar configuration")
+    case betas of
+        [first', second'] | Algorithm.optimizer (Algorithm.Optimizer rate first' second' epsilon decay) -> pure ()
+        _ -> fail "Invalid AdamW scalar configuration"

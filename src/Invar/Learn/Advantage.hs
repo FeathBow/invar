@@ -7,6 +7,7 @@ import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Data.Word (Word32)
 import GHC.Float (castFloatToWord32, double2Float)
+import Invar.Learn.Algorithm qualified as Algorithm
 
 data Reward = Reward {sample :: String, group :: String, value :: Double}
     deriving (Eq, Show)
@@ -17,7 +18,7 @@ data Error = InvalidInput String | NonFinite String
 calculate :: Double -> [Reward] -> Either Error (Map String Word32)
 calculate delta supplied = do
     _ <- finite "advantage delta" delta
-    unless (delta > 0) (Left (InvalidInput "Advantage delta must be positive"))
+    unless (Algorithm.delta delta) (Left (InvalidInput "Advantage delta must be positive"))
     unless (not (null supplied) && Set.size names == length supplied) (Left (InvalidInput "Rewards must have distinct sample identities"))
     mapM_ validate supplied
     Map.fromList . concat <$> traverse (normalize delta . sortOn sample) (Map.elems grouped)

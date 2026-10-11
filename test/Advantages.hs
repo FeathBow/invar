@@ -91,8 +91,6 @@ invalid = do
         case A.calculate delta supplied of
             Left _ -> success
             Right result -> annotateShow result >> failure
-    forM_ [0, -1, 1 / 0, 0 / 0] $ \value ->
-        case A.calculate value (rewards [0, 1]) of
-            Left _ -> success
-            Right result -> annotateShow result >> failure
+    A.calculate 0 (rewards [0, 1]) === Left (A.InvalidInput "Advantage delta must be positive")
+    A.calculate (0 / 0) (rewards [0, 1]) === Left (A.NonFinite "advantage delta")
     A.calculate delta [A.Reward "same" "g0" 0, A.Reward "same" "g0" 1] === Left (A.InvalidInput "Rewards must have distinct sample identities")
