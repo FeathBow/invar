@@ -6,19 +6,24 @@ module Distillations (distillations) where
 import Control.Monad (void)
 import Data.Aeson (Key, Value (..), decodeStrict, object, toJSON, (.=))
 import Data.Aeson.KeyMap qualified as Fields
+import Data.Bifunctor (first)
 import Data.Map.Strict qualified as Map
 import Hedgehog
 import Invar.Cohort qualified as C
 import Invar.Infer.Trajectory qualified as Trajectory
 import Invar.Learn qualified as L
 import Invar.Learn.Algorithm qualified as Algorithm
+import Invar.Learn.Protocol qualified as P
+import Invar.Learn.Stream qualified as S
 import Invar.Learn.Worker qualified as W
+import Invar.Learn.Worker.Resident qualified as Resident
 import Invar.Loop qualified as Loop
 import Invar.Policy qualified as Policy
 import Invar.Rollout qualified as R
 import Invar.Runtime qualified as Runtime
 import Invar.Spec.Invocation qualified as V
 import Invar.Store qualified as Store
+import Invar.Transcript qualified as Transcript
 import Invar.Worker qualified as Worker
 import LearnerFixture qualified as F
 import Sessions qualified
@@ -33,6 +38,7 @@ distillations =
         [ ("an ungraded batch with one teacher reading per sample becomes a distillation request carrying those readings", once lowered)
         , ("a distillation input needs distillation settings and exactly one reading per sample, and a GRPO input refuses distillation settings", once refused)
         , ("the GRPO loop and runtime refuse distillation settings before they create a directory or launch a worker", once guarded)
+        , ("a distillation plan runs through the checked learner exchange", once executed)
         ]
   where
     once = withTests 1 . property
@@ -108,3 +114,19 @@ guarded = do
     created <- evalIO (traverse (doesDirectoryExist . (root </>)) ["loop", "runtime"])
     launched <- evalIO (doesFileExist (root </> "launched"))
     (created, launched) === ([False, False], False)
+executed :: PropertyT IO ()
+executed = do
+    root <- workspace
+    single <- Sessions.options root 1
+    outcome <- evalIO $ R.withDriver $ \driver -> do
+        generated <- R.run driver (ungraded single)
+        case first show generated >>= \batch -> first show (L.distilled taught (readings batch) batch) of
+            Left problem -> pure (Left problem)
+            Right planned -> do
+                exchange <- F.prepare root (0, V.ordinal 7) planned
+                let worker = W.Worker "/bin/sh" (root </> "process.sh") root "process checkpoint" "process reference" (Resident.output (F.paths exchange))
+                writeFile (W.script worker) (F.process (root </> "replies") exchange)
+                returned <- W.run worker (Transcript.echoing (const (pure ()))) (F.call exchange)
+                pure (first show (fmap (length . S.completions . P.stream . W.report) returned))
+    closed <- evalEither outcome
+    fromIntegral closed === L.steps taught

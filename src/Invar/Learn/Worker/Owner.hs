@@ -5,7 +5,7 @@ import Invar.Learn.Worker.Observation qualified as Observation
 import Invar.Learn.Worker.Resident qualified as Resident
 import Invar.Transcript qualified as Transcript
 
-newtype Runner = Runner {run :: forall kind (scope :: kind). Resident.Paths -> Worker.Call scope -> IO (Either Worker.Failure (Observation.Observation scope))}
+newtype Runner = Runner {run :: forall kind (scope :: kind) grade. Resident.Paths -> Worker.CallOf scope grade -> IO (Either Worker.Failure (Observation.ObservationOf scope grade))}
 
 withRunner :: Worker.Mode -> Worker.Worker -> (Runner -> IO value) -> IO (Either Worker.Failure value)
 withRunner mode worker = runner mode worker (pure Transcript.standard)

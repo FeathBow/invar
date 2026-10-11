@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RoleAnnotations #-}
 
-module Invar.Learn.Worker.Resident (Options (..), Paths (..), Resident, Receipt, withResident, withBorrowed, run, report, plan, staged, loaded, acknowledgement) where
+module Invar.Learn.Worker.Resident (Options (..), Paths (..), Resident, ReceiptOf, Receipt, withResident, withBorrowed, run, report, plan, staged, loaded, acknowledgement) where
 
 import Control.Exception (bracket, mask_)
 import Control.Monad (unless)
@@ -10,6 +10,7 @@ import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import Data.ByteString.Lazy qualified as Lazy
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
+import Invar.Cohort qualified as Cohort
 import Invar.Infer.Framing qualified as InferFraming
 import Invar.Learn qualified as L
 import Invar.Learn.Framing qualified as Framing
@@ -27,10 +28,12 @@ import Numeric.Natural (Natural)
 data Options = Options {worker :: W.Worker, owner :: Natural, transcript :: Transcript.Transcript}
 data Paths = Paths {checkpoint :: FilePath, output :: FilePath}
 
-type role Receipt nominal
-data Receipt scope = Receipt (L.Plan scope) P.Result FilePath Load.Fact ByteString
+type role ReceiptOf nominal nominal
+data ReceiptOf scope grade = Receipt (L.PlanOf scope grade) P.Result FilePath Load.Fact ByteString
 
-data Progress scope = Awaiting | Consumed P.Permit | Completed P.Result Load.Fact Boundary.Release | Released (Receipt scope)
+type Receipt scope = ReceiptOf scope Cohort.Graded
+
+data Progress scope grade = Awaiting | Consumed P.Permit | Completed P.Result Load.Fact Boundary.Release | Released (ReceiptOf scope grade)
 
 type role Resident nominal
 data Resident scope = Resident (Transport.Resident scope) (IORef Load.Registry) Boundary.Owner
@@ -57,7 +60,7 @@ withBorrowed process identity action = bracket (newIORef Load.empty) retire $ \s
   where
     retire state = modifyIORef' state Load.close
 
-run :: Resident owner -> Paths -> W.Call scope -> IO (Either W.Failure (Receipt scope))
+run :: Resident owner -> Paths -> W.CallOf scope grade -> IO (Either W.Failure (ReceiptOf scope grade))
 run (Resident process state identity) paths call = do
     progress <- newIORef Awaiting
     let message = Lazy.toStrict (encode (object ["format" .= ("invar-learning-resident-v1" :: String), "checkpoint" .= checkpoint paths, "output" .= output paths, "call" .= W.input call]))
@@ -72,7 +75,7 @@ run (Resident process state identity) paths call = do
                 Released value -> Right value
                 _ -> Left (W.ProtocolFailure "Resident update has no checked release acknowledgement")
 
-authorize :: Transport.Resident owner -> (IORef Load.Registry, IORef (Progress scope)) -> W.Call scope -> ByteString -> IO (Either W.Failure ByteString)
+authorize :: Transport.Resident owner -> (IORef Load.Registry, IORef (Progress scope grade)) -> W.CallOf scope grade -> ByteString -> IO (Either W.Failure ByteString)
 authorize process (state, progress) call@(W.Call planned binding runtime _ hooks) encoded = mask_ $ do
     current <- readIORef progress
     registry <- readIORef state
@@ -95,7 +98,7 @@ authorize process (state, progress) call@(W.Call planned binding runtime _ hooks
         first W.ProtocolFailure (Framing.readiness initial request encoded)
         first W.InvalidOutput (P.authorizeResident registry (binding, runtime) encoded)
 
-answer :: W.Call scope -> IORef (Progress scope) -> ByteString -> IO (Either W.Failure ByteString)
+answer :: W.CallOf scope grade -> IORef (Progress scope grade) -> ByteString -> IO (Either W.Failure ByteString)
 answer (W.Call _ _ _ _ hooks) progress encoded = mask_ $ do
     current <- readIORef progress
     case current of
@@ -108,7 +111,7 @@ answer (W.Call _ _ _ _ hooks) progress encoded = mask_ $ do
                     Right () -> writeIORef progress (Consumed advanced) >> pure (Right reply)
         _ -> pure (Left (W.ProtocolFailure "A learner step was reported outside an authorized resident update"))
 
-complete :: (Boundary.Owner, FilePath) -> IORef (Progress scope) -> ByteString -> IO (Either W.Failure ())
+complete :: (Boundary.Owner, FilePath) -> IORef (Progress scope grade) -> ByteString -> IO (Either W.Failure ())
 complete (identity, directory) progress encoded = do
     current <- readIORef progress
     case current of
@@ -128,7 +131,7 @@ complete (identity, directory) progress encoded = do
         prepared <- first W.ProtocolFailure (Boundary.prepare identity [fact] encoded)
         pure (result, fact, prepared)
 
-release :: (IORef Load.Registry, IORef (Progress scope)) -> (Paths, W.Call scope) -> ByteString -> IO (Either W.Failure (Transport.Handshake W.Failure Owner.Released))
+release :: (IORef Load.Registry, IORef (Progress scope grade)) -> (Paths, W.CallOf scope grade) -> ByteString -> IO (Either W.Failure (Transport.Handshake W.Failure Owner.Released))
 release (state, progress) (paths, W.Call planned binding _ _ _) produced = do
     current <- readIORef progress
     pure $ case current of
@@ -149,19 +152,19 @@ release (state, progress) (paths, W.Call planned binding _ _ _) produced = do
         let loadedRecords = [InferFraming.fields frame | frame <- frames, InferFraming.stageName frame == Just (String "loaded_learner")]
         pure (updated, Owner.Released (map InferFraming.raw frames) [binding] loadedRecords encoded)
 
-report :: Receipt scope -> P.Result
+report :: ReceiptOf scope grade -> P.Result
 report (Receipt _ result _ _ _) = result
 
-plan :: Receipt scope -> L.Plan scope
+plan :: ReceiptOf scope grade -> L.PlanOf scope grade
 plan (Receipt planned _ _ _ _) = planned
 
-staged :: Receipt scope -> FilePath
+staged :: ReceiptOf scope grade -> FilePath
 staged (Receipt _ _ directory _ _) = directory
 
-loaded :: Receipt scope -> Load.Fact
+loaded :: ReceiptOf scope grade -> Load.Fact
 loaded (Receipt _ _ _ fact _) = fact
 
-acknowledgement :: Receipt scope -> ByteString
+acknowledgement :: ReceiptOf scope grade -> ByteString
 acknowledgement (Receipt _ _ _ _ encoded) = encoded
 
 failure :: Process.Failure W.Failure -> W.Failure
