@@ -1,13 +1,13 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Learn.Stream (Sample (..), Plan (..), Current (..), Applied (..), Reply (..), ReferenceSource (..), Stream, Error (..), sourceName, readSource, engineWords, begin, proximal, reference, current, applied, complete, digest, observationOf, proximals, referencesOf, sourceOf, currents, identity, exchange, opening, completions) where
+module Invar.Learn.Stream (Sample (..), Signal (..), Algorithm (..), Plan (..), Current (..), Applied (..), Reply (..), ReferenceSource (..), Stream, Error (..), sourceName, readSource, engineWords, begin, proximal, reference, current, applied, complete, digest, observationOf, proximals, referencesOf, sourceOf, currents, identity, exchange, opening, completions) where
 
-import Control.Monad (unless, when)
+import Control.Monad (unless, when, zipWithM)
 import Crypto.Hash.SHA256 qualified as SHA256
 import Data.ByteString qualified as Bytes
 import Data.ByteString.Builder qualified as Builder
 import Data.ByteString.Lazy qualified as Lazy
-import Data.List (genericLength, zip4)
+import Data.List (genericLength, zip5)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
@@ -19,11 +19,18 @@ import GHC.Float (castDoubleToWord64)
 import Invar.Artifact qualified as Artifact
 import Invar.Async.Completion.Internal (Completion (Completion))
 import Invar.Async.Completion.Internal qualified as Completion
+import Invar.Learn.Algorithm qualified as Definition
 import Invar.Learn.Objective qualified as Objective
 import Invar.Spec.Invocation qualified as V
 import Numeric.Natural (Natural)
 
-data Sample = Sample {name :: Text, behaviorWords :: [Word32], referenceWords :: [Word32], advantageWord :: Word32}
+data Sample = Sample {name :: Text, behaviorWords :: [Word32], referenceWords :: [Word32], signal :: Signal}
+    deriving (Eq, Show)
+
+data Signal = Advantage Word32 | Teacher [Word32]
+    deriving (Eq, Show)
+
+data Algorithm = Grouped | Distilled Definition.Teacher
     deriving (Eq, Show)
 
 data Current = Current {step :: Natural, sample :: Text, words32 :: [Word32], observation :: String, state :: String}
@@ -59,7 +66,7 @@ data Error
 data ReferenceSource = FromEngine | FromLearner
     deriving (Eq, Show)
 
-data Plan = Plan {coefficients :: Objective.Profile, origin :: String, members :: [Sample], batches :: [[Text]], source :: ReferenceSource}
+data Plan = Plan {coefficients :: Objective.Profile, origin :: String, members :: [Sample], batches :: [[Text]], source :: ReferenceSource, algorithm :: Algorithm}
     deriving (Eq, Show)
 
 sourceName :: ReferenceSource -> Text
@@ -90,22 +97,35 @@ data Stream = Stream
     deriving (Eq, Show)
 
 begin :: V.Binding -> Plan -> Either Error Stream
-begin bound (Plan chosen initial declared steps scoring) = do
+begin bound (Plan chosen initial declared steps scoring kind) = do
     let named = Map.fromList [(name entry, entry) | entry <- declared]
     when (null declared || Map.size named /= length declared) (Left (InvalidPlan "Samples must be nonempty and distinct"))
     when (any (null . behaviorWords) declared) (Left (InvalidPlan "Every sample needs at least one response token"))
     when (any (\entry -> not (null (referenceWords entry)) && length (referenceWords entry) /= length (behaviorWords entry)) declared) (Left (InvalidPlan "Reference words must cover every response token"))
+    unless (all (carries kind) declared) (Left (InvalidPlan "Every sample must carry the signal of the plan's algorithm, and teacher words must cover every response token"))
     when (null steps || any null steps) (Left (InvalidPlan "Optimizer steps must be nonempty"))
     unless (Set.fromList (concat steps) == Map.keysSet named) (Left (InvalidPlan "Optimizer steps must use every sample and no other"))
-    pure (Stream bound (planIdentity chosen initial declared steps scoring) chosen named steps 0 [] initial Map.empty [] [] scoring Map.empty)
+    pure (Stream bound (planIdentity chosen initial declared steps scoring kind) chosen named steps 0 [] initial Map.empty [] [] scoring Map.empty)
 
-planIdentity :: Objective.Profile -> String -> [Sample] -> [[Text]] -> ReferenceSource -> String
-planIdentity chosen initial declared steps scoring = Artifact.hex (SHA256.hash (Lazy.toStrict (Builder.toLazyByteString encoded)))
+carries :: Algorithm -> Sample -> Bool
+carries Grouped entry = case signal entry of
+    Advantage _ -> True
+    Teacher _ -> False
+carries (Distilled _) entry = case signal entry of
+    Teacher words32 -> length words32 == length (behaviorWords entry)
+    Advantage _ -> False
+
+planIdentity :: Objective.Profile -> String -> [Sample] -> [[Text]] -> ReferenceSource -> Algorithm -> String
+planIdentity chosen initial declared steps scoring kind = Artifact.hex (SHA256.hash (Lazy.toStrict (Builder.toLazyByteString encoded)))
   where
-    encoded = Builder.char7 (sourceTag scoring) <> Builder.word64LE (castDoubleToWord64 (Objective.epsilon chosen)) <> Builder.word64LE (castDoubleToWord64 (Objective.penalty chosen)) <> text (Text.pack initial) <> counted (map entry declared) <> counted (map (counted . map text) steps)
+    encoded = algorithmTag kind <> Builder.char7 (sourceTag scoring) <> Builder.word64LE (castDoubleToWord64 (Objective.epsilon chosen)) <> Builder.word64LE (castDoubleToWord64 (Objective.penalty chosen)) <> text (Text.pack initial) <> counted (map entry declared) <> counted (map (counted . map text) steps)
+    algorithmTag Grouped = mempty
+    algorithmTag (Distilled teacher) = Builder.char7 'd' <> foldMap (text . Text.pack . ($ teacher)) [Definition.teacherModel, Definition.teacherRevision, Definition.teacherTokenizer, Definition.teacherBase, Definition.teacherAssembly, Definition.teacherProfile] <> Builder.word64LE (castDoubleToWord64 (Definition.teacherTemperature teacher)) <> foldMap (text . Text.pack . ($ teacher)) [Definition.teacherTruncation, Definition.teacherLogprobs, Definition.teacherPath]
     sourceTag FromEngine = 'e'
     sourceTag FromLearner = 'l'
-    entry value = text (name value) <> counted (map Builder.word32LE (behaviorWords value)) <> counted (map Builder.word32LE (referenceWords value)) <> Builder.word32LE (advantageWord value)
+    entry value = text (name value) <> counted (map Builder.word32LE (behaviorWords value)) <> counted (map Builder.word32LE (referenceWords value)) <> signalBytes (signal value)
+    signalBytes (Advantage word) = Builder.word32LE word
+    signalBytes (Teacher words32) = counted (map Builder.word32LE words32)
     text value = let bytes = Text.encodeUtf8 value in Builder.word64LE (fromIntegral (Bytes.length bytes)) <> Builder.byteString bytes
     counted values = Builder.word64LE (fromIntegral (length values)) <> mconcat values
 
@@ -143,7 +163,8 @@ current stream report = do
     chosen <- case referenceSource stream of
         FromEngine -> pure (engineWords entry)
         FromLearner -> maybe (Left (MissingReference (sample report))) Right (Map.lookup (sample report) (references stream))
-    let inputs = [Objective.Inputs {Objective.current = now, Objective.proximal = old, Objective.behavior = seen, Objective.fixed = ref, Objective.advantage = advantageWord entry} | (now, old, seen, ref) <- zip4 (words32 report) frozen (behaviorWords entry) chosen]
+    advantages <- either (Left . Scalar) Right (advantagesOf entry frozen)
+    let inputs = [Objective.Inputs {Objective.current = now, Objective.proximal = old, Objective.behavior = seen, Objective.fixed = ref, Objective.advantage = advantage} | (now, old, seen, ref, advantage) <- zip5 (words32 report) frozen (behaviorWords entry) chosen advantages]
     outputs <- either (Left . Scalar) Right (Objective.calculate (profile stream) (fromIntegral (denominator stream batch)) inputs)
     let reply = Reply (position stream) (sample report) (observation report) (state report) (map Objective.gradient outputs) (map Objective.surrogateGradient outputs)
     pure
@@ -154,6 +175,11 @@ current stream report = do
             }
         , reply
         )
+
+advantagesOf :: Sample -> [Word32] -> Either Objective.Error [Word32]
+advantagesOf entry frozen = case signal entry of
+    Advantage word -> Right (replicate (length frozen) word)
+    Teacher words32 -> zipWithM Objective.distilled words32 frozen
 
 applied :: Stream -> Applied -> Either Error (Stream, Completion)
 applied stream report = do

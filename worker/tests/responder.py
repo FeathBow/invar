@@ -1,5 +1,6 @@
 import json
 
+from worker.cohort import Distilled
 from worker.tests import scalar
 from worker.exchange import observation
 
@@ -22,11 +23,13 @@ class Core:
         self.records.append(("current", step, sample, tuple(words), state))
         if step == 0:
             self.fixed[sample] = tuple(words)
-        behavior, reference, advantage = self.samples[sample]
+        behavior, reference, signal = self.samples[sample]
         chosen = self.scored[sample] if self.reference_source == "learner" else (reference or behavior)
         total = sum(len(self.samples[name][0]) for name in self.steps[step])
+        advantages = (tuple(scalar.distilled(teacher, old) for teacher, old in zip(signal, self.fixed[sample], strict=True))
+                      if isinstance(signal, tuple) else (signal,) * len(words))
         inputs = tuple(scalar.Inputs(current=now, proximal=old, behavior=seen, reference=fixed, advantage=advantage)
-                       for now, old, seen, fixed in zip(words, self.fixed[sample], behavior, chosen, strict=True))
+                       for now, old, seen, fixed, advantage in zip(words, self.fixed[sample], behavior, chosen, advantages, strict=True))
         outputs = scalar.calculate(self.profile, total, inputs)
         objective, surrogate = tuple(item.gradient for item in outputs), tuple(item.surrogate_gradient for item in outputs)
         self.answered.append(observation(objective + surrogate))
@@ -53,7 +56,8 @@ class Core:
 
 
 def request_core(request, *, binding=None):
-    samples = {item.sample: (item.behavior_bits, item.reference_bits, item.advantage_bits) for item in request.samples}
+    samples = {item.sample: (item.behavior_bits, item.reference_bits, item.teacher_bits if isinstance(item, Distilled) else item.advantage_bits)
+               for item in request.samples}
     return Core(samples, request.steps, scalar.Profile(epsilon=request.epsilon, penalty=request.penalty), binding=binding,
                 reference_source=request.reference_source)
 

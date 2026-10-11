@@ -1,22 +1,30 @@
 {-# LANGUAGE DataKinds #-}
 
-module Invar.Learn.Algorithm (Sink, Specification, Optimizer (..), sink, specification, coefficients, clipping, penalty, delta, optimizer) where
+module Invar.Learn.Algorithm (Sink, Grpo, Opd, Optimizer (..), Teacher (..), sink, grpo, opd, coefficients, clipping, penalty, delta, optimizer) where
 
 import Data.Proxy (Proxy (..))
 import GHC.TypeLits (symbolVal)
 
 type Sink = "update"
 
-type Specification = "grpo-token-mean/v1"
+type Grpo = "grpo-token-mean/v1"
+
+type Opd = "opd-token-mean/v1"
 
 data Optimizer = Optimizer {learningRate :: Double, firstMoment :: Double, secondMoment :: Double, epsilon :: Double, weightDecay :: Double}
+    deriving (Eq, Show)
+
+data Teacher = Teacher {teacherModel :: String, teacherRevision :: String, teacherTokenizer :: String, teacherBase :: String, teacherAssembly :: String, teacherProfile :: String, teacherTemperature :: Double, teacherTruncation :: String, teacherLogprobs :: String, teacherPath :: String}
     deriving (Eq, Show)
 
 sink :: String
 sink = symbolVal (Proxy :: Proxy Sink)
 
-specification :: String
-specification = symbolVal (Proxy :: Proxy Specification)
+grpo :: String
+grpo = symbolVal (Proxy :: Proxy Grpo)
+
+opd :: String
+opd = symbolVal (Proxy :: Proxy Opd)
 
 coefficients :: Double -> Double -> Double -> Bool
 coefficients chosenClipping chosenPenalty chosenDelta = clipping chosenClipping && penalty chosenPenalty && delta chosenDelta

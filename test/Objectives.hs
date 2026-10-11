@@ -5,12 +5,14 @@ module Objectives (objectives) where
 import Control.Monad (forM_)
 import Data.Either (isLeft)
 import Data.Word (Word32)
-import GHC.Float (castFloatToWord32)
+import GHC.Float (castFloatToWord32, castWord32ToFloat, float2Double)
 import Hedgehog
+import Hedgehog.Gen qualified as Gen
+import Hedgehog.Range qualified as Range
 import Invar.Learn.Objective qualified as O
 
 objectives :: Group
-objectives = Group "Core scalar objective" [("equal probability roles have the analytic loss and slope", once equalRoles), ("clipping and minimum ties retain the specified derivative", once boundaries), ("a stale behavior scales both surrogate branches by the importance weight", once stale), ("reference penalty has an independent analytic slope", once regularization), ("token mean follows logical order with one final division", once aggregation), ("signed zero and rounding are retained", once zeros), ("invalid inputs and intermediate overflow are rejected", once invalid)]
+objectives = Group "Core scalar objective" [("equal probability roles have the analytic loss and slope", once equalRoles), ("clipping and minimum ties retain the specified derivative", once boundaries), ("a stale behavior scales both surrogate branches by the importance weight", once stale), ("reference penalty has an independent analytic slope", once regularization), ("token mean follows logical order with one final division", once aggregation), ("signed zero and rounding are retained", once zeros), ("invalid inputs and intermediate overflow are rejected", once invalid), ("a teacher advantage is the teacher word minus the proximal word, rounded once to FP32, from valid log probabilities", once taught), ("with the current word at the proximal word, no clipping and no penalty, the surrogate cotangent of a teacher advantage is -w * A / N up to FP32 rounding", property relation)]
   where
     once = withTests 1 . property
 
@@ -96,3 +98,21 @@ invalid = do
     assert (isLeft (O.calculate profile 1 [ordinary, ordinary]))
     assert (isLeft (O.mean32 []))
     assert (isLeft (O.mean32 (replicate 2 (word 3e38))))
+
+taught :: PropertyT IO ()
+taught = do
+    O.distilled (word (-1)) (word (-0.25)) === Right (word (-0.75))
+    O.distilled (word (-1)) (word (-(2 ** (-25)))) === Right (word (-1))
+    O.distilled (word 0.5) (word (-1)) === Left (O.InvalidInput "Log probabilities must be nonpositive")
+    O.distilled (word (-1)) (word 0.5) === Left (O.InvalidInput "Log probabilities must be nonpositive")
+    O.distilled 0x7fc00000 (word (-1)) === Left (O.NonFinite "FP32 operand")
+
+relation :: PropertyT IO ()
+relation = do
+    [teacher, proximal, behavior] <- forAll (Gen.list (Range.singleton 3) (Gen.float (Range.linearFrac (-8) (-0.01))))
+    advantage <- evalEither (O.distilled (word teacher) (word proximal))
+    [output] <- evalEither (O.calculate (O.Profile 0.2 0) 1 [O.Inputs (word proximal) (word proximal) (word behavior) (word proximal) advantage])
+    let real = negate (exp (float2Double proximal - float2Double behavior)) * (float2Double teacher - float2Double proximal)
+        actual = float2Double (castWord32ToFloat (O.surrogateGradient output))
+    annotateShow (real, actual)
+    assert (abs (actual - real) <= 1.0e-6 * max 1 (abs real))

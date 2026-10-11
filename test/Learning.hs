@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Learning (learning, world, learnerWorld) where
+module Learning (learning, world, learnerWorld, taughtWorld, nested) where
 
 import Control.Monad (forM_)
 import Data.Aeson qualified as J
@@ -11,6 +11,7 @@ import Data.Map.Strict qualified as Map
 import Hedgehog
 import Hedgehog.Gen qualified as Gen
 import Hedgehog.Range qualified as Range
+import Invar.Construct qualified as C
 import Invar.Learn.Program qualified as P
 import Invar.Learn.Wire qualified as W
 import Invar.Spec.Artifact qualified as A
@@ -21,7 +22,7 @@ import Numeric.Natural (Natural)
 import Properties (campaign)
 
 learning :: Group
-learning = Group "Keyed learning emissions" [("lowering preserves the declared update request", once request), ("joint key renaming preserves the numerical payload", campaign renaming), ("one-source relabeling changes sample reward association", once association), ("groups order and probability roles cannot be substituted", once membership), ("interleaved samples retain their declared groups", once groups), ("source types reject non-bit behavior and operational inputs", once types), ("behavior bit patterns are not converted to numeric floats", once bits), ("load image must agree with each materialized input identity", once materialized), ("behavior representation is distinct from the learner load", once representations), ("reference scores are present exactly when the reference differs from the policy", once scored), ("optimizer steps split the logical order into consecutive mini-batches", once steps), ("samples come from version max(0, u - d) and need reference scores only when their behavior policy is not the reference", once versions), ("an undeclared reference source is refused where the request is parsed", once undeclared), ("invalid GRPO and AdamW coefficients are refused where the request is parsed", once coefficients), ("lowering takes only the update emission of the declared specification", once identified)]
+learning = Group "Keyed learning emissions" [("lowering preserves the declared update request", once request), ("joint key renaming preserves the numerical payload", campaign renaming), ("one-source relabeling changes sample reward association", once association), ("groups order and probability roles cannot be substituted", once membership), ("interleaved samples retain their declared groups", once groups), ("source types reject non-bit behavior and operational inputs", once types), ("behavior bit patterns are not converted to numeric floats", once bits), ("load image must agree with each materialized input identity", once materialized), ("behavior representation is distinct from the learner load", once representations), ("reference scores are present exactly when the reference differs from the policy", once scored), ("optimizer steps split the logical order into consecutive mini-batches", once steps), ("samples come from version max(0, u - d) and need reference scores only when their behavior policy is not the reference", once versions), ("an undeclared reference source is refused where the request is parsed", once undeclared), ("invalid GRPO and AdamW coefficients are refused where the request is parsed", once coefficients), ("lowering takes only the update emission of the declared specification", once identified), ("a distillation emission without groups lowers to a request with the teacher's identity, words and calls and without groups, rewards or advantages", once taught), ("the request parser refuses a distillation request whose teacher, teacher words or coefficients break the declared rules", once untaught)]
   where
     once = withTests 1 . property
 
@@ -57,8 +58,11 @@ expected = J.object ["specification" J..= ("grpo-token-mean/v1" :: String), "pol
     sample name (seed, token, word, reward) = J.object ["reference_bits" J..= [if word == 0xbf000000 then 0xbf400000 else 0xbfa00000 :: Integer], "sample" J..= (name :: String), "group" J..= ("g0" :: String), "prompt" J..= ("Compute the answer." :: String), "seed" J..= (seed :: Integer), "limit" J..= (1 :: Int), "temperature" J..= (0.8 :: Double), "tokens" J..= [11, token :: Int], "prompt_length" J..= (1 :: Int), "version" J..= (0 :: Int), "behavior_policy" J..= replicate 64 'a', "behavior_bits" J..= [word :: Integer], "text" J..= ("#### 12" :: String), "truncated" J..= False, "reward" J..= (reward :: Double), "advantage_bits" J..= (if reward == 0 then 0xbf7ff2e5 else 0x3f7ff2e5 :: Integer)]
 
 emission :: E.World -> PropertyT IO E.Emission
-emission inputs = do
-    checked <- evalEither P.checked
+emission = emitted P.checked
+
+emitted :: Either C.BuildError A.Checked -> E.World -> PropertyT IO E.Emission
+emitted program inputs = do
+    checked <- evalEither program
     commands <- evalEither (A.run checked inputs)
     case commands of
         [command] -> pure command
@@ -205,8 +209,8 @@ identified :: PropertyT IO ()
 identified = do
     command <- emission world
     forM_ [command {E.sinkName = "other"}, command {E.sinkSpecification = "grpo-token-mean/v0"}] $ \changed -> do
-        W.lower changed === Left (W.Shape "Expected the GRPO update emission")
-        W.image changed === Left (W.Shape "Expected the GRPO update emission")
+        W.lower changed === Left (W.Shape "Expected a learning update emission")
+        W.image changed === Left (W.Shape "Expected a learning update emission")
 
 coefficients :: PropertyT IO ()
 coefficients = forM_ [(("algorithm", ["epsilon"]), "Invalid GRPO coefficient configuration"), (("learner", ["optimizer", "learning_rate"]), "Invalid AdamW scalar configuration")] $ \((source, path), refusal) -> do
@@ -214,10 +218,49 @@ coefficients = forM_ [(("algorithm", ["epsilon"]), "Invalid GRPO coefficient con
     case W.lower command of
         Left (W.Shape message) -> assert (refusal `isInfixOf` message)
         unexpected -> annotateShow unexpected >> failure
+
+nested :: [String] -> Value Natural -> Value Natural -> Value Natural
+nested [name] replacement (Record fields) = Record (Map.insert name replacement fields)
+nested (name : rest) replacement (Record fields) = Record (Map.adjust (nested rest replacement) name fields)
+nested _ _ value = value
+
+taughtWorld :: E.World
+taughtWorld = Map.union additions (foldr (Map.delete . S.Semantic) world ["rewards", "groups"])
   where
-    nested [name] replacement (Record fields) = Record (Map.insert name replacement fields)
-    nested (name : rest) replacement (Record fields) = Record (Map.adjust (nested rest replacement) name fields)
-    nested _ _ value = value
+    additions = Map.fromList [(S.Semantic "algorithm", record [("epsilon", number (1 / 5)), ("penalty", number 0), ("steps", number 1)]), (S.Semantic "teacher", teacher), (S.Semantic "teacher_scores", Mapping (Map.fromList [(2, Sequence [Atom (Bits32 0xbfc00000)]), (9, Sequence [Atom (Bits32 0xbe800000)])])), (S.Semantic "teacher_calls", Mapping (Map.fromList [(key, record [("call", Atom (Token (40 + key))), ("attempt", Atom (Token (40 + key))), ("instance", Atom (Token (40 + key)))]) | key <- [2, 9]]))]
+    teacher = record ([(name, text value) | (name, value) <- [("model", "teacher-model"), ("revision", "teacher-revision"), ("tokenizer", replicate 64 'd'), ("base", replicate 64 '7'), ("assembly", replicate 64 '8'), ("profile", replicate 64 '9'), ("truncation", "none"), ("logprobs", "processed"), ("path", "forced")]] ++ [("temperature", number (4 / 5))])
+
+taught :: PropertyT IO ()
+taught = do
+    command <- emitted P.distilled taughtWorld
+    lowered <- evalEither (W.lower command) >>= json @(Map.Map String J.Value)
+    Map.lookup "specification" lowered === Just (J.String "opd-token-mean/v1")
+    Map.member "delta" lowered === False
+    Map.lookup "teacher" lowered === Just (J.object (("temperature" J..= (0.8 :: Double)) : [name J..= value | (name, value) <- [("model", "teacher-model"), ("revision", "teacher-revision"), ("tokenizer", replicate 64 'd'), ("base", replicate 64 '7'), ("assembly", replicate 64 '8'), ("profile", replicate 64 '9'), ("truncation", "none"), ("logprobs", "processed"), ("path", "forced") :: (J.Key, String)]]))
+    entries <- evalMaybe (Map.lookup "samples" lowered) >>= json @[Map.Map String J.Value]
+    map (Map.lookup "teacher_bits") entries === map (Just . J.toJSON) [[0xbe800000 :: Integer], [0xbfc00000]]
+    map (Map.lookup "teacher_call") entries === [Just (J.object [name J..= (40 + key :: Integer) | name <- ["call", "attempt", "instance"]]) | key <- [9, 2]]
+    assert (all (\entry -> not (any (`Map.member` entry) ["group", "reward", "advantage_bits"])) entries)
+
+untaught :: PropertyT IO ()
+untaught = forM_ changes $ \(change, refusal) -> do
+    command <- emitted P.distilled (change taughtWorld)
+    case W.lower command of
+        Left (W.Shape message) -> do
+            annotate message
+            assert (refusal `isInfixOf` message)
+        unexpected -> annotateShow unexpected >> failure
+  where
+    teacher path value = Map.adjust (nested path value) (S.Semantic "teacher")
+    changes =
+        [ (teacher ["tokenizer"] (text (replicate 64 'e')), "The teacher's tokenizer must be the student's")
+        , (teacher ["model"] (text ""), "The teacher's model and revision must be nonempty")
+        , (teacher ["temperature"] (number 0), "The teacher's temperature must be positive")
+        , (teacher ["truncation"] (text "top-k"), "The teacher must score the forced path with processed log probabilities and no truncation")
+        , (Map.insert (S.Semantic "teacher_scores") (Mapping (Map.fromList [(2, Sequence [Atom (Bits32 0x3f000000)]), (9, Sequence [Atom (Bits32 0xbe800000)])])), "Expected finite FP32 words and nonpositive log probabilities")
+        , (Map.insert (S.Semantic "teacher_scores") (Mapping (Map.fromList [(2, Sequence [Atom (Bits32 0xbfc00000), Atom (Bits32 0xbfc00000)]), (9, Sequence [Atom (Bits32 0xbe800000)])])), "Teacher scores must cover every response token")
+        , (Map.adjust (nested ["epsilon"] (number 1)) (S.Semantic "algorithm"), "Invalid distillation coefficient configuration")
+        ]
 
 versions :: PropertyT IO ()
 versions = do

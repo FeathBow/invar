@@ -7,13 +7,15 @@ from dataclasses import dataclass
 from worker import tokenization
 
 SPECIFICATION = "grpo-token-mean/v1"
+DISTILLATION = "opd-token-mean/v1"
+REQUEST = "specification policy learner reference reference_source tokenizer base assembly behavior_model schedule samples order steps epsilon penalty optimizer"
+SAMPLE = "sample prompt seed limit temperature tokens prompt_length version behavior_policy behavior_bits reference_bits text truncated"
 WORD_BITS = 32
 
 
 @dataclass(frozen=True, kw_only=True)
-class Observation:
+class Sample:
     sample: str
-    group: str
     prompt: str
     seed: int
     limit: int
@@ -26,8 +28,44 @@ class Observation:
     reference_bits: tuple[int, ...]
     text: str
     truncated: bool
+
+
+@dataclass(frozen=True, kw_only=True)
+class Observation(Sample):
+    group: str
     reward: float
     advantage_bits: int
+
+
+@dataclass(frozen=True, kw_only=True)
+class Binding:
+    call: int
+    attempt: int
+    instance: int
+
+
+@dataclass(frozen=True, kw_only=True)
+class Distilled(Sample):
+    teacher_bits: tuple[int, ...]
+    teacher_call: Binding
+
+    @property
+    def group(self):
+        return self.sample
+
+
+@dataclass(frozen=True, kw_only=True)
+class Teacher:
+    model: str
+    revision: str
+    tokenizer: str
+    base: str
+    assembly: str
+    profile: str
+    temperature: float
+    truncation: str
+    logprobs: str
+    path: str
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -54,7 +92,7 @@ class Schedule:
 
 
 @dataclass(frozen=True, kw_only=True)
-class Cohort:
+class Shared:
     specification: str
     policy: str
     learner: str
@@ -65,13 +103,22 @@ class Cohort:
     assembly: str
     behavior_model: BehaviorModel
     schedule: Schedule
-    samples: tuple[Observation, ...]
+    samples: tuple
     order: tuple[str, ...]
     steps: tuple[tuple[str, ...], ...]
     epsilon: float
     penalty: float
-    delta: float
     optimizer: Optimizer
+
+
+@dataclass(frozen=True, kw_only=True)
+class Cohort(Shared):
+    delta: float
+
+
+@dataclass(frozen=True, kw_only=True)
+class Distillation(Shared):
+    teacher: Teacher
 
 
 def unique(pairs):
@@ -102,11 +149,49 @@ def identity(value):
 
 
 def sample(value):
-    value = fields(value, "sample group prompt seed limit temperature tokens prompt_length version behavior_policy behavior_bits reference_bits text truncated reward advantage_bits")
-    if any(not isinstance(value[name], str) for name in ("sample", "group", "prompt", "text")):
-        raise ValueError("Prompt and logical identities must be text")
-    if not value["sample"] or not value["group"]:
+    value = fields(value, SAMPLE + " group reward advantage_bits")
+    if not isinstance(value["group"], str) or not value["group"]:
         raise ValueError("Logical sample and group identities must be nonempty")
+    return Observation(**shared_sample(value), group=value["group"], reward=number(value["reward"]),
+                       advantage_bits=finite_word(value["advantage_bits"]))
+
+
+def distilled_sample(value):
+    value = fields(value, SAMPLE + " teacher_bits teacher_call")
+    common = shared_sample(value)
+    words = behavior_words(value["teacher_bits"])
+    if len(words) != len(common["behavior_bits"]):
+        raise ValueError("Teacher scores must cover every response token")
+    return Distilled(**common, teacher_bits=words, teacher_call=binding(value["teacher_call"]))
+
+
+def binding(value):
+    value = fields(value, "call attempt instance")
+    if any(type(value[name]) is not int or value[name] < 0 for name in ("call", "attempt", "instance")):
+        raise ValueError("Teacher scoring call identities must be nonnegative integers")
+    return Binding(**value)
+
+
+def teacher(value, tokenizer):
+    value = fields(value, "model revision tokenizer base assembly profile temperature truncation logprobs path")
+    if any(not isinstance(value[name], str) or not value[name] for name in ("model", "revision")):
+        raise ValueError("The teacher's model and revision must be nonempty")
+    if identity(value["tokenizer"]) != tokenizer:
+        raise ValueError("The teacher's tokenizer must be the student's")
+    temperature = number(value["temperature"])
+    if temperature <= 0:
+        raise ValueError("The teacher's temperature must be positive")
+    if (value["truncation"], value["logprobs"], value["path"]) != ("none", "processed", "forced"):
+        raise ValueError("The teacher must score the forced path with processed log probabilities and no truncation")
+    return Teacher(**{**value, "base": identity(value["base"]), "assembly": identity(value["assembly"]),
+                      "profile": identity(value["profile"]), "temperature": temperature})
+
+
+def shared_sample(value):
+    if any(not isinstance(value[name], str) for name in ("sample", "prompt", "text")):
+        raise ValueError("Prompt and logical identities must be text")
+    if not value["sample"]:
+        raise ValueError("Logical sample identities must be nonempty")
     if type(value["seed"]) is not int or type(value["limit"]) is not int or value["limit"] <= 0:
         raise ValueError("Sample seed must be integral and token limit positive")
     temperature = number(value["temperature"])
@@ -118,10 +203,9 @@ def sample(value):
     scores = behavior_words(value["reference_bits"])
     if scores and len(scores) != len(probabilities):
         raise ValueError("Reference scores must cover every response token")
-    return Observation(**{**value, "temperature": temperature, "reward": number(value["reward"]),
-                          "tokens": tokens, "behavior_policy": identity(value["behavior_policy"]),
-                          "behavior_bits": probabilities, "reference_bits": scores,
-                          "advantage_bits": finite_word(value["advantage_bits"])})
+    return {name: value[name] for name in SAMPLE.split()} | {"temperature": temperature, "tokens": tokens,
+                                                              "behavior_policy": identity(value["behavior_policy"]),
+                                                              "behavior_bits": probabilities, "reference_bits": scores}
 
 
 def observation(value):
@@ -196,6 +280,9 @@ def logical_batch(samples, order):
     if not names or len(set(names)) != len(names):
         raise ValueError("Cohort samples must be nonempty and distinct")
     logical_order(order, names)
+
+
+def advantage_groups(samples):
     groups = Counter(item.group for item in samples)
     if any(size < 2 for size in groups.values()):
         raise ValueError("Each advantage group requires at least two samples")
@@ -217,14 +304,15 @@ def optimizer_steps(value, names):
 
 
 def decode(value):
-    value = fields(value, "specification policy learner reference reference_source tokenizer base assembly behavior_model schedule samples order steps epsilon penalty delta optimizer")
-    if value["specification"] != SPECIFICATION:
+    distilled = isinstance(value, dict) and value.get("specification") == DISTILLATION
+    value = fields(value, REQUEST + (" teacher" if distilled else " delta"))
+    if value["specification"] not in (SPECIFICATION, DISTILLATION):
         raise ValueError("Unsupported update specification")
     if value["reference_source"] not in ("engine", "learner"):
         raise ValueError("Expected the reference words to come from the engine or the learner")
     if not isinstance(value["samples"], list):
         raise ValueError("Expected an explicit cohort sequence")
-    samples = tuple(sample(item) for item in value["samples"])
+    samples = tuple((distilled_sample if distilled else sample)(item) for item in value["samples"])
     logical_batch(samples, value["order"])
     planned = schedule(value["schedule"])
     if any(item.version != planned.version() for item in samples):
@@ -235,10 +323,8 @@ def decode(value):
         raise ValueError("Samples of the update's own version must come from the policy being updated")
     if any(bool(item.reference_bits) != (value["reference"] != item.behavior_policy) for item in samples):
         raise ValueError("Reference scores must be present exactly when the reference differs from the sample's behavior policy")
-    epsilon, penalty, delta = (number(value[name]) for name in ("epsilon", "penalty", "delta"))
-    if not 0 < epsilon < 1 or penalty < 0 or delta <= 0:
-        raise ValueError("Invalid GRPO coefficient configuration")
-    return Cohort(specification=SPECIFICATION, policy=identity(value["policy"]),
+    epsilon, penalty = (number(value[name]) for name in ("epsilon", "penalty"))
+    shared = dict(specification=value["specification"], policy=identity(value["policy"]),
                   learner=identity(value["learner"]), reference=identity(value["reference"]),
                   reference_source=value["reference_source"],
                   tokenizer=identity(value["tokenizer"]),
@@ -246,7 +332,16 @@ def decode(value):
                   behavior_model=behavior_model(value["behavior_model"]), schedule=planned,
                   samples=samples, order=tuple(value["order"]),
                   steps=optimizer_steps(value["steps"], value["order"]), epsilon=epsilon,
-                  penalty=penalty, delta=delta, optimizer=optimizer(value["optimizer"]))
+                  penalty=penalty, optimizer=optimizer(value["optimizer"]))
+    if distilled:
+        if not 0 < epsilon < 1 or penalty < 0:
+            raise ValueError("Invalid distillation coefficient configuration")
+        return Distillation(**shared, teacher=teacher(value["teacher"], shared["tokenizer"]))
+    advantage_groups(samples)
+    delta = number(value["delta"])
+    if not 0 < epsilon < 1 or penalty < 0 or delta <= 0:
+        raise ValueError("Invalid GRPO coefficient configuration")
+    return Cohort(**shared, delta=delta)
 
 
 def validate(tokenizer, samples, *, encode):
