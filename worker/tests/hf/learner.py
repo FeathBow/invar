@@ -17,7 +17,7 @@ from types import SimpleNamespace
 
 import torch
 
-from worker.cohort import decode as cohort
+from worker.cohort import DISTILLATION, decode as cohort
 from worker.tests.hf.cohort import request
 from worker.tests.hf.inference import IDENTITY, measured, model, TEST_THREADS
 from worker.invocation import approve
@@ -39,7 +39,7 @@ OTHER_SEED = 41
 TOKEN_LIMIT = 4
 
 
-def fixture(*, directory=None):
+def fixture(*, directory=None, taught=False):
     root = Path(tempfile.mkdtemp(prefix="invar-learner-load-")) if directory is None else directory
     if directory is not None:
         root.mkdir(exist_ok=False)
@@ -65,6 +65,14 @@ def fixture(*, directory=None):
               "tokenizer": saved["tokenizer"], "base": saved["base"], "assembly": saved["assembly"],
               "behavior_model": {name: saved[name] for name in ("base", "assembly")},
               "reference": digest(state), "samples": samples, "order": ["s0", "s1"], "steps": [["s0", "s1"]]}
+    if taught:
+        actual = {**{key: item for key, item in actual.items() if key != "delta"}, "specification": DISTILLATION,
+                  "teacher": {"model": "teacher-model", "revision": "teacher-revision", "tokenizer": saved["tokenizer"],
+                              "base": "7" * 64, "assembly": "8" * 64, "profile": "9" * 64, "temperature": 0.8,
+                              "truncation": "none", "logprobs": "processed", "path": "forced"},
+                  "samples": [{**{key: item for key, item in sample.items() if key not in ("group", "reward", "advantage_bits")},
+                               "teacher_bits": [0xBF000000] * len(sample["behavior_bits"]),
+                               "teacher_call": {"call": 3, "attempt": 3, "instance": index}} for index, sample in enumerate(samples)]}
     bound = {"call": 7, "attempt": 11, "instance": 13}
     call = decode({"request": actual, "invocation": {"binding": bound, "program": "update test"},
                    "load": {"binding": bound, "program": "load test"}})
@@ -108,6 +116,29 @@ class LearnerLoadTests(unittest.TestCase):
         saved = torch.load(options.output / "learner.pt", weights_only=True)
         self.assertEqual(saved["adapter"], result["adapter"])
         self.assertTrue(all(slot["step"].item() == 1 for slot in saved["optimizer"]["state"].values()))
+
+    def test_a_distillation_update_echoes_the_teacher_and_learns_from_the_teacher_advantage(self):
+        call, options = fixture(taught=True)
+        loaded = model()
+        permission = io.StringIO(json.dumps({"binding": call.invocation.binding(),
+                                            "program": call.invocation.program}) + "\n")
+        output = io.StringIO()
+        core = request_core(call.request)
+        with redirect_stdout(output):
+            run(call, options, loader=lambda options, request: (loaded, make_tokenizer(), IDENTITY),
+                measure=measured, permission=partial(approve, source=permission),
+                evaluate=partial(logprobs, device="cpu"), receive=receiver(output, core))
+        consumed, = records(output, "consumed")
+        result, = records(output, "result")
+        self.assertEqual(consumed["request"]["specification"], DISTILLATION)
+        self.assertEqual(consumed["request"]["teacher"], asdict(call.request.teacher))
+        self.assertEqual([(item["teacher_bits"], item["teacher_call"]) for item in consumed["request"]["samples"]],
+                         [(list(item.teacher_bits), asdict(item.teacher_call)) for item in call.request.samples])
+        self.assertTrue(all(not {"group", "reward", "advantage_bits"} & set(item) for item in consumed["request"]["samples"]))
+        currents = [record for record in core.records if record[0] == "current"]
+        self.assertEqual([record[2] for record in currents], ["s0", "s1"])
+        self.assertGreater(result["update"]["surrogate_gradient_norm"], 0)
+        self.assertNotEqual(result["adapter"], call.request.policy)
 
     def test_rejected_permission_preserves_parameters_and_writes_no_successor(self):
         call, options = fixture()

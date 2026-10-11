@@ -3,7 +3,7 @@
 module Updates (updates, checkpointResult, setup, setupFor, field, change, alter, wire, observe, stepRecords, bound) where
 
 import Control.Monad (forM_, void, (<=<))
-import Data.Aeson (Value (..), decodeStrict, encode, object, toJSON, withObject, (.:), (.=))
+import Data.Aeson (Value (..), decodeStrict, encode, object, toJSON, withObject, (.:), (.:?), (.=))
 import Data.Aeson.Key (Key)
 import Data.Aeson.KeyMap qualified as Fields
 import Data.Aeson.Types (Parser, parseEither)
@@ -15,8 +15,10 @@ import Data.Foldable (toList)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text qualified as Text
-import Data.Text.Encoding (decodeUtf8)
+import Data.Text.Encoding (decodeUtf8, encodeUtf8)
 import Hedgehog
+import Invar.Construct qualified as C
+import Invar.Learn.Algorithm qualified as Definition
 import Invar.Learn.Objective qualified as Objective
 import Invar.Learn.Program qualified as Program
 import Invar.Learn.Protocol qualified as P
@@ -27,7 +29,9 @@ import Invar.Spec.Artifact qualified as A
 import Invar.Spec.Evaluate qualified as E
 import Invar.Spec.Invocation qualified as V
 import Invar.Spec.Load qualified as Load
-import Learning (world)
+import Invar.Spec.Program qualified as Source
+import Invar.Spec.Value qualified as Value
+import Learning (nested, taughtWorld, world)
 import Store (workspace)
 import System.Directory (createDirectory, doesFileExist)
 import System.FilePath ((</>))
@@ -37,7 +41,7 @@ import System.Posix.Files (createSymbolicLink)
 type Context = (V.Binding, V.Runtime)
 
 updates :: Group
-updates = Group "Bound update reports" [("completion retains the logical emission and actual wire request", once completed), ("each phase binds all invocation identities", once bindings), ("loaded state and actual inputs must match the checked lowering", once inputs), ("program identity and report order remain mandatory", once protocol), ("staged result must match the update and admitted token count", once result), ("gradient observation identity is mandatory", once gradients), ("gradient verification reads the complete reported artifact", once gradientFile), ("update approval requires actual loaded and consumed inputs", once approval), ("learner load identity and consumed lifetime authorize the update", once loading), ("completed updates extend the accepted consumption without renewed authority", once ownership), ("history replay binds every step record to the update", once replayed)]
+updates = Group "Bound update reports" [("completion retains the logical emission and actual wire request", once completed), ("each phase binds all invocation identities", once bindings), ("loaded state and actual inputs must match the checked lowering", once inputs), ("program identity and report order remain mandatory", once protocol), ("staged result must match the update and admitted token count", once result), ("gradient observation identity is mandatory", once gradients), ("gradient verification reads the complete reported artifact", once gradientFile), ("update approval requires actual loaded and consumed inputs", once approval), ("learner load identity and consumed lifetime authorize the update", once loading), ("completed updates extend the accepted consumption without renewed authority", once ownership), ("history replay binds every step record to the update", once replayed), ("a distillation request has one plan identity however its teacher temperature is spelled", once spelled)]
   where
     once = withTests 1 . property
 
@@ -51,8 +55,11 @@ setup :: PropertyT IO (Context, [Value])
 setup = setupFor world
 
 setupFor :: E.World -> PropertyT IO (Context, [Value])
-setupFor supplied = do
-    checked <- evalEither Program.checked
+setupFor = setupWith Program.checked
+
+setupWith :: Either C.BuildError A.Checked -> E.World -> PropertyT IO (Context, [Value])
+setupWith program supplied = do
+    checked <- evalEither program
     prepared <- evalEither (V.prepare (V.Selection (V.boundCall binding) supplied) (V.start checked 0))
     let runtime = prepared
     command <- evalEither (V.intent runtime (V.boundCall binding))
@@ -315,10 +322,10 @@ stepped output
 
 stepRecords :: Value -> Value -> Value -> Either String [Value]
 stepRecords identity actual adapter = do
-    (profile, policy, samples, plan, final, source) <- parseEither parser (object ["request" .= actual, "adapter" .= adapter])
+    (profile, policy, samples, plan, final, (source, kind)) <- parseEither parser (object ["request" .= actual, "adapter" .= adapter])
     let scoredByLearner = source == ("learner" :: Text.Text)
         chosen = if scoredByLearner then S.FromLearner else S.FromEngine
-    begun <- Bifunctor.first show (S.begin binding (S.Plan profile policy samples plan chosen))
+    begun <- Bifunctor.first show (S.begin binding (S.Plan profile policy samples plan chosen kind))
     let outside = [sample | sample <- samples, S.name sample `notElem` concat (take 1 plan)]
         references = [object ["stage" .= String "reference", "binding" .= identity, "sample" .= S.name sample, "words" .= S.referenceWords sample] | scoredByLearner, sample <- samples]
         proximals = [object ["stage" .= String "proximal", "binding" .= identity, "sample" .= S.name sample, "words" .= S.behaviorWords sample] | sample <- outside]
@@ -336,15 +343,18 @@ stepRecords identity actual adapter = do
             "update request"
             ( \input -> do
                 entries <- input .: "samples"
-                samples <- traverse (withObject "update sample" (\sample -> S.Sample <$> sample .: "sample" <*> sample .: "behavior_bits" <*> sample .: "reference_bits" <*> sample .: "advantage_bits")) entries
+                samples <- traverse (withObject "update sample" (\sample -> S.Sample <$> sample .: "sample" <*> sample .: "behavior_bits" <*> sample .: "reference_bits" <*> signal sample)) entries
                 plan <- input .: "steps"
                 policy <- input .: "policy"
                 source <- input .: "reference_source"
+                kind <- maybe (pure S.Grouped) (fmap S.Distilled . declaredTeacher) (Fields.lookup "teacher" input)
                 profile <- Objective.Profile <$> input .: "epsilon" <*> input .: "penalty"
-                pure (profile, policy, samples, plan, final, source)
+                pure (profile, policy, samples, plan, final, (source, kind))
             )
             request ::
-            Parser (Objective.Profile, String, [S.Sample], [[Text.Text]], String, Text.Text)
+            Parser (Objective.Profile, String, [S.Sample], [[Text.Text]], String, (Text.Text, S.Algorithm))
+    signal sample = maybe (S.Advantage <$> sample .: "advantage_bits") (pure . S.Teacher) =<< sample .:? "teacher_bits"
+    declaredTeacher = withObject "teacher" $ \fields -> Definition.Teacher <$> fields .: "model" <*> fields .: "revision" <*> fields .: "tokenizer" <*> fields .: "base" <*> fields .: "assembly" <*> fields .: "profile" <*> fields .: "temperature" <*> fields .: "truncation" <*> fields .: "logprobs" <*> fields .: "path"
     step named accumulated (index, batch, (before, after)) = do
         (current, records) <- accumulated
         (answered, currents, digests) <- foldl (sampleStep named (index, before)) (Right (current, [], [])) batch
@@ -357,3 +367,16 @@ stepRecords identity actual adapter = do
             report = S.Current (fromIntegral index) name values (S.observationOf values) before
         (answered, reply) <- Bifunctor.first show (S.current current report)
         pure (answered, records ++ [object ["stage" .= String "current", "binding" .= identity, "step" .= index, "sample" .= name, "words" .= values, "observation" .= S.observationOf values, "state" .= before]], digests ++ [S.digest reply])
+
+spelled :: PropertyT IO ()
+spelled = do
+    (context, events) <- setupWith Program.distilled (Map.adjust (nested ["temperature"] (Value.Atom (Value.Number 1))) (Source.Semantic "teacher") taughtWorld)
+    let original = wire events
+        rewritten = foldr (\(old, new) text -> Text.replace old new text) (decodeUtf8 original) [("\"temperature\":1,", "\"temperature\":1.0,"), ("\"temperature\":1}", "\"temperature\":1.0}")]
+        variant = encodeUtf8 rewritten
+        teacherOf text = [field "teacher" (field "request" value) | Just value <- map decodeStrict (Bytes.lines text), field "stage" value == String "consumed"]
+    assert (variant /= original)
+    assert (map encode (teacherOf original) /= map encode (teacherOf variant))
+    first' <- evalEither (observe context original)
+    second' <- evalEither (observe context variant)
+    S.identity (P.stream first') === S.identity (P.stream second')

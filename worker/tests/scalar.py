@@ -92,6 +92,10 @@ def token(constants, inputs):
                   surrogate_gradient=word(rounded(surrogate_slope / constants.count)))
 
 
+def distilled(teacher, proximal):
+    return word(rounded(probability(teacher) - probability(proximal)))
+
+
 def mean32(encoded):
     if not encoded:
         raise InvalidInput("Empty objective mean")

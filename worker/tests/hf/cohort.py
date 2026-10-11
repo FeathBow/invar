@@ -7,7 +7,7 @@ except ImportError as missing:
 
 import unittest
 
-from worker.cohort import SPECIFICATION, decode
+from worker.cohort import DISTILLATION, SPECIFICATION, Distillation, Distilled, decode
 from worker.hf.step import optimizer_options
 
 
@@ -27,6 +27,18 @@ def request():
             "epsilon": 0.2, "penalty": 0.04, "delta": 1e-4,
             "optimizer": {"learning_rate": 1e-4, "betas": [0.9, 0.999],
                           "epsilon": 1e-8, "weight_decay": 0.0}}
+
+
+def distilled():
+    value = request()
+    del value["delta"]
+    teacher = {"model": "teacher-model", "revision": "teacher-revision", "tokenizer": value["tokenizer"], "base": "7" * 64,
+               "assembly": "8" * 64, "profile": "9" * 64, "temperature": 0.8, "truncation": "none", "logprobs": "processed",
+               "path": "forced"}
+    samples = [{**{key: item for key, item in sample.items() if key not in ("group", "reward", "advantage_bits")},
+                "teacher_bits": [0xBF400000], "teacher_call": {"call": 5, "attempt": 5, "instance": index}}
+               for index, sample in enumerate(value["samples"])]
+    return {**value, "specification": DISTILLATION, "teacher": teacher, "samples": samples}
 
 
 def synchronous(value):
@@ -150,6 +162,35 @@ class CohortTests(unittest.TestCase):
             changed["samples"][0][field] = value
             with self.subTest(field=field, value=value), self.assertRaises(ValueError):
                 decode(changed)
+
+    def test_a_distillation_request_carries_the_teacher_and_its_words_without_rewards_or_groups(self):
+        parsed = decode(distilled())
+        self.assertIsInstance(parsed, Distillation)
+        self.assertTrue(all(isinstance(item, Distilled) for item in parsed.samples))
+        self.assertEqual([item.teacher_bits for item in parsed.samples], [(0xBF400000,), (0xBF400000,)])
+        self.assertEqual([item.teacher_call.instance for item in parsed.samples], [0, 1])
+        self.assertEqual((parsed.teacher.model, parsed.teacher.path), ("teacher-model", "forced"))
+
+    def test_a_distillation_request_refuses_a_teacher_or_teacher_words_outside_the_declared_rules(self):
+        def teacher(**changes):
+            value = distilled()
+            return {**value, "teacher": {**value["teacher"], **changes}}
+
+        def scored(**changes):
+            value = distilled()
+            return {**value, "samples": [{**value["samples"][0], **changes}, value["samples"][1]]}
+
+        cases = [(teacher(tokenizer="e" * 64), "tokenizer must be the student's"), (teacher(model=""), "model and revision"),
+                 (teacher(temperature=0), "temperature must be positive"), (teacher(truncation="top-k"), "forced path"),
+                 (scored(teacher_bits=[0x3F000000]), "nonpositive"), (scored(teacher_bits=[0xBF400000, 0xBF400000]), "cover every response token"),
+                 (scored(teacher_call={"call": 5, "attempt": 5, "instance": -1}), "nonnegative integers"),
+                 ({**distilled(), "epsilon": 1}, "Invalid distillation coefficient configuration"),
+                 ({**distilled(), "delta": 1e-4}, "Expected exactly these request fields"),
+                 (scored(reward=0.0), "Expected exactly these request fields"),
+                 (scored(group="question"), "Expected exactly these request fields")]
+        for value, message in cases:
+            with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
+                decode(value)
 
     def test_optimizer_configuration_is_not_replaced_by_defaults(self):
         custom = request()

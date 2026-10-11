@@ -1,4 +1,4 @@
-module Invar.Learn.Objective (Profile (..), Inputs (..), Output (..), Error (..), reference, calculate, mean32) where
+module Invar.Learn.Objective (Profile (..), Inputs (..), Output (..), Error (..), reference, calculate, distilled, mean32) where
 
 import Control.Monad (foldM, unless, when)
 import Data.Word (Word32)
@@ -63,6 +63,12 @@ surrogate constants ratio a = do
   where
     interior = lower constants < ratio && ratio < upper constants
     clipped = min (upper constants) (max (lower constants) ratio)
+
+distilled :: Word32 -> Word32 -> Either Error Word32
+distilled teacher proximal' = do
+    t <- probability teacher
+    o <- probability proximal'
+    castFloatToWord32 <$> binary ("teacher advantage", (-)) t o
 
 mean32 :: [Word32] -> Either Error Word32
 mean32 words32 = do

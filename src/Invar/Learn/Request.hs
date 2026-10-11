@@ -3,7 +3,7 @@
 module Invar.Learn.Request (Request, parse, value, logical, exchange, order, materialization, scheduled, staleness, version) where
 
 import Control.Monad (unless, when, (>=>))
-import Data.Aeson (Value (Object), parseJSON, toJSON, withObject, (.:))
+import Data.Aeson (Key, Object, Value (Object), parseJSON, toJSON, withObject, (.:))
 import Data.Aeson.KeyMap qualified as Fields
 import Data.Aeson.Types (Parser)
 import Data.Map.Strict qualified as Map
@@ -49,14 +49,52 @@ version (Request _ _ _ _ _ (_, _, behavior)) = behavior
 
 parse :: Value -> Parser Request
 parse = withObject "numerical update request" $ \fields -> do
-    Json.fields ["specification", "policy", "learner", "reference", "reference_source", "tokenizer", "base", "assembly", "behavior_model", "schedule", "samples", "order", "steps", "epsilon", "penalty", "delta", "optimizer"] fields
     specification <- fields .: "specification"
-    unless (specification == Text.pack Algorithm.specification) (fail "Unsupported update specification")
+    if specification == Text.pack Algorithm.grpo then grouped fields else if specification == Text.pack Algorithm.opd then distilled fields else fail "Unsupported update specification"
+
+grouped :: Object -> Parser Request
+grouped fields = do
+    Json.fields (common ++ ["delta"]) fields
+    raw <- fields .: "samples" :: Parser [Value]
+    groups <- traverse (withObject "update sample" (.: "group")) raw :: Parser [Text]
+    when (any Text.null groups) (fail "Logical sample and group identities must be nonempty")
+    unless (all (>= minimumGroup) (Map.fromListWith (+) [(group, 1 :: Int) | group <- groups])) (fail "Each advantage group requires at least two samples")
+    epsilon <- fields .: "epsilon" >>= Json.finite
+    penalty <- fields .: "penalty" >>= Json.finite
+    delta <- fields .: "delta" >>= Json.finite
+    unless (Algorithm.coefficients epsilon penalty delta) (fail "Invalid GRPO coefficient configuration")
+    shared fields (S.Grouped, Objective.Profile epsilon penalty) (["group", "reward", "advantage_bits"], advantage)
+  where
+    advantage sampled _ = do
+        _ <- sampled .: "reward" >>= Json.finite
+        S.Advantage <$> (sampled .: "advantage_bits" >>= word False)
+
+distilled :: Object -> Parser Request
+distilled fields = do
+    Json.fields (common ++ ["teacher"]) fields
+    tokenizer <- fields .: "tokenizer" >>= Json.identity
+    teacher <- fields .: "teacher" >>= teacherIdentity tokenizer
+    epsilon <- fields .: "epsilon" >>= Json.finite
+    penalty <- fields .: "penalty" >>= Json.finite
+    unless (Algorithm.clipping epsilon && Algorithm.penalty penalty) (fail "Invalid distillation coefficient configuration")
+    shared fields (S.Distilled teacher, Objective.Profile epsilon penalty) (["teacher_bits", "teacher_call"], scored)
+  where
+    scored sampled count = do
+        words32 <- (sampled .: "teacher_bits" :: Parser [Value]) >>= traverse (word True)
+        unless (length words32 == count) (fail "Teacher scores must cover every response token")
+        sampled .: "teacher_call" >>= call
+        pure (S.Teacher words32)
+
+common :: [Key]
+common = ["specification", "policy", "learner", "reference", "reference_source", "tokenizer", "base", "assembly", "behavior_model", "schedule", "samples", "order", "steps", "epsilon", "penalty", "optimizer"]
+
+shared :: Object -> (S.Algorithm, Objective.Profile) -> ([Key], Object -> Int -> Parser S.Signal) -> Parser Request
+shared fields (kind, profile) extension = do
     source <- fields .: "reference_source" >>= maybe (fail "Unknown reference source") pure . S.readSource
     [policy, checkpoint, reference, tokenizer, base, assembly] <- traverse ((.:) fields >=> Json.identity) ["policy", "learner", "reference", "tokenizer", "base", "assembly"]
     fields .: "behavior_model" >>= model
     (update, lag) <- fields .: "schedule" >>= schedule
-    delivered <- fields .: "samples" >>= traverse sample
+    delivered <- fields .: "samples" >>= traverse (sample extension)
     sequence' <- fields .: "order" :: Parser [Text]
     let behavior = if update > lag then update - lag else 0
     unless (all (\entry -> sampleVersion entry == behavior) delivered) (fail "Every sample must come from version max(0, update - staleness)")
@@ -64,29 +102,41 @@ parse = withObject "numerical update request" $ \fields -> do
     unless (behavior /= update || all (\entry -> samplePolicy entry == Text.pack policy) delivered) (fail "Samples of the update's own version must come from the policy being updated")
     unless (all (\entry -> not (null (S.referenceWords (sampleWords entry))) == (samplePolicy entry /= Text.pack reference)) delivered) (fail "Reference scores must be present exactly when the reference differs from the sample's behavior policy")
     let named = Map.fromList [(sampleName entry, sampleValue entry) | entry <- delivered]
-        grouped = Map.fromListWith (+) [(sampleGroup entry, 1 :: Int) | entry <- delivered]
     unless (not (null delivered) && Map.size named == length delivered) (fail "Cohort samples must be nonempty and distinct")
     unless (length sequence' == Map.size named && Set.fromList sequence' == Map.keysSet named) (fail "Logical order must name every admitted sample exactly once")
-    unless (all (>= minimumGroup) grouped) (fail "Each advantage group requires at least two samples")
     ordered <- traverse (maybe (fail "Missing logical sample") pure . (`Map.lookup` named)) sequence'
     steps <- fields .: "steps" :: Parser [[Text]]
     when (null steps || any null steps) (fail "An update needs nonempty optimizer steps")
     unless (Set.fromList (concat steps) == Map.keysSet named) (fail "Optimizer steps must use every admitted sample and no other")
-    epsilon <- fields .: "epsilon" >>= Json.finite
-    penalty <- fields .: "penalty" >>= Json.finite
-    delta <- fields .: "delta" >>= Json.finite
-    unless (Algorithm.coefficients epsilon penalty delta) (fail "Invalid GRPO coefficient configuration")
     fields .: "optimizer" >>= optimizer
-    let planned = S.Plan (Objective.Profile epsilon penalty) policy (map sampleWords delivered) steps source
+    let planned = S.Plan profile policy (map sampleWords delivered) steps source kind
         image = Materialization.learning (policy, checkpoint, tokenizer, base, assembly, reference)
     pure (Request (Object fields) (Object (Fields.insert "samples" (toJSON ordered) fields)) planned sequence' image (update, lag, behavior))
+
+teacherIdentity :: String -> Value -> Parser Algorithm.Teacher
+teacherIdentity tokenizer = withObject "teacher identity" $ \fields -> do
+    Json.fields ["model", "revision", "tokenizer", "base", "assembly", "profile", "temperature", "truncation", "logprobs", "path"] fields
+    [model', revision] <- traverse (fields .:) ["model", "revision"]
+    when (null model' || null revision) (fail "The teacher's model and revision must be nonempty")
+    [declared, base, assembly, profile] <- traverse ((.:) fields >=> Json.identity) ["tokenizer", "base", "assembly", "profile"]
+    unless (declared == tokenizer) (fail "The teacher's tokenizer must be the student's")
+    temperature <- fields .: "temperature" >>= Json.finite
+    unless (temperature > 0) (fail "The teacher's temperature must be positive")
+    [truncation, logprobs, path] <- traverse (fields .:) ["truncation", "logprobs", "path"]
+    unless ([truncation, logprobs, path] == ["none", "processed", "forced"]) (fail "The teacher must score the forced path with processed log probabilities and no truncation")
+    pure (Algorithm.Teacher model' revision declared base assembly profile temperature truncation logprobs path)
+
+call :: Value -> Parser ()
+call = withObject "teacher scoring call" $ \fields -> do
+    Json.fields ["call", "attempt", "instance"] fields
+    mapM_ (\name -> fields .: name :: Parser Natural) ["call", "attempt", "instance"]
 
 schedule :: Value -> Parser (Natural, Natural)
 schedule = withObject "update schedule" $ \fields -> do
     Json.fields ["update", "staleness"] fields
     (,) <$> fields .: "update" <*> fields .: "staleness"
 
-data Delivered = Delivered {sampleName :: Text, sampleGroup :: Text, sampleValue :: Value, sampleVersion :: Natural, samplePolicy :: Text, sampleWords :: S.Sample}
+data Delivered = Delivered {sampleName :: Text, sampleValue :: Value, sampleVersion :: Natural, samplePolicy :: Text, sampleWords :: S.Sample}
 
 model :: Value -> Parser ()
 model = withObject "behavior model representation" $ \fields -> do
@@ -96,14 +146,13 @@ model = withObject "behavior model representation" $ \fields -> do
 minimumGroup :: Int
 minimumGroup = 2
 
-sample :: Value -> Parser Delivered
-sample original = withObject "update sample" inspect original
+sample :: ([Key], Object -> Int -> Parser S.Signal) -> Value -> Parser Delivered
+sample (extra, signalOf) original = withObject "update sample" inspect original
   where
     inspect fields = do
-        Json.fields ["sample", "group", "prompt", "seed", "limit", "temperature", "tokens", "prompt_length", "version", "behavior_policy", "behavior_bits", "reference_bits", "text", "truncated", "reward", "advantage_bits"] fields
+        Json.fields (["sample", "prompt", "seed", "limit", "temperature", "tokens", "prompt_length", "version", "behavior_policy", "behavior_bits", "reference_bits", "text", "truncated"] ++ extra) fields
         named <- fields .: "sample"
-        grouped <- fields .: "group"
-        when (Text.null named || Text.null grouped) (fail "Logical sample and group identities must be nonempty")
+        when (Text.null named) (fail "Logical sample identities must be nonempty")
         sampled <- fields .: "version"
         behaviorPolicy <- fields .: "behavior_policy" >>= Json.identity
         _ <- fields .: "prompt" :: Parser Text
@@ -121,9 +170,8 @@ sample original = withObject "update sample" inspect original
         unless (null scores || length scores == length words32) (fail "Reference scores must cover every response token")
         truncated <- fields .: "truncated"
         unless (not truncated || count == limit) (fail "Invalid observed truncation status")
-        _ <- fields .: "reward" >>= Json.finite
-        advantage <- fields .: "advantage_bits" >>= word False
-        pure (Delivered named grouped original sampled (Text.pack behaviorPolicy) (S.Sample named words32 scores advantage))
+        learned <- signalOf fields (length words32)
+        pure (Delivered named original sampled (Text.pack behaviorPolicy) (S.Sample named words32 scores learned))
 
 word :: Bool -> Value -> Parser Word32
 word probability encoded = do
