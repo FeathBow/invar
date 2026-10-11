@@ -116,15 +116,11 @@ shared fields (kind, profile) extension = do
 teacherIdentity :: String -> Value -> Parser Algorithm.Teacher
 teacherIdentity tokenizer = withObject "teacher identity" $ \fields -> do
     Json.fields ["model", "revision", "tokenizer", "base", "assembly", "profile", "temperature", "truncation", "logprobs", "path"] fields
-    [model', revision] <- traverse (fields .:) ["model", "revision"]
-    when (null model' || null revision) (fail "The teacher's model and revision must be nonempty")
-    [declared, base, assembly, profile] <- traverse ((.:) fields >=> Json.identity) ["tokenizer", "base", "assembly", "profile"]
-    unless (declared == tokenizer) (fail "The teacher's tokenizer must be the student's")
+    [model', revision, declared, base, assembly, profile] <- traverse (fields .:) ["model", "revision", "tokenizer", "base", "assembly", "profile"]
     temperature <- fields .: "temperature" >>= Json.finite
-    unless (temperature > 0) (fail "The teacher's temperature must be positive")
     [truncation, logprobs, path] <- traverse (fields .:) ["truncation", "logprobs", "path"]
-    unless ([truncation, logprobs, path] == ["none", "processed", "forced"]) (fail "The teacher must score the forced path with processed log probabilities and no truncation")
-    pure (Algorithm.Teacher model' revision declared base assembly profile temperature truncation logprobs path)
+    let chosen = Algorithm.Teacher model' revision declared base assembly profile temperature truncation logprobs path
+    either fail (const (pure chosen)) (Algorithm.teacher tokenizer chosen)
 
 call :: Value -> Parser ()
 call = withObject "teacher scoring call" $ \fields -> do

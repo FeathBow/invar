@@ -61,7 +61,7 @@ data Error = Settings L.Error | NotReady Status | Rollout R.Error | Plan L.Error
     deriving (Eq, Show)
 
 withDriver :: Config -> (forall scope. Driver scope -> IO value) -> IO (Either Error value)
-withDriver config action = case L.validate (settings config) of
+withDriver config action = case L.validate (settings config) >> grouped (L.algorithm (settings config)) of
     Left problem -> pure (Left (Settings problem))
     Right () -> do
         selected <- Policy.readDescription (checkpoint config </> "policy.json")
@@ -70,6 +70,10 @@ withDriver config action = case L.validate (settings config) of
         if Policy.bindings selected /= expected
             then pure (Left (Policy "Initial policy description differs from the declared inference materialization"))
             else withPolicy config selected action
+
+grouped :: L.Algorithm -> Either L.Error ()
+grouped (L.Grpo _) = Right ()
+grouped (L.Opd _) = Left (L.InvalidSettings "A GRPO update needs GRPO settings")
 
 withPolicy :: Config -> Policy.Description -> (forall scope. Driver scope -> IO value) -> IO (Either Error value)
 withPolicy config description action
@@ -153,7 +157,7 @@ instantiate (policy', tokenizer, base, assembly) workload = do
   where
     prepare sample = do
         planned <- first show (I.prepare I.Request {I.artifact = policy', I.tokenizer = tokenizer, I.base = base, I.assembly = assembly, I.prompt = Workload.prompt sample, I.tokens = Workload.tokens sample, I.temperature = Workload.temperature sample, I.seed = Workload.seed sample})
-        pure (C.Task (Workload.name sample) (Workload.group sample) planned (Workload.rule sample))
+        pure (C.Task (Workload.name sample) planned (Workload.grade sample))
 
 scoring :: Config -> Checkpoint -> Maybe Batch.Reference
 scoring config selected

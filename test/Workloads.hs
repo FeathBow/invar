@@ -12,12 +12,13 @@ import Data.Foldable (toList)
 import Data.Maybe (listToMaybe)
 import Data.Text qualified as Text
 import Hedgehog
+import Invar.Cohort qualified as Cohort
 import Invar.Workload qualified as Workload
 import Numeric.Natural (Natural)
 import Updates (alter, change, field)
 
 workloads :: Group
-workloads = Group "Shared frozen workload input" [("decoded tasks preserve logical inputs and exact byte identity", once identity), ("task and permutation inventories are checked before execution", once inventories), ("sampling and finite reward rules belong to the core", once sampling), ("integer JSON values do not depend on a Python runtime type", once numbers), ("duplicate keys and trailing JSON are rejected", once ambiguous)]
+workloads = Group "Shared frozen workload input" [("decoded tasks preserve logical inputs and exact byte identity", once identity), ("task and permutation inventories are checked before execution", once inventories), ("sampling and finite reward rules belong to the core", once sampling), ("integer JSON values do not depend on a Python runtime type", once numbers), ("duplicate keys and trailing JSON are rejected", once ambiguous), ("an ungraded workload declares tasks without answers or groups and refuses either field", once ungraded)]
   where
     once = withTests 1 . property
 
@@ -98,3 +99,16 @@ reject :: Value -> PropertyT IO ()
 reject input = case Workload.decode (encoded input) of
     Left _ -> success
     Right unexpected -> annotateShow unexpected >> failure
+
+ungraded :: PropertyT IO ()
+ungraded = do
+    let task extra = object (["name" .= String "solo", "prompt" .= String "Explain the answer.", "seed" .= (3 :: Integer), "tokens" .= (4 :: Natural), "temperature" .= (0.8 :: Double)] ++ extra)
+        plain extra = encoded (toJSON [object ["tasks" .= [task extra], "order" .= [0 :: Int], "delivery" .= [0 :: Int]]])
+    document <- evalEither (Workload.decodeOf @Cohort.Ungraded (plain []))
+    map Workload.name (concatMap Workload.tasks (Workload.cycles document)) === ["solo"]
+    forM_ [["answer" .= String "#### 1"], ["group" .= String "question"]] $ \extra -> case Workload.decodeOf @Cohort.Ungraded (plain extra) of
+        Left _ -> success
+        Right unexpected -> annotateShow unexpected >> failure
+    case Workload.decode (plain []) of
+        Left _ -> success
+        Right unexpected -> annotateShow unexpected >> failure

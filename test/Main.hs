@@ -14,6 +14,7 @@ import Comparisons (comparisons)
 import Construction (construction)
 import Control.Monad (unless)
 import Dependencies (dependencies)
+import Distillations (distillations)
 import Drivers (drivers)
 import Evaluation (evaluation)
 import Events (events)
@@ -74,5 +75,5 @@ import Workloads (workloads)
 
 main :: IO ()
 main = do
-    outcomes <- traverse checkSequential [fixtures, properties, arguments, values, dependencies, evaluation, artifacts, construction, collections, records, literals, invocations, evidence, loads, store, checkpoints, inference, results, calls, batchCalls, groupedCalls, batchedProtocol, generation, traces, residentCalls, residentDrivers, residentObservations, rewards, cohorts, rollouts, sessions, learning, advantages, objectives, events, journals, replays, recoveries, inspections, comparisons, drivers, steps, algorithms, mismatches, updates, learnerCalls, loops, schedules, policies, probabilities, workloads, reports, quality, observations, inferenceObservations, numerical, scores, scoreProbes, numericalScores, numericalProbes, uses, useEvidence, useAdmission, useBernstein, usePlan, usePrepare, useExecution, useGeneric, statistics]
+    outcomes <- traverse checkSequential [fixtures, properties, arguments, values, dependencies, evaluation, artifacts, construction, collections, records, literals, invocations, evidence, loads, store, checkpoints, inference, results, calls, batchCalls, groupedCalls, batchedProtocol, generation, traces, residentCalls, residentDrivers, residentObservations, rewards, cohorts, rollouts, sessions, learning, advantages, objectives, events, journals, replays, recoveries, inspections, comparisons, drivers, steps, algorithms, distillations, mismatches, updates, learnerCalls, loops, schedules, policies, probabilities, workloads, reports, quality, observations, inferenceObservations, numerical, scores, scoreProbes, numericalScores, numericalProbes, uses, useEvidence, useAdmission, useBernstein, usePlan, usePrepare, useExecution, useGeneric, statistics]
     unless (and outcomes) exitFailure
