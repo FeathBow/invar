@@ -22,6 +22,7 @@ cohorts =
         , ("the declared rule computes the reward", once scoring)
         , ("each observation must match its member request", once mismatch)
         , ("the declaration fixes complete groups and one policy", once declaration)
+        , ("an ungraded cohort needs no group or rule, so one task forms a cohort and its observation carries no score", once ungraded)
         ]
   where
     once = withTests 1 . property
@@ -31,7 +32,7 @@ definition = do
     first <- plan 17
     second <- plan 18
     expected <- evalEither (Reward.decimal "#### 12")
-    pure C.Definition {C.policy = identity, C.tasks = [C.Task "first" "question" first expected, C.Task "second" "question" second expected]}
+    pure C.Definition {C.policy = identity, C.tasks = [C.Task "first" first (C.Graded "question" expected), C.Task "second" second (C.Graded "question" expected)]}
 
 identity :: String
 identity = replicate 64 'a'
@@ -75,7 +76,7 @@ scoring :: PropertyT IO ()
 scoring = do
     declared <- definition
     alternate <- evalEither (Reward.decimal "#### 13")
-    exercise declared {C.tasks = map (\task -> task {C.rule = alternate}) (C.tasks declared)} $ \cohort -> do
+    exercise declared {C.tasks = map (\task -> task {C.grade = C.Graded (C.group task) alternate}) (C.tasks declared)} $ \cohort -> do
         supplied <- traverse filled (C.members cohort)
         batch <- evalEither (C.admit cohort supplied)
         map C.reward (C.observations batch) === [0, 0]
@@ -107,3 +108,13 @@ declaration = do
             , (C.PolicyMismatch "first", declared {C.policy = replicate 64 'b'})
             ]
     forM_ cases $ \(expected, changed) -> rejected expected (C.withCohort changed (const ()))
+
+ungraded :: PropertyT IO ()
+ungraded = do
+    declared <- definition
+    let plain entries = C.Definition identity [task {C.grade = C.Ungraded} | task <- entries]
+    join $ evalEither $ C.withCohort (plain (take 1 (C.tasks declared))) $ \cohort -> do
+        supplied <- traverse (\member -> report (C.planned member) "no decimal answer" False >>= evalEither . C.record member) (C.members cohort)
+        batch <- evalEither (C.admit cohort supplied)
+        map C.scored (C.observations batch) === [()]
+    rejected C.DuplicateMember (C.withCohort (plain (C.tasks declared ++ C.tasks declared)) (const ()))

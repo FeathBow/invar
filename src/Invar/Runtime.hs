@@ -163,6 +163,7 @@ counts (Run _ _ document) = [genericLength (Workload.tasks declared) | declared 
 
 prepare :: Run -> IO (Either Error (Plan.Plan, Published))
 prepare selected@(Run chosen lag _)
+    | L.Opd _ <- L.algorithm (Loop.settings chosen) = pure (Left (Declaration "The run's workload and its learning settings name different algorithms"))
     | sharedInference /= sharedLearning = pure (Left (Declaration "Both numerical roles must explicitly select shared execution"))
     | sharedInference && lag > 0 = pure (Left (Declaration "Shared execution requires staleness zero"))
     | sharedInference, Left problem <- Joint.validate (sharing chosen) = pure (Left (Declaration problem))

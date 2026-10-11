@@ -1,9 +1,10 @@
 {-# LANGUAGE DataKinds #-}
 
-module Invar.Learn.Algorithm (Sink, Grpo, Opd, Optimizer (..), Teacher (..), sink, grpo, opd, coefficients, clipping, penalty, delta, optimizer) where
+module Invar.Learn.Algorithm (Sink, Grpo, Opd, Optimizer (..), Teacher (..), sink, grpo, opd, coefficients, clipping, penalty, delta, optimizer, teacher) where
 
 import Data.Proxy (Proxy (..))
 import GHC.TypeLits (symbolVal)
+import Invar.Digest qualified as Digest
 
 type Sink = "update"
 
@@ -42,6 +43,15 @@ optimizer :: Optimizer -> Bool
 optimizer chosen = nonnegative (learningRate chosen) && positive (epsilon chosen) && nonnegative (weightDecay chosen) && all moment [firstMoment chosen, secondMoment chosen]
   where
     moment value = value >= 0 && value < 1
+
+teacher :: String -> Teacher -> Either String ()
+teacher tokenizer chosen
+    | null (teacherModel chosen) || null (teacherRevision chosen) = Left "The teacher's model and revision must be nonempty"
+    | not (all Digest.sha256 [teacherTokenizer chosen, teacherBase chosen, teacherAssembly chosen, teacherProfile chosen]) = Left "Expected lowercase SHA-256 teacher identities"
+    | teacherTokenizer chosen /= tokenizer = Left "The teacher's tokenizer must be the student's"
+    | not (positive (teacherTemperature chosen)) = Left "The teacher's temperature must be positive"
+    | (teacherTruncation chosen, teacherLogprobs chosen, teacherPath chosen) /= ("none", "processed", "forced") = Left "The teacher must score the forced path with processed log probabilities and no truncation"
+    | otherwise = Right ()
 
 positive :: Double -> Bool
 positive value = finite value && value > 0
