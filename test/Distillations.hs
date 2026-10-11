@@ -106,7 +106,7 @@ guarded = do
     initial <- evalEither (Policy.describe ("test-model", "test-revision") (L.policy taught, L.tokenizer taught, L.behaviorBase taught, L.behaviorAssembly taught))
     evalIO (createDirectory (root </> "input") >> Policy.stageDescription (root </> "input" </> "policy.json") initial)
     let worker = R.worker single
-        backend = Loop.Backend "python" (Worker.executable worker) (Worker.script worker) Nothing R.Serial "learning" W.Process root (R.sessions single)
+        backend = Loop.Backend "python" (Worker.executable worker) (Worker.script worker) Nothing R.Serial "learning" W.Process root (R.sessions single) W.Process
         configured output = Loop.Config backend (root </> output) (root </> "input") (root </> "reference") taught Store.RenameExclusive
         cycle' = Loop.Cycle (C.tasks (R.definition single)) (R.order single) (R.delivery single)
     looped <- evalIO (Loop.withDriver (configured "loop") (\driver -> void (Loop.run driver cycle')))
@@ -140,7 +140,7 @@ declared = do
     root <- workspace
     graded <- evalEither Sessions.workload
     unanswered <- evalEither (Workload.decodeOf @C.Ungraded (Lazy.toStrict (encode [object ["tasks" .= [object ["name" .= ("a" :: String), "prompt" .= ("p" :: String), "tokens" .= (2 :: Int), "seed" .= (1 :: Int), "temperature" .= (0.8 :: Double)]], "order" .= [0 :: Int], "delivery" .= [0 :: Int]]])))
-    let backend = Loop.Backend "python" "python" "inference" Nothing R.Serial "learning" W.Process root [[]]
+    let backend = Loop.Backend "python" "python" "inference" Nothing R.Serial "learning" W.Process root [[]] W.Process
         configured chosen = Loop.Config backend (root </> "run") (root </> "input") (root </> "reference") chosen Store.RenameExclusive
         scorer = Worker.Worker "python" "teacher" root (root </> "teacher.safetensors") [] Nothing
         cooler = taught {L.algorithm = L.Opd teacher {Algorithm.teacherTemperature = 0.7}}

@@ -18,7 +18,7 @@ An optional runtime configuration with format `invar-mlx-runtime-v1` sets `batch
 | `entries/mlxbatch.py` | One finite group for `invar infer batch` and batch evaluation |
 | `entries/mlxcohort.py` | Resident inference across cohorts for `invar evaluate --worker-mode resident` |
 | `entries/mlxresident.py` | Shared owner of inference and learning for `invar train` |
-| `entries/mlxscore.py` | Scores a prescribed path |
+| `entries/mlxscore.py` | Scores a prescribed path; with `--session`, the resident teacher of a distillation run |
 | `entries/mlxcodec.py` | Reads native learner containers for `invar inspect` |
 
 The initializer reports identities for two roles. Its final `initial` record gives the adapter identity as `policy`, the `learner` file identity, the `tokenizer`, and the learning role's `base` and `assembly`, which `invar train` declares for the learner. Its `profile` record gives the inference role's `base` and `assembly` under `inference`; `invar infer`, `invar policy` and `policy.json` use those, and the learning `assembly` is refused there.

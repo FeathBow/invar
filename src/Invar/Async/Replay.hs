@@ -33,6 +33,7 @@ import Invar.Infer.Replay qualified as Replay
 import Invar.Infer.Session qualified as Session
 import Invar.Infer.Trajectory (Trajectory)
 import Invar.Infer.Trajectory qualified as Trajectory
+import Invar.Infer.Wire qualified as Wire
 import Invar.Json qualified as Json
 import Invar.Learn qualified as L
 import Invar.Learn.Algorithm qualified as Algorithm
@@ -47,6 +48,7 @@ import Invar.Resident qualified as Boundary
 import Invar.Resident.Owner qualified as Owner
 import Invar.Rollout qualified as R
 import Invar.Score qualified as Score
+import Invar.Score.Resident qualified as Hosted
 import Invar.Spec.Invocation qualified as V
 import Invar.Teacher qualified as Teacher
 import Invar.Transcript qualified as Transcript
@@ -135,6 +137,8 @@ data Fold grade = Fold
     , prefixes :: Map Natural [Framing.Frame]
     , taught :: Map V.Binding (Natural, V.Binding, Natural)
     , readings :: Map V.Binding (L.Reading, String)
+    , teachers :: Map Natural ((Owner.State, [Framing.Frame]), Tail)
+    , scores :: Map V.Binding Score.Report
     }
 
 replay :: (C.Grade grade) => Declaration grade -> [Entry.Entry] -> Map Natural ByteString -> Either String (Replayed grade)
@@ -150,7 +154,7 @@ folded :: (C.Grade grade) => Declaration grade -> [Entry.Entry] -> Map Natural B
 folded declared entries transcripts = foldM (entry declared transcripts) started entries
   where
     settings = Loop.settings (config declared)
-    started = Fold (fst (Core.start (plan declared))) Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty (Map.singleton 0 (Generation (L.policy settings) (L.learner settings) (initial declared))) Map.empty Set.empty 0 Map.empty Map.empty Map.empty
+    started = Fold (fst (Core.start (plan declared))) Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty (Map.singleton 0 (Generation (L.policy settings) (L.learner settings) (initial declared))) Map.empty Set.empty 0 Map.empty Map.empty Map.empty Map.empty Map.empty
 
 drained :: (C.Grade grade) => Declaration grade -> Fold grade -> Either String (Replayed grade)
 drained declared fold = summarize <$> foldM (settle declared) fold (Map.keys (inferences fold))
@@ -227,39 +231,82 @@ entry declared transcripts fold recorded = case recorded of
     Entry.Restarted observed -> fst <$> restarted fold observed
     Entry.Elapsed {} -> pure fold
     Entry.Taught request bound number -> do
-        case Map.lookup number (processes fold) of
-            Just (Process Entry.Teacher _ _ Running) -> pure ()
+        place <- case Map.lookup number (processes fold) of
+            Just (Process Entry.Teacher place _ Running) -> pure place
             _ -> Left "A teacher call names a process that is not a running teacher"
         rollout <- maybe (Left "A teacher call names a request that was never dispatched") Right (Map.lookup request (latest fold))
         unless (Map.member rollout (stored fold)) (Left "A teacher call precedes its rollout's stored result")
-        _ <- transcript transcripts number
+        encoded <- transcript transcripts number
         fresh fold bound
-        pure fold {taught = Map.insert bound (request, rollout, number) (taught fold), identities = Set.insert bound (identities fold)}
+        let hosting = if residentTeacher declared then Map.insertWith (\_ held -> held) number (teacherOwner place encoded) (teachers fold) else teachers fold
+        pure fold {taught = Map.insert bound (request, rollout, number) (taught fold), identities = Set.insert bound (identities fold), teachers = hosting}
     Entry.Read request bound digest -> do
         (called, rollout, number) <- maybe (Left "A teacher reading names a call that was never journaled") Right (Map.lookup bound (taught fold))
         unless (called == request) (Left "A teacher reading names another request's call")
         when (Map.member rollout (readings fold)) (Left "A rollout's teacher reading is journaled twice")
-        reading <- taughtReading declared transcripts fold (rollout, bound, number)
+        (advanced, reading) <- if residentTeacher declared then hostedReading declared fold (bound, number) else (fold,) <$> taughtReading declared transcripts fold (rollout, bound, number)
         let joined = Teacher.joined (Map.findWithDefault "" rollout (stored fold)) reading
         unless (joined == digest) (Left "A teacher reading differs from the teacher's admitted score")
-        pure fold {readings = Map.insert rollout (reading, joined) (readings fold)}
+        pure advanced {readings = Map.insert rollout (reading, joined) (readings advanced)}
 
 taughtReading :: Declaration grade -> Map Natural ByteString -> Fold grade -> (V.Binding, V.Binding, Natural) -> Either String L.Reading
 taughtReading declared transcripts fold (rollout, bound, number) = do
-    teacher <- case method declared of
-        Taught chosen -> Right chosen
-        Rewarded -> Left "A GRPO run journals a teacher reading"
     case Map.lookup number (processes fold) of
         Just (Process _ _ _ (Ended (Just (Transcript.Exited ExitSuccess Transcript.Complete)))) -> pure ()
         _ -> Left "A teacher reading is journaled before its process exited cleanly"
     encoded <- transcript transcripts number
+    call <- teacherCall declared fold (rollout, bound)
+    scored <- first show (Score.admit call 0 encoded)
+    Teacher.reading scored
+
+hostedReading :: Declaration grade -> Fold grade -> (V.Binding, Natural) -> Either String (Fold grade, L.Reading)
+hostedReading declared fold (bound, number) = do
+    advanced <- advance declared number (Map.member bound . scores) fold
+    scored <- maybe (Left "A resident teacher's transcript ends before the score's result") Right (Map.lookup bound (scores advanced))
+    reading <- Teacher.reading scored
+    pure (advanced, reading)
+
+-- Concurrent rollouts can journal their readings in another order than the resident teacher scored them, so its scores are admitted in transcript order, each under the call its own records name.
+advance :: Declaration grade -> Natural -> (Fold grade -> Bool) -> Fold grade -> Either String (Fold grade)
+advance declared number done fold
+    | done fold = pure fold
+    | otherwise = do
+        ((physical, remaining), ending) <- maybe (Left "A teacher reading names a process that hosted no teacher call") Right (Map.lookup number (teachers fold))
+        case break ((== Just (String "score_result")) . Framing.stageName) remaining of
+            (_, []) -> pure fold
+            (before, result : after) -> do
+                acknowledged <- case after of
+                    frame : _ | Framing.stageName frame == Just (String "released") -> pure frame
+                    _ -> Left "A resident teacher's score has no release acknowledgement"
+                bound <- parseEither Wire.binding (Framing.fields result)
+                (_, rollout, owning) <- maybe (Left "A resident teacher scores a call that was never journaled") Right (Map.lookup bound (taught fold))
+                unless (owning == number) (Left "A resident teacher scores a call journaled for another process")
+                call <- teacherCall declared fold (rollout, bound)
+                let segment = before ++ [result]
+                    encoded = Bytes.unlines (map Framing.raw segment)
+                first show (Hosted.readiness (Owner.initial physical) encoded)
+                scored <- first show (Score.admit call 0 encoded)
+                prepared <- Boundary.prepare (Owner.owner physical) [Score.loadFact scored] encoded
+                _ <- Boundary.released prepared (Framing.raw acknowledged)
+                following <- Owner.release physical (Owner.Released (map Framing.raw segment) [bound] [Framing.fields frame | frame <- segment, Framing.stageName frame == Just (String "loaded_adapter")] (Framing.raw acknowledged))
+                advance declared number done fold {teachers = Map.insert number ((following, drop 1 after), ending) (teachers fold), scores = Map.insert bound scored (scores fold)}
+
+teacherCall :: Declaration grade -> Fold grade -> (V.Binding, V.Binding) -> Either String Score.Call
+teacherCall declared fold (rollout, bound) = do
+    teacher <- case method declared of
+        Taught chosen -> Right chosen
+        Rewarded -> Left "A GRPO run journals a teacher reading"
     admitted <- case Map.lookup rollout (products fold) of
         Just (Right logged) -> Right (Replay.trajectory logged)
         _ -> Left "A teacher reading names a rollout without an admitted trajectory"
     planned <- Teacher.prepare teacher (Inference.sampled admitted)
-    call <- first show (Score.bind bound planned)
-    scored <- first show (Score.admit call 0 encoded)
-    Teacher.reading scored
+    first show (Score.bind bound planned)
+
+residentTeacher :: Declaration grade -> Bool
+residentTeacher declared = Loop.teacherMode (Loop.backend (config declared)) == W.Resident
+
+teacherOwner :: Natural -> ByteString -> ((Owner.State, [Framing.Frame]), Tail)
+teacherOwner place encoded = let (records, ending) = output encoded in ((Owner.start (Boundary.Owner Boundary.Teacher place), records), ending)
 
 completion :: Method grade -> Fold grade -> V.Binding -> Maybe String
 completion Rewarded fold bound = Map.lookup bound (stored fold)
@@ -323,8 +370,15 @@ finished declared transcripts prior (number, role, place) outcome = do
             Entry.Inference | Loop.inferenceMode backend == R.Resident -> prior {inferences = Map.insertWith (\_ held -> held) number (inferenceOwner Boundary.Inference place encoded) (inferences prior)}
             Entry.Shared -> prior {inferences = Map.insertWith (\_ held -> held) number (inferenceOwner Boundary.Shared place encoded) (inferences prior)}
             Entry.Learner | Loop.learningMode backend == W.Resident -> prior {learners = Map.insertWith (\_ held -> held) number (learnerOwner place encoded) (learners prior)}
+            Entry.Teacher | residentTeacher declared -> prior {teachers = Map.insertWith (\_ held -> held) number (teacherOwner place encoded) (teachers prior)}
             _ -> prior
     case (Map.lookup number (inferences fold), Map.lookup number (learners fold)) of
+        _
+            | Map.member number (teachers fold)
+            , clean -> do
+                hosted <- first ("A resident teacher exits cleanly after records that cannot be admitted: " ++) (advance declared number (const False) fold)
+                let ((physical, remaining), ending) = teachers hosted Map.! number
+                closing Nothing physical remaining ending >> pure hosted
         (Just (Finite bound), _) -> do
             declaration <- declarationOf declared fold bound
             let protocol = if Loop.inferenceMode backend == R.Batched then Session.Batched else Session.Serial

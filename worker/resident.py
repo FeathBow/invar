@@ -39,7 +39,7 @@ class Owner:
     session: int
 
     def __post_init__(self):
-        if self.role not in ("inference", "learning", "shared") or type(self.session) is not int or self.session < 0:
+        if self.role not in ("inference", "learning", "shared", "teacher") or type(self.session) is not int or self.session < 0:
             raise ValueError("Expected a resident role and nonnegative physical session")
 
     def value(self):

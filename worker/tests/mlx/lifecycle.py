@@ -33,7 +33,7 @@ def flags(values):
     return [str(item) for key, value in values.items() for item in ("--" + key, value)]
 
 
-class LifecycleTests(unittest.TestCase):
+class Training:
     def command(self, command, output, *, stdin=None):
         completed = subprocess.run(list(map(str, command)), input=stdin, capture_output=True, text=True, timeout=45)
         output.write_text(completed.stdout)
@@ -92,6 +92,9 @@ class LifecycleTests(unittest.TestCase):
         return core.exchange(["compare", "histories", "--codec-mode", "stdio", *flags(fields)],
                              executable=CORE, handler=mlx_codec.Session().handle)
 
+
+
+class LifecycleTests(Training, unittest.TestCase):
     def test_shared_runtime_at_staleness_zero_publishes_the_lockstep_history_and_resumes(self):
         prepared = self.prepared("invar-mlx-runtime-", entry=LEARNABLE)
         root, log, *_ = prepared
