@@ -15,7 +15,7 @@ type Opd = "opd-token-mean/v1"
 data Optimizer = Optimizer {learningRate :: Double, firstMoment :: Double, secondMoment :: Double, epsilon :: Double, weightDecay :: Double}
     deriving (Eq, Show)
 
-data Teacher = Teacher {teacherModel :: String, teacherRevision :: String, teacherTokenizer :: String, teacherBase :: String, teacherAssembly :: String, teacherProfile :: String, teacherTemperature :: Double, teacherTruncation :: String, teacherLogprobs :: String, teacherPath :: String}
+data Teacher = Teacher {teacherModel :: String, teacherRevision :: String, teacherAdapter :: String, teacherTokenizer :: String, teacherBase :: String, teacherAssembly :: String, teacherProfile :: String, teacherTemperature :: Double, teacherTruncation :: String, teacherLogprobs :: String, teacherPath :: String}
     deriving (Eq, Show)
 
 sink :: String
@@ -47,7 +47,7 @@ optimizer chosen = nonnegative (learningRate chosen) && positive (epsilon chosen
 teacher :: String -> Teacher -> Either String ()
 teacher tokenizer chosen
     | null (teacherModel chosen) || null (teacherRevision chosen) = Left "The teacher's model and revision must be nonempty"
-    | not (all Digest.sha256 [teacherTokenizer chosen, teacherBase chosen, teacherAssembly chosen, teacherProfile chosen]) = Left "Expected lowercase SHA-256 teacher identities"
+    | not (all Digest.sha256 [teacherAdapter chosen, teacherTokenizer chosen, teacherBase chosen, teacherAssembly chosen, teacherProfile chosen]) = Left "Expected lowercase SHA-256 teacher identities"
     | teacherTokenizer chosen /= tokenizer = Left "The teacher's tokenizer must be the student's"
     | not (positive (teacherTemperature chosen)) = Left "The teacher's temperature must be positive"
     | (teacherTruncation chosen, teacherLogprobs chosen, teacherPath chosen) /= ("none", "processed", "forced") = Left "The teacher must score the forced path with processed log probabilities and no truncation"

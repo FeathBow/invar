@@ -144,7 +144,7 @@ sample batch (position, key) = do
 
 teacherValue :: V.Value Natural -> Either Error Value
 teacherValue value = do
-    named <- traverse (\name -> (Key.fromString name .=) <$> (field name value >>= text)) ["model", "revision", "tokenizer", "base", "assembly", "profile", "truncation", "logprobs", "path"]
+    named <- traverse (\name -> (Key.fromString name .=) <$> (field name value >>= text)) ["model", "revision", "adapter", "tokenizer", "base", "assembly", "profile", "truncation", "logprobs", "path"]
     temperature <- field "temperature" value >>= number
     pure (object (("temperature" .= temperature) : named))
 

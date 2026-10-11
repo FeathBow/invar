@@ -32,7 +32,7 @@ def request():
 def distilled():
     value = request()
     del value["delta"]
-    teacher = {"model": "teacher-model", "revision": "teacher-revision", "tokenizer": value["tokenizer"], "base": "7" * 64,
+    teacher = {"model": "teacher-model", "revision": "teacher-revision", "adapter": "6" * 64, "tokenizer": value["tokenizer"], "base": "7" * 64,
                "assembly": "8" * 64, "profile": "9" * 64, "temperature": 0.8, "truncation": "none", "logprobs": "processed",
                "path": "forced"}
     samples = [{**{key: item for key, item in sample.items() if key not in ("group", "reward", "advantage_bits")},

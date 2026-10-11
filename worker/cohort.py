@@ -58,6 +58,7 @@ class Distilled(Sample):
 class Teacher:
     model: str
     revision: str
+    adapter: str
     tokenizer: str
     base: str
     assembly: str
@@ -173,7 +174,7 @@ def binding(value):
 
 
 def teacher(value, tokenizer):
-    value = fields(value, "model revision tokenizer base assembly profile temperature truncation logprobs path")
+    value = fields(value, "model revision adapter tokenizer base assembly profile temperature truncation logprobs path")
     if any(not isinstance(value[name], str) or not value[name] for name in ("model", "revision")):
         raise ValueError("The teacher's model and revision must be nonempty")
     if identity(value["tokenizer"]) != tokenizer:
@@ -183,7 +184,7 @@ def teacher(value, tokenizer):
         raise ValueError("The teacher's temperature must be positive")
     if (value["truncation"], value["logprobs"], value["path"]) != ("none", "processed", "forced"):
         raise ValueError("The teacher must score the forced path with processed log probabilities and no truncation")
-    return Teacher(**{**value, "base": identity(value["base"]), "assembly": identity(value["assembly"]),
+    return Teacher(**{**value, "adapter": identity(value["adapter"]), "base": identity(value["base"]), "assembly": identity(value["assembly"]),
                       "profile": identity(value["profile"]), "temperature": temperature})
 
 

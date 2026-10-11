@@ -22,7 +22,7 @@ type Policy = C.Record '[ '("artifact", [Natural]), '("profile", [Natural])]
 type BehaviorModel = C.Record '[ '("base", [Natural]), '("assembly", [Natural])]
 type Schedule = C.Record '[ '("update", Natural), '("staleness", Natural)]
 type Generation = C.Record '[ '("version", Natural), '("policy", [Natural])]
-type Teacher = C.Record '[ '("model", [Natural]), '("revision", [Natural]), '("tokenizer", [Natural]), '("base", [Natural]), '("assembly", [Natural]), '("profile", [Natural]), '("temperature", Rational), '("truncation", [Natural]), '("logprobs", [Natural]), '("path", [Natural])]
+type Teacher = C.Record '[ '("model", [Natural]), '("revision", [Natural]), '("adapter", [Natural]), '("tokenizer", [Natural]), '("base", [Natural]), '("assembly", [Natural]), '("profile", [Natural]), '("temperature", Rational), '("truncation", [Natural]), '("logprobs", [Natural]), '("path", [Natural])]
 type Binding = C.Record '[ '("call", Natural), '("attempt", Natural), '("instance", Natural)]
 type Coefficients = C.Record '[ '("epsilon", Rational), '("penalty", Rational), '("steps", Rational)]
 type Distilled = '[ 'C.Semantic "policy", 'C.Semantic "learner", 'C.Semantic "reference", 'C.Semantic "reference_source", 'C.Semantic "algorithm", 'C.Semantic "trajectories", 'C.Semantic "behavior_model", 'C.Semantic "schedule", 'C.Semantic "generations", 'C.Semantic "behavior", 'C.Semantic "reference_scores", 'C.Semantic "teacher", 'C.Semantic "teacher_scores", 'C.Semantic "teacher_calls", 'C.Semantic "order"]
@@ -75,7 +75,7 @@ schema = declared Algorithm.grpo (Map.union shared (Map.fromList [("algorithm", 
 distilledSchema :: P.Schema
 distilledSchema = declared Algorithm.opd (Map.union shared (Map.fromList [("algorithm", record [("epsilon", P.NumberType), ("penalty", P.NumberType), ("steps", P.NumberType)]), ("teacher", teacher), ("teacher_scores", P.MapType (P.SequenceType P.BitsType)), ("teacher_calls", P.MapType (record [("call", P.TokenType), ("attempt", P.TokenType), ("instance", P.TokenType)]))]))
   where
-    teacher = record ([(name, text) | name <- ["model", "revision", "tokenizer", "base", "assembly", "profile", "truncation", "logprobs", "path"]] ++ [("temperature", P.NumberType)])
+    teacher = record ([(name, text) | name <- ["model", "revision", "adapter", "tokenizer", "base", "assembly", "profile", "truncation", "logprobs", "path"]] ++ [("temperature", P.NumberType)])
 
 declared :: String -> Map String P.Type -> P.Schema
 declared specification fields = P.Schema sources Map.empty (Map.singleton Algorithm.sink (P.Sink specification (P.RecordType fields) (Map.keysSet sources) Set.empty))

@@ -3,7 +3,7 @@
 module Steps (steps) where
 
 import Control.Monad (forM_, zipWithM)
-import Data.List (zipWith5)
+import Data.List (nub, zipWith5)
 import Data.Map.Strict qualified as Map
 import Data.Word (Word32)
 import GHC.Float (castFloatToWord32)
@@ -51,7 +51,7 @@ taught :: S.Plan
 taught = planned {S.members = [first' {S.signal = S.Teacher [word (-0.4), word (-2)]}, second' {S.signal = S.Teacher [word (-1)]}], S.batches = [["a"], ["b"]], S.algorithm = S.Distilled teacher}
 
 teacher :: Definition.Teacher
-teacher = Definition.Teacher "teacher-model" "teacher-revision" (replicate 64 'd') (replicate 64 '7') (replicate 64 '8') (replicate 64 '9') 1 "none" "processed" "forced"
+teacher = Definition.Teacher "teacher-model" "teacher-revision" (replicate 64 '6') (replicate 64 'd') (replicate 64 '7') (replicate 64 '8') (replicate 64 '9') 1 "none" "processed" "forced"
 
 expected :: [Word32] -> [Word32] -> Sample -> Int -> PropertyT IO [O.Output]
 expected now old entry = scoredWith (if null (referenceWords entry) then behaviorWords entry else referenceWords entry) now old entry
@@ -176,10 +176,23 @@ plans = do
     S.identity one === "e4876b8f1b64eeca398a5a2ef8a79df24b9da8bcc8ae3f0705fa089795e6cdb9"
     S.identity learner === "92d2c03e1ad261692db7d3d3c9aac12b41232da427f8cfb62f4d48adc0fcf05c"
     distilledPlan <- evalEither (S.begin exchange taught)
-    otherTeacher <- evalEither (S.begin exchange (taught {S.algorithm = S.Distilled teacher {Definition.teacherModel = "other"}}))
-    otherTemperature <- evalEither (S.begin exchange (taught {S.algorithm = S.Distilled teacher {Definition.teacherTemperature = 0.5}}))
+    let declarations =
+            [ teacher {Definition.teacherModel = "other"}
+            , teacher {Definition.teacherRevision = "other"}
+            , teacher {Definition.teacherAdapter = replicate 64 '5'}
+            , teacher {Definition.teacherTokenizer = replicate 64 '5'}
+            , teacher {Definition.teacherBase = replicate 64 '5'}
+            , teacher {Definition.teacherAssembly = replicate 64 '5'}
+            , teacher {Definition.teacherProfile = replicate 64 '5'}
+            , teacher {Definition.teacherTemperature = 0.5}
+            , teacher {Definition.teacherTruncation = "other"}
+            , teacher {Definition.teacherLogprobs = "other"}
+            , teacher {Definition.teacherPath = "other"}
+            ]
+    others <- traverse (\declared -> S.identity <$> evalEither (S.begin exchange (taught {S.algorithm = S.Distilled declared}))) declarations
     otherWords <- evalEither (S.begin exchange (taught {S.members = [first' {S.signal = S.Teacher [word (-0.5), word (-2)]}, second' {S.signal = S.Teacher [word (-1)]}]}))
-    assert (S.identity distilledPlan `notElem` [S.identity one, S.identity otherTeacher, S.identity otherTemperature, S.identity otherWords])
+    assert (S.identity distilledPlan `notElem` (S.identity one : S.identity otherWords : others))
+    length (nub others) === length others
     forM_ [planned {S.members = [first' {S.signal = S.Teacher [word (-1), word (-1)]}, second']}, taught {S.members = [first', second' {S.signal = S.Teacher [word (-1)]}]}, taught {S.members = [first' {S.signal = S.Teacher [word (-1)]}, second' {S.signal = S.Teacher [word (-1)]}]}] $ \mixed ->
         case S.begin exchange mixed of
             Left (S.InvalidPlan _) -> success

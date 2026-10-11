@@ -1,0 +1,65 @@
+{-# LANGUAGE OverloadedStrings #-}
+
+module Teachers (teachers) where
+
+import Calls (request, wire)
+import Control.Monad (void)
+import Data.Aeson (Value (..), eitherDecodeStrict)
+import Data.Aeson.KeyMap qualified as Fields
+import Hedgehog
+import InferenceObservations qualified as Source
+import Invar.Infer qualified as Infer
+import Invar.Infer.Observation qualified as Inference
+import Invar.Learn.Algorithm qualified as Algorithm
+import Invar.Policy qualified as Policy
+import Invar.Score qualified as Score
+import Invar.Spec.Invocation qualified as V
+import Invar.Teacher qualified as Teacher
+
+teachers :: Group
+teachers =
+    Group
+        "Teacher scoring targets"
+        [ ("a teacher declaration scores the student's path under the teacher's materialization, bound to the teacher's model description", once scored)
+        , ("a teacher with another temperature cannot score the path", once refused)
+        , ("preparing a teacher's score applies the teacher rule to its declaration", once ruled)
+        ]
+  where
+    once = withTests 1 . property
+
+teacher :: Algorithm.Teacher
+teacher = Algorithm.Teacher "teacher-model" "teacher-revision" (replicate 64 '6') (Infer.tokenizer request) (replicate 64 '7') (replicate 64 '8') (replicate 64 '9') (Infer.temperature request) "none" "processed" "forced"
+
+source :: PropertyT IO Inference.Source
+source = do
+    original <- Source.fixture
+    planned <- evalEither (Infer.prepare request)
+    Inference.source <$> evalEither (Source.admitted planned Source.bound (wire original))
+
+scored :: PropertyT IO ()
+scored = do
+    path <- source
+    plan <- evalEither (Teacher.prepare teacher path)
+    let target = Score.target plan
+        requested = Infer.requested target
+    (Infer.artifact requested, Infer.tokenizer requested, Infer.base requested, Infer.assembly requested) === (replicate 64 '6', Infer.tokenizer request, replicate 64 '7', replicate 64 '8')
+    (Infer.prompt requested, Infer.tokens requested, Infer.seed requested) === (Infer.prompt request, Infer.tokens request, Infer.seed request)
+    description <- evalEither (Policy.describe ("teacher-model", "teacher-revision") (replicate 64 '6', Infer.tokenizer request, replicate 64 '7', replicate 64 '8'))
+    Infer.boundPolicy target === Just description
+    call <- evalEither (Score.bind (V.Binding (V.CallId 30) (V.AttemptId 31) (V.Instance 32)) plan)
+    envelope <- evalEither (eitherDecodeStrict (Score.input call))
+    case envelope of
+        Object fields -> Fields.lookup "adapter" fields === Just (String "6666666666666666666666666666666666666666666666666666666666666666")
+        _ -> failure
+
+refused :: PropertyT IO ()
+refused = do
+    path <- source
+    void (Teacher.prepare teacher {Algorithm.teacherTemperature = 1.1} path) === Left "The teacher scores at the temperature the student sampled at"
+
+ruled :: PropertyT IO ()
+ruled = do
+    path <- source
+    let declared = teacher {Algorithm.teacherLogprobs = "raw"}
+    expected <- either pure (const failure) (Algorithm.teacher (Infer.tokenizer request) declared)
+    void (Teacher.prepare declared path) === Left expected
