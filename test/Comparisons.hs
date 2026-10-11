@@ -8,15 +8,21 @@ import Data.Aeson (Value (..), object, toJSON, withObject, (.:), (.=))
 import Data.Aeson.KeyMap qualified as Fields
 import Data.Aeson.Types (Parser, parseEither)
 import Data.Text (Text)
+import Data.Word (Word32)
 import Hedgehog
 import Invar.History.Cohort qualified as Cohort
 import Invar.History.Generation qualified as Generation
 import Invar.History.Runtime qualified as History
 import Invar.History.Schedule qualified as Schedule
 import Invar.History.Trace qualified as Trace
+import Invar.Learn.Program qualified as Program
+import Invar.Learn.Protocol qualified as Protocol
 import Invar.Learn.Report qualified as Report
+import Invar.Learn.Request qualified as Request
+import Learning (taughtWorld)
 import Recoveries qualified
 import Traces qualified
+import Updates qualified
 
 comparisons :: Group
 comparisons =
@@ -26,6 +32,8 @@ comparisons =
         , ("a retried runtime run keeps its schedule while its identities and recorded execution change", once retried)
         , ("histories run with one and with two sessions have one schedule", once permuted)
         , ("updates that differ in logical order, optimizer steps or staleness, and a missing generation, are named", once differing)
+        , ("teacher call identities are checked at admission but do not change semantic input equality", once teacherCalls)
+        , ("teacher declarations and scores remain part of semantic input equality", once teacherInputs)
         ]
   where
     once = withTests 1 . property
@@ -82,3 +90,43 @@ differing = do
     schedule = Schedule.project . map Report.checkedRequest
     objectOf (Object fields) = pure fields
     objectOf _ = failure
+
+teacherCalls :: PropertyT IO ()
+teacherCalls = do
+    (context, events) <- Updates.setupWith Program.distilled taughtWorld
+    original <- evalEither (reported events)
+    forM_ ["call", "attempt", "instance"] $ \axis -> do
+        let renumber sample = Updates.change "teacher_call" (Updates.change axis (Number 99) (Updates.field "teacher_call" sample)) sample
+        changed <- evalEither (teacherSample renumber (Report.request original))
+        let retried = withRequest changed events
+        compared <- evalEither (reported retried)
+        Report.sameInput original compared === Right True
+        Report.paired original compared === Right ()
+        Request.logical (Report.checkedRequest original) /== Request.logical (Report.checkedRequest compared)
+        case Updates.observe context (Updates.wire retried) of
+            Left (Protocol.Mismatch problem) -> problem === "Actual update input differs from the checked lowering"
+            unexpected -> annotateShow unexpected >> failure
+
+teacherInputs :: PropertyT IO ()
+teacherInputs = do
+    (_, events) <- Updates.setupWith Program.distilled taughtWorld
+    original <- evalEither (reported events)
+    let input = Report.request original
+        declaration = Updates.change "teacher" (Updates.change "revision" (String "another-revision") (Updates.field "teacher" input)) input
+    scores <- evalEither (teacherSample (Updates.change "teacher_bits" (toJSON [0xbf800000 :: Word32])) input)
+    forM_ [declaration, scores] $ \changed -> do
+        compared <- evalEither (reported (withRequest changed events))
+        Report.sameInput original compared === Right False
+
+teacherSample :: (Value -> Value) -> Value -> Either String Value
+teacherSample operation = parseEither (withObject "request" $ \fields -> do
+    samples <- fields .: "samples" :: Parser [Value]
+    pure (Object (Fields.insert "samples" (toJSON (Updates.alter 0 operation samples)) fields)))
+
+withRequest :: Value -> [Value] -> [Value]
+withRequest input = Updates.alter 2 (Updates.change "request" input) . Updates.alter 1 (Updates.change "request" input)
+
+reported :: [Value] -> Either String Report.Report
+reported events = do
+    call <- parseEither (withObject "update binding" (.: "call")) Updates.bound
+    Report.admit call (Updates.wire events)

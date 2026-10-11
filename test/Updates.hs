@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Updates (updates, checkpointResult, setup, setupFor, field, change, alter, wire, observe, stepRecords, bound) where
+module Updates (updates, checkpointResult, setup, setupFor, setupWith, field, change, alter, wire, observe, stepRecords, bound) where
 
 import Control.Monad (forM_, void, (<=<))
 import Data.Aeson (Value (..), decodeStrict, encode, object, toJSON, withObject, (.:), (.:?), (.=))

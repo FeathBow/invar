@@ -124,8 +124,8 @@ methodOf :: Source -> String
 methodOf (FromLog logged _) = Trace.method (trainingRun logged)
 methodOf (FromRun run) = Store.methodName (Loop.publication (Runtime.config run))
 
-workloadOf :: Source -> Workload.Document
-workloadOf (FromLog logged _) = tasks logged
+workloadOf :: Source -> Workload.Shape
+workloadOf (FromLog logged _) = Workload.shape (tasks logged)
 workloadOf (FromRun run) = Runtime.workload run
 
 checkpointOf :: Source -> FilePath
@@ -192,7 +192,7 @@ compare (left, right) = do
     generationEqual <- and <$> traverse decision generations
     leftModel <- either invalid pure (workerModel (Inference.describe (independentObservation left)))
     rightModel <- either invalid pure (workerModel (Inference.describe (independentObservation right)))
-    let taskEqual = map Workload.tasks (Workload.cycles (workloadOf (trainingRecord left))) == map Workload.tasks (Workload.cycles (workloadOf (trainingRecord right)))
+    let taskEqual = Workload.shapeCohorts (workloadOf (trainingRecord left)) == Workload.shapeCohorts (workloadOf (trainingRecord right))
         settingsEqual = leftSettings == rightSettings && randomProfile first == randomProfile second && initialization (initialSource first) == initialization (initialSource second)
         finalEqual = Inference.result (independentObservation left) == Inference.result (independentObservation right)
         modelEqual = leftModel == rightModel
@@ -242,12 +242,12 @@ field :: Key -> Value -> IO Value
 field key = either invalid pure . parseEither (withObject "artifact observation" (.: key))
 
 rollouts :: Checked -> Natural -> Either String [(String, Inference.Report)]
-rollouts checked index = case drop (fromIntegral index - 1) (zip (Workload.cycles (workloadOf (trainingRecord checked))) (generationObservations checked)) of
-    (workload, generation) : _ | index >= 1 -> Right (zip (map Workload.name (Workload.tasks workload)) (Cohort.inferences (Generation.cohort (generationTrace generation))))
+rollouts checked index = case drop (fromIntegral index - 1) (zip (Workload.shapeCycles (workloadOf (trainingRecord checked))) (generationObservations checked)) of
+    ((names, _, _), generation) : _ | index >= 1 -> Right (zip names (Cohort.inferences (Generation.cohort (generationTrace generation))))
     _ -> Left "The admitted history has no such generation"
 
 describe :: Checked -> Value
-describe checked = object ["tasks_sha256" .= Workload.digest (workloadOf (trainingRecord checked)), "initial" .= initialObservation checked, "initial_diagnostics" .= initializationDiagnostics checked, "training" .= describeSource (trainingRecord checked), "schedule" .= Schedule.describe (schedule checked), "artifacts" .= map generationArtifacts (generationObservations checked), "final" .= Inference.describe (independentObservation checked), "final_diagnostics" .= standaloneDiagnostics checked, "profiles" .= profileObservation checked]
+describe checked = object ["tasks_sha256" .= Workload.shapeDigest (workloadOf (trainingRecord checked)), "initial" .= initialObservation checked, "initial_diagnostics" .= initializationDiagnostics checked, "training" .= describeSource (trainingRecord checked), "schedule" .= Schedule.describe (schedule checked), "artifacts" .= map generationArtifacts (generationObservations checked), "final" .= Inference.describe (independentObservation checked), "final_diagnostics" .= standaloneDiagnostics checked, "profiles" .= profileObservation checked]
 
 trained :: Checked -> [Generation.Generation]
 trained checked = map generationTrace (generationObservations checked)
@@ -270,7 +270,7 @@ arrangement checked = case trainingRecord checked of
         let backend = Loop.backend (Runtime.config run)
          in Arrangement (genericLength (Loop.sessions backend)) (rollout (Loop.inferenceMode backend)) (learner (Loop.learningMode backend)) cycles final
   where
-    cycles = [(Workload.order workload, Workload.delivery workload) | workload <- Workload.cycles (workloadOf (trainingRecord checked))]
+    cycles = [(executionOrder, arrival) | (_, executionOrder, arrival) <- Workload.shapeCycles (workloadOf (trainingRecord checked))]
     final = finalBinding (declaration checked)
     rollout R.Serial = Trace.Finite
     rollout R.Batched = Trace.Batched

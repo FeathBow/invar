@@ -31,7 +31,7 @@ import Invar.Workload qualified as Workload
 import LearnerFixture qualified as F
 import Sessions qualified
 import Store (workspace)
-import System.Directory (createDirectory, doesDirectoryExist, doesFileExist)
+import System.Directory (canonicalizePath, createDirectory, doesDirectoryExist, doesFileExist)
 import System.FilePath ((</>))
 
 distillations :: Group
@@ -42,7 +42,7 @@ distillations =
         , ("a distillation input needs distillation settings and exactly one reading per sample, and a GRPO input refuses distillation settings", once refused)
         , ("the GRPO loop and runtime refuse distillation settings before they create a directory or launch a worker", once guarded)
         , ("a distillation plan runs through the checked learner exchange", once executed)
-        , ("a distillation run is declared with distillation settings and tasks sampled at the teacher's temperature, and history does not inspect its journal", once declared)
+        , ("a distillation run is declared with distillation settings and tasks sampled at the teacher's temperature, and its journal declares a distillation run", once declared)
         ]
   where
     once = withTests 1 . property
@@ -147,7 +147,11 @@ declared = do
     refusal "The run's workload and its learning settings name different algorithms" =<< evalIO (Runtime.run (Runtime.Run (configured taught) 0 graded) Null)
     refusal "A distillation run needs distillation settings" =<< evalIO (Runtime.distill scorer (Runtime.Run (configured F.configured) 0 unanswered) Null)
     refusal "Every task must be sampled at the teacher's temperature" =<< evalIO (Runtime.distill scorer (Runtime.Run (configured cooler) 0 unanswered) Null)
-    refusal "A distillation run is not inspected from its journal" =<< evalIO (Runtime.interpret root (const (Right (configured taught, 0))) (Fields.fromList ["arguments" .= Null, "workload" .= Workload.value unanswered]))
+    target <- evalIO (createDirectory (root </> "run") >> canonicalizePath (root </> "run"))
+    interpreted <- evalIO (Runtime.interpret target (const (Right (configured taught, 0))) (Fields.fromList ["arguments" .= Null, "workload" .= Workload.value unanswered]))
+    case interpreted of
+        Right (Runtime.Distilled chosen (Runtime.Run _ _ document)) -> (chosen, Workload.value document) === (teacher, Workload.value unanswered)
+        _ -> failure
   where
     refusal expected = \case
         Left (Runtime.Declaration problem) -> problem === expected
