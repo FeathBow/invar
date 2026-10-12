@@ -51,7 +51,7 @@ taught :: S.Plan
 taught = planned {S.members = [first' {S.signal = S.Teacher [word (-0.4), word (-2)]}, second' {S.signal = S.Teacher [word (-1)]}], S.batches = [["a"], ["b"]], S.algorithm = S.Distilled teacher}
 
 teacher :: Definition.Teacher
-teacher = Definition.Teacher "teacher-model" "teacher-revision" (replicate 64 '6') (replicate 64 'd') (replicate 64 '7') (replicate 64 '8') (replicate 64 '9') 1 "none" "processed" "forced"
+teacher = Definition.Teacher "teacher-model" "teacher-revision" (replicate 64 '6') (replicate 64 'd') (replicate 64 '7') (replicate 64 '8') 1 "none" "processed" "forced"
 
 expected :: [Word32] -> [Word32] -> Sample -> Int -> PropertyT IO [O.Output]
 expected now old entry = scoredWith (if null (referenceWords entry) then behaviorWords entry else referenceWords entry) now old entry
@@ -183,7 +183,6 @@ plans = do
             , teacher {Definition.teacherTokenizer = replicate 64 '5'}
             , teacher {Definition.teacherBase = replicate 64 '5'}
             , teacher {Definition.teacherAssembly = replicate 64 '5'}
-            , teacher {Definition.teacherProfile = replicate 64 '5'}
             , teacher {Definition.teacherTemperature = 0.5}
             , teacher {Definition.teacherTruncation = "other"}
             , teacher {Definition.teacherLogprobs = "other"}

@@ -354,7 +354,7 @@ stepRecords identity actual adapter = do
             request ::
             Parser (Objective.Profile, String, [S.Sample], [[Text.Text]], String, (Text.Text, S.Algorithm))
     signal sample = maybe (S.Advantage <$> sample .: "advantage_bits") (pure . S.Teacher) =<< sample .:? "teacher_bits"
-    declaredTeacher = withObject "teacher" $ \fields -> Definition.Teacher <$> fields .: "model" <*> fields .: "revision" <*> fields .: "adapter" <*> fields .: "tokenizer" <*> fields .: "base" <*> fields .: "assembly" <*> fields .: "profile" <*> fields .: "temperature" <*> fields .: "truncation" <*> fields .: "logprobs" <*> fields .: "path"
+    declaredTeacher = withObject "teacher" $ \fields -> Definition.Teacher <$> fields .: "model" <*> fields .: "revision" <*> fields .: "adapter" <*> fields .: "tokenizer" <*> fields .: "base" <*> fields .: "assembly" <*> fields .: "temperature" <*> fields .: "truncation" <*> fields .: "logprobs" <*> fields .: "path"
     step named accumulated (index, batch, (before, after)) = do
         (current, records) <- accumulated
         (answered, currents, digests) <- foldl (sampleStep named (index, before)) (Right (current, [], [])) batch

@@ -136,7 +136,6 @@ class DistillationTests(unittest.TestCase):
                         "algorithm": "opd", "teacher": SCORE_ENTRY, "teacher-adapter": adapter, "teacher-config": config,
                         "teacher-model": TEACHER[0], "teacher-revision": TEACHER[1], "teacher-digest": identity["adapter"],
                         "teacher-base-digest": identity["base"], "teacher-assembly-digest": identity["assembly"],
-                        "teacher-profile-digest": hashlib.sha256(b"cpu fixture teacher profile").hexdigest(),
                         "teacher-temperature": TEMPERATURE, "teacher-mode": cls.mode}
         cls.output = cls.root / "distilled"
         cls.records = execute([CORE, "train", *flags({**cls.settings, "output": cls.output, "staleness": 0})],

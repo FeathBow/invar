@@ -48,7 +48,7 @@ distillations =
     once = withTests 1 . property
 
 teacher :: Algorithm.Teacher
-teacher = Algorithm.Teacher "teacher-model" "teacher-revision" (replicate 64 '6') (L.tokenizer F.configured) (replicate 64 '7') (replicate 64 '8') (replicate 64 '9') 0.8 "none" "processed" "forced"
+teacher = Algorithm.Teacher "teacher-model" "teacher-revision" (replicate 64 '6') (L.tokenizer F.configured) (replicate 64 '7') (replicate 64 '8') 0.8 "none" "processed" "forced"
 
 taught :: L.Settings
 taught = F.configured {L.algorithm = L.Opd teacher}
@@ -76,7 +76,7 @@ lowered = do
         Object fields -> do
             Fields.lookup "specification" fields === Just (String "opd-token-mean/v1")
             Fields.member "delta" fields === False
-            Fields.lookup "teacher" fields === Just (object (("temperature" .= (0.8 :: Double)) : [name .= value | (name, value) <- [("model", "teacher-model"), ("revision", "teacher-revision"), ("adapter", replicate 64 '6'), ("tokenizer", L.tokenizer F.configured), ("base", replicate 64 '7'), ("assembly", replicate 64 '8'), ("profile", replicate 64 '9'), ("truncation", "none"), ("logprobs", "processed"), ("path", "forced") :: (Key, String)]]))
+            Fields.lookup "teacher" fields === Just (object (("temperature" .= (0.8 :: Double)) : [name .= value | (name, value) <- [("model", "teacher-model"), ("revision", "teacher-revision"), ("adapter", replicate 64 '6'), ("tokenizer", L.tokenizer F.configured), ("base", replicate 64 '7'), ("assembly", replicate 64 '8'), ("truncation", "none"), ("logprobs", "processed"), ("path", "forced") :: (Key, String)]]))
             samples <- evalMaybe (Fields.lookup "samples" fields)
             case samples of
                 Array entries -> do

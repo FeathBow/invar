@@ -36,7 +36,7 @@ teachers =
     once = withTests 1 . property
 
 teacher :: Algorithm.Teacher
-teacher = Algorithm.Teacher "teacher-model" "teacher-revision" (replicate 64 '6') (Infer.tokenizer request) (replicate 64 '7') (replicate 64 '8') (replicate 64 '9') (Infer.temperature request) "none" "processed" "forced"
+teacher = Algorithm.Teacher "teacher-model" "teacher-revision" (replicate 64 '6') (Infer.tokenizer request) (replicate 64 '7') (replicate 64 '8') (Infer.temperature request) "none" "processed" "forced"
 
 source :: PropertyT IO Inference.Source
 source = do
