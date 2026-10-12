@@ -6,18 +6,24 @@ except ImportError as missing:
     raise unittest.SkipTest(f"{missing.name} is not installed") from missing
 
 import copy
+import io
 import json
+import sys
 import tempfile
 import unittest
-from dataclasses import replace
+from contextlib import contextmanager, redirect_stdout
+from dataclasses import asdict, replace
 from pathlib import Path
+from unittest.mock import patch
 
 import torch
 from peft import PeftConfig, PeftModel
-from safetensors.torch import load_file
+from safetensors.torch import load_file, save_file
 
 from worker.hf import assembly
 from worker.hf import frozen
+from worker.hf import handoff
+from worker.hf import inference
 from worker.hf import operation
 from worker.hf.handoff import CONFIG, WEIGHTS, export
 from worker.implementation import file_digest
@@ -28,7 +34,7 @@ from worker.hf.tensors import assert_equal, digest
 from worker.tests.hf.learning import batch, make_learner
 from worker.tests.hf.decoding import hybrid
 from worker.tests.hf.tokenization import make_tokenizer
-from worker.implementation import LEARNING
+from worker.implementation import INFERENCE, LEARNING
 
 
 class HandoffTests(unittest.TestCase):
@@ -44,6 +50,64 @@ class HandoffTests(unittest.TestCase):
         model = self.learner.model
         return CheckpointIdentity(adapter=digest(adapter_state(model)), base=frozen.digest(model),
                                   assembly=assembly.digest(model, LEARNING), tokenizer=operation.digest(self.tokenizer))
+
+    @contextmanager
+    def cpu_loading(self):
+        with (torch.random.fork_rng(),
+              patch("torch.set_num_threads"),
+              patch("torch.set_float32_matmul_precision"),
+              torch.backends.cudnn.flags(allow_tf32=False),
+              patch("torch.cuda.manual_seed_all"),
+              patch("huggingface_hub.snapshot_download", return_value=self.directory),
+              patch.object(inference, "load_tokenizer", return_value=self.tokenizer),
+              patch.object(inference, "load_model", return_value=self.learner.model) as loaded,
+              patch.object(inference, "measure", side_effect=lambda stage, action, emit: action())):
+            yield loaded
+
+    def cli(self, expected, destination):
+        adapter = self.directory / "adapter.safetensors"
+        save_file(adapter_state(self.learner.model), adapter)
+        arguments = ["handoff", "--cache", str(self.directory), "--adapter", str(adapter),
+                     "--output", str(destination)]
+        for name, value in asdict(expected).items():
+            arguments.extend([f"--{name}-digest", value])
+        output = io.StringIO()
+        with patch.object(sys, "argv", arguments), redirect_stdout(output):
+            handoff.main()
+        return json.loads(output.getvalue())
+
+    def test_cli_loads_and_exports_the_learning_role(self):
+        destination = self.directory / "cli"
+        with self.cpu_loading() as loaded:
+            expected = self.identity()
+            self.assertNotEqual(expected.assembly, assembly.digest(self.learner.model, INFERENCE))
+            receipt = self.cli(expected, destination)
+            loaded.assert_called_once()
+            self.assertEqual(loaded.call_args.kwargs["role"], LEARNING)
+        self.assertEqual(receipt["source"], asdict(expected))
+        self.assertEqual(receipt, json.loads((destination / "handoff.json").read_text()))
+        assert_equal(adapter_state(self.learner.model), load_file(destination / WEIGHTS))
+
+    def test_cli_rejects_the_inference_identity_before_export(self):
+        destination = self.directory / "wrong-role"
+        with self.cpu_loading() as loaded:
+            expected = replace(self.identity(), assembly=assembly.digest(self.learner.model, INFERENCE))
+            with self.assertRaisesRegex(RuntimeError, "assembly binding mismatch"):
+                self.cli(expected, destination)
+            loaded.assert_called_once()
+            self.assertEqual(loaded.call_args.kwargs["role"], LEARNING)
+        self.assertFalse(destination.exists())
+
+    def test_loader_defaults_to_the_inference_role(self):
+        adapter = self.directory / "adapter.safetensors"
+        save_file(adapter_state(self.learner.model), adapter)
+        with self.cpu_loading() as loaded:
+            expected = replace(self.identity(), assembly=assembly.digest(self.learner.model, INFERENCE))
+            runtime = inference.load(self.directory, adapter, expected=asdict(expected))
+            loaded.assert_called_once()
+            self.assertEqual(loaded.call_args.kwargs["role"], INFERENCE)
+        self.assertIs(runtime.model, self.learner.model)
+        assert_equal(adapter_state(runtime.model), load_file(adapter))
 
     def test_two_real_updates_export_and_reload_exact_fp32_outputs(self):
         prior = None
