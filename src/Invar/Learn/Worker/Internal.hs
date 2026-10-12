@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RoleAnnotations #-}
 
-module Invar.Learn.Worker.Internal (Mode (..), Worker (..), Call (..), Hooks (..), Failure (..), prepare, hooked, announce, consult, input, permission, verifyArtifacts, verifyGradients, verifyProbabilities, verifyCheckpoint) where
+module Invar.Learn.Worker.Internal (Mode (..), Worker (..), CallOf (..), Call, Hooks (..), Failure (..), prepare, hooked, announce, consult, input, permission, verifyArtifacts, verifyGradients, verifyProbabilities, verifyCheckpoint) where
 
 import Control.Exception (bracket)
 import Crypto.Hash.SHA256 qualified as SHA256
@@ -12,6 +12,7 @@ import Data.ByteString.Lazy qualified as Lazy
 import Data.Text qualified as Text
 import Data.Text.Encoding (decodeUtf8)
 import Invar.Artifact qualified as Artifact
+import Invar.Cohort qualified as Cohort
 import Invar.Infer.Wire qualified as Binding
 import Invar.Learn qualified as L
 import Invar.Learn.Probability qualified as Probability
@@ -28,15 +29,17 @@ import System.IO (hClose)
 data Mode = Process | Resident | Shared deriving (Eq, Show)
 data Worker = Worker {executable :: FilePath, script :: FilePath, cache :: FilePath, checkpoint :: FilePath, reference :: FilePath, output :: FilePath}
 
-type role Call nominal
-data Call scope = Call (L.Plan scope) V.Binding V.Runtime String Hooks
+type role CallOf nominal nominal
+data CallOf scope grade = Call (L.PlanOf scope grade) V.Binding V.Runtime String Hooks
+
+type Call scope = CallOf scope Cohort.Graded
 
 data Hooks = Hooks {ready :: S.Stream -> IO (Either String ()), replying :: S.Stream -> S.Reply -> IO (Either String ())}
 
 data Failure = Preparation L.Error | Lowering Wire.Error | Loading Load.Error | WorkerExit ExitCode | InvalidOutput P.Error | GradientMismatch String String | ProbabilityMismatch String String | InvalidProbability String | PolicyMismatch String String | LearnerMismatch String String | ProtocolFailure String
     deriving (Eq, Show)
 
-prepare :: V.Binding -> L.Plan scope -> Either Failure (Call scope)
+prepare :: V.Binding -> L.PlanOf scope grade -> Either Failure (CallOf scope grade)
 prepare binding planned = do
     runtime <- first Preparation (L.invocation binding planned)
     request <- first Lowering (Wire.lower (L.emission planned))
@@ -56,13 +59,13 @@ consult hooks permit = case P.exchanging permit of
     Just (steps, Just reply) -> either (Left . P.Refused) Right <$> replying hooks steps reply
     _ -> pure (Left (P.Unexpected "A reply has no checked learner step"))
 
-hooked :: Hooks -> Call scope -> Call scope
+hooked :: Hooks -> CallOf scope grade -> CallOf scope grade
 hooked hooks (Call planned binding runtime encoded _) = Call planned binding runtime encoded hooks
 
-input :: Call scope -> String
+input :: CallOf scope grade -> String
 input (Call _ _ _ encoded _) = encoded
 
-permission :: Call scope -> Bytes.ByteString
+permission :: CallOf scope grade -> Bytes.ByteString
 permission (Call planned binding _ _ _) = Lazy.toStrict (encode (Binding.invocationValue binding (L.program planned)))
 
 verifyGradients :: FilePath -> P.Result -> IO (Either Failure ())

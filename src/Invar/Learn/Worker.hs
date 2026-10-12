@@ -1,13 +1,14 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RoleAnnotations #-}
 
-module Invar.Learn.Worker (Mode (..), Worker (..), Call, Hooks (..), Failure (..), Execution, prepare, hooked, input, run, verifyGradients, verifyProbabilities, verifyCheckpoint, report, loaded, plan, staged) where
+module Invar.Learn.Worker (Mode (..), Worker (..), CallOf, Call, Hooks (..), Failure (..), ExecutionOf, Execution, prepare, hooked, input, run, verifyGradients, verifyProbabilities, verifyCheckpoint, report, loaded, plan, staged) where
 
 import Control.Exception (bracket, mask_)
 import Data.ByteString qualified as Bytes
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Text qualified as Text
 import Data.Text.Encoding (encodeUtf8)
+import Invar.Cohort qualified as Cohort
 import Invar.Learn qualified as L
 import Invar.Learn.Protocol qualified as P
 import Invar.Learn.Worker.Internal
@@ -16,13 +17,15 @@ import Invar.Spec.Invocation qualified as V
 import Invar.Spec.Load qualified as Registry
 import Invar.Transcript qualified as Transcript
 
-type role Execution nominal
-data Execution scope = Execution (L.Plan scope) P.Result FilePath Registry.Fact
+type role ExecutionOf nominal nominal
+data ExecutionOf scope grade = Execution (L.PlanOf scope grade) P.Result FilePath Registry.Fact
 
-run :: Worker -> Transcript.Transcript -> Call scope -> IO (Either Failure (Execution scope))
+type Execution scope = ExecutionOf scope Cohort.Graded
+
+run :: Worker -> Transcript.Transcript -> CallOf scope grade -> IO (Either Failure (ExecutionOf scope grade))
 run worker transcript call = bracket (newIORef Registry.empty) (`modifyIORef'` Registry.close) (execute worker transcript call)
 
-execute :: Worker -> Transcript.Transcript -> Call scope -> IORef Registry.Registry -> IO (Either Failure (Execution scope))
+execute :: Worker -> Transcript.Transcript -> CallOf scope grade -> IORef Registry.Registry -> IO (Either Failure (ExecutionOf scope grade))
 execute worker transcript call@(Call planned binding runtime _ hooks) registry = do
     slot <- newIORef Nothing
     let arguments = [script worker, "--cache=" ++ cache worker, "--checkpoint=" ++ checkpoint worker, "--reference=" ++ reference worker, "--output=" ++ output worker]
@@ -65,7 +68,7 @@ answer hooks slot observed = mask_ $ do
                     Left problem -> pure (Left problem)
                     Right () -> writeIORef slot (Just advanced) >> pure (Right reply)
 
-complete :: (L.Plan scope, FilePath) -> IORef (Maybe P.Permit) -> Bytes.ByteString -> IO (Either Failure (Execution scope))
+complete :: (L.PlanOf scope grade, FilePath) -> IORef (Maybe P.Permit) -> Bytes.ByteString -> IO (Either Failure (ExecutionOf scope grade))
 complete (planned, directory) slot observed = do
     accepted <- readIORef slot
     case accepted of
@@ -74,14 +77,14 @@ complete (planned, directory) slot observed = do
             Left problem -> pure (Left (InvalidOutput problem))
             Right result -> fmap (Execution planned result directory (P.loadedFact permit) <$) (verifyArtifacts directory result)
 
-report :: Execution scope -> P.Result
+report :: ExecutionOf scope grade -> P.Result
 report (Execution _ result _ _) = result
 
-loaded :: Execution scope -> Registry.Fact
+loaded :: ExecutionOf scope grade -> Registry.Fact
 loaded (Execution _ _ _ fact) = fact
 
-plan :: Execution scope -> L.Plan scope
+plan :: ExecutionOf scope grade -> L.PlanOf scope grade
 plan (Execution planned _ _ _) = planned
 
-staged :: Execution scope -> FilePath
+staged :: ExecutionOf scope grade -> FilePath
 staged (Execution _ _ path _) = path

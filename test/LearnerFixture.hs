@@ -34,8 +34,8 @@ import System.Directory (createDirectory)
 import System.FilePath ((</>))
 import Updates (change, field, stepRecords, wire)
 
-data Exchange scope = Exchange {call :: W.Call scope, paths :: Resident.Paths, before :: [Value], steps :: [Value], after :: [Value], permission :: ByteString, release :: Value, released :: Value}
-data Scenario scope = Scenario {groups :: [Exchange scope], closed :: Value, ending :: String}
+data Exchange scope grade = Exchange {call :: W.CallOf scope grade, paths :: Resident.Paths, before :: [Value], steps :: [Value], after :: [Value], permission :: ByteString, release :: Value, released :: Value}
+data Scenario scope grade = Scenario {groups :: [Exchange scope grade], closed :: Value, ending :: String}
 
 require :: (Show problem) => Either problem value -> IO value
 require = either (ioError . userError . show) pure
@@ -87,7 +87,7 @@ owner = object ["role" .= String "learning", "session" .= (0 :: Int)]
 measurement :: Text.Text -> Text.Text
 measurement = decodeUtf8 . wire . pure . timer
 
-prepare :: FilePath -> (Int, V.Binding) -> L.Plan scope -> IO (Exchange scope)
+prepare :: FilePath -> (Int, V.Binding) -> L.PlanOf scope grade -> IO (Exchange scope grade)
 prepare root (index, binding) planned = do
     call <- require (W.prepare binding planned)
     envelope <- require (eitherDecodeStrict (encodeUtf8 (Text.pack (W.input call))))
@@ -132,13 +132,13 @@ array :: Value -> [Value]
 array (Array values) = toList values
 array _ = error "Expected learner fixture array"
 
-scenario :: [Exchange scope] -> Scenario scope
+scenario :: [Exchange scope grade] -> Scenario scope grade
 scenario exchanges = Scenario exchanges (object ["stage" .= String "closed", "format" .= String "invar-resident-v1", "owner" .= owner, "groups" .= length exchanges, "measurement" .= measurement "closed"]) "IFS= read -r extra && exit 29\nexit 0"
 
 worker :: FilePath -> W.Worker
 worker root = W.Worker "/bin/sh" (root </> "learner.sh") root "initial launch checkpoint" (root </> "fixed reference") "initial launch output"
 
-script :: FilePath -> Scenario scope -> String
+script :: FilePath -> Scenario scope grade -> String
 script root selected = unlines (header ++ concat (zipWith groupScript [0 :: Int ..] (groups selected)) ++ closing)
   where
     header = ["test \"$1\" = " ++ quote ("--cache=" ++ root) ++ " || exit 20", "test \"$2\" = " ++ quote ("--reference=" ++ W.reference (worker root)) ++ " || exit 20", "test \"$3\" = '--session=0' || exit 20", "printf '%s\\n' \"$$\" >> " ++ quote (root </> "learner-pids")]
@@ -158,7 +158,7 @@ script root selected = unlines (header ++ concat (zipWith groupScript [0 :: Int 
     stepScript record = emit [record] : ["IFS= read -r reply || exit 23" | stage record == Just "current"]
     receive variable expected = "IFS= read -r " ++ variable ++ " || exit 21\ntest \"$" ++ variable ++ "\" = " ++ quote (Bytes.unpack expected) ++ " || exit 22"
 
-run :: FilePath -> Scenario scope -> (forall ownerScope. Resident.Resident ownerScope -> IO (Either W.Failure value)) -> IO (Either W.Failure value, ByteString)
+run :: FilePath -> Scenario scope grade -> (forall ownerScope. Resident.Resident ownerScope -> IO (Either W.Failure value)) -> IO (Either W.Failure value, ByteString)
 run root selected action = do
     writeFile (W.script (worker root)) (script root selected)
     buffer <- newIORef []
@@ -166,7 +166,7 @@ run root selected action = do
     emitted <- Bytes.unlines . reverse <$> readIORef buffer
     pure (returned, emitted)
 
-execute :: Resident.Resident ownerScope -> [Exchange scope] -> IO (Either W.Failure [Resident.Receipt scope])
+execute :: Resident.Resident ownerScope -> [Exchange scope grade] -> IO (Either W.Failure [Resident.ReceiptOf scope grade])
 execute _ [] = pure (Right [])
 execute ownerScope (exchange : remaining) = do
     returned <- Resident.run ownerScope (paths exchange) (call exchange)
@@ -174,7 +174,7 @@ execute ownerScope (exchange : remaining) = do
         Left problem -> pure (Left problem)
         Right receipt -> fmap (receipt :) <$> execute ownerScope remaining
 
-process :: FilePath -> Exchange scope -> String
+process :: FilePath -> Exchange scope grade -> String
 process replies exchange = unlines (["IFS= read -r input || exit 21", emit kept, "IFS= read -r permission || exit 22"] ++ concatMap stepLines (steps exchange) ++ [emit (after exchange)])
   where
     kept = timer "load" : [event | event <- before exchange, stage event `notElem` [Just "activation", Just "load"]]
