@@ -182,7 +182,7 @@ sharedWorld settings trajectories = Map.fromList [(Semantic "policy", Load.image
     keyed project = Mapping (Map.fromList [(index, project sample) | (index, sample) <- indexed])
 
 teacherValue :: Algorithm.Teacher -> Value Natural
-teacherValue chosen = record (("temperature", number (Algorithm.teacherTemperature chosen)) : [(name, text (field chosen)) | (name, field) <- [("model", Algorithm.teacherModel), ("revision", Algorithm.teacherRevision), ("adapter", Algorithm.teacherAdapter), ("tokenizer", Algorithm.teacherTokenizer), ("base", Algorithm.teacherBase), ("assembly", Algorithm.teacherAssembly), ("profile", Algorithm.teacherProfile), ("truncation", Algorithm.teacherTruncation), ("logprobs", Algorithm.teacherLogprobs), ("path", Algorithm.teacherPath)]])
+teacherValue chosen = record (("temperature", number (Algorithm.teacherTemperature chosen)) : [(name, text (field chosen)) | (name, field) <- [("model", Algorithm.teacherModel), ("revision", Algorithm.teacherRevision), ("adapter", Algorithm.teacherAdapter), ("tokenizer", Algorithm.teacherTokenizer), ("base", Algorithm.teacherBase), ("assembly", Algorithm.teacherAssembly), ("truncation", Algorithm.teacherTruncation), ("logprobs", Algorithm.teacherLogprobs), ("path", Algorithm.teacherPath)]])
 
 bindingValue :: V.Binding -> Value Natural
 bindingValue (V.Binding (V.CallId call) (V.AttemptId attempt) (V.Instance instance')) = record [("call", Atom (Token call)), ("attempt", Atom (Token attempt)), ("instance", Atom (Token instance'))]

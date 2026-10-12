@@ -228,7 +228,7 @@ taughtWorld :: E.World
 taughtWorld = Map.union additions (foldr (Map.delete . S.Semantic) world ["rewards", "groups"])
   where
     additions = Map.fromList [(S.Semantic "algorithm", record [("epsilon", number (1 / 5)), ("penalty", number 0), ("steps", number 1)]), (S.Semantic "teacher", teacher), (S.Semantic "teacher_scores", Mapping (Map.fromList [(2, Sequence [Atom (Bits32 0xbfc00000)]), (9, Sequence [Atom (Bits32 0xbe800000)])])), (S.Semantic "teacher_calls", Mapping (Map.fromList [(key, record [("call", Atom (Token (40 + key))), ("attempt", Atom (Token (40 + key))), ("instance", Atom (Token (40 + key)))]) | key <- [2, 9]]))]
-    teacher = record ([(name, text value) | (name, value) <- [("model", "teacher-model"), ("revision", "teacher-revision"), ("adapter", replicate 64 '6'), ("tokenizer", replicate 64 'd'), ("base", replicate 64 '7'), ("assembly", replicate 64 '8'), ("profile", replicate 64 '9'), ("truncation", "none"), ("logprobs", "processed"), ("path", "forced")]] ++ [("temperature", number (4 / 5))])
+    teacher = record ([(name, text value) | (name, value) <- [("model", "teacher-model"), ("revision", "teacher-revision"), ("adapter", replicate 64 '6'), ("tokenizer", replicate 64 'd'), ("base", replicate 64 '7'), ("assembly", replicate 64 '8'), ("truncation", "none"), ("logprobs", "processed"), ("path", "forced")]] ++ [("temperature", number (4 / 5))])
 
 taught :: PropertyT IO ()
 taught = do
@@ -236,7 +236,7 @@ taught = do
     lowered <- evalEither (W.lower command) >>= json @(Map.Map String J.Value)
     Map.lookup "specification" lowered === Just (J.String "opd-token-mean/v1")
     Map.member "delta" lowered === False
-    Map.lookup "teacher" lowered === Just (J.object (("temperature" J..= (0.8 :: Double)) : [name J..= value | (name, value) <- [("model", "teacher-model"), ("revision", "teacher-revision"), ("adapter", replicate 64 '6'), ("tokenizer", replicate 64 'd'), ("base", replicate 64 '7'), ("assembly", replicate 64 '8'), ("profile", replicate 64 '9'), ("truncation", "none"), ("logprobs", "processed"), ("path", "forced") :: (J.Key, String)]]))
+    Map.lookup "teacher" lowered === Just (J.object (("temperature" J..= (0.8 :: Double)) : [name J..= value | (name, value) <- [("model", "teacher-model"), ("revision", "teacher-revision"), ("adapter", replicate 64 '6'), ("tokenizer", replicate 64 'd'), ("base", replicate 64 '7'), ("assembly", replicate 64 '8'), ("truncation", "none"), ("logprobs", "processed"), ("path", "forced") :: (J.Key, String)]]))
     entries <- evalMaybe (Map.lookup "samples" lowered) >>= json @[Map.Map String J.Value]
     map (Map.lookup "teacher_bits") entries === map (Just . J.toJSON) [[0xbe800000 :: Integer], [0xbfc00000]]
     map (Map.lookup "teacher_call") entries === [Just (J.object [name J..= (40 + key :: Integer) | name <- ["call", "attempt", "instance"]]) | key <- [9, 2]]

@@ -115,11 +115,11 @@ shared fields (kind, profile) extension = do
 
 teacherIdentity :: String -> Value -> Parser Algorithm.Teacher
 teacherIdentity tokenizer = withObject "teacher identity" $ \fields -> do
-    Json.fields ["model", "revision", "adapter", "tokenizer", "base", "assembly", "profile", "temperature", "truncation", "logprobs", "path"] fields
-    [model', revision, adapter, declared, base, assembly, profile] <- traverse (fields .:) ["model", "revision", "adapter", "tokenizer", "base", "assembly", "profile"]
+    Json.fields ["model", "revision", "adapter", "tokenizer", "base", "assembly", "temperature", "truncation", "logprobs", "path"] fields
+    [model', revision, adapter, declared, base, assembly] <- traverse (fields .:) ["model", "revision", "adapter", "tokenizer", "base", "assembly"]
     temperature <- fields .: "temperature" >>= Json.finite
     [truncation, logprobs, path] <- traverse (fields .:) ["truncation", "logprobs", "path"]
-    let chosen = Algorithm.Teacher model' revision adapter declared base assembly profile temperature truncation logprobs path
+    let chosen = Algorithm.Teacher model' revision adapter declared base assembly temperature truncation logprobs path
     either fail (const (pure chosen)) (Algorithm.teacher tokenizer chosen)
 
 call :: Value -> Parser ()

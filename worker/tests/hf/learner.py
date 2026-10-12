@@ -68,8 +68,8 @@ def fixture(*, directory=None, taught=False):
     if taught:
         actual = {**{key: item for key, item in actual.items() if key != "delta"}, "specification": DISTILLATION,
                   "teacher": {"model": "teacher-model", "revision": "teacher-revision", "adapter": "6" * 64, "tokenizer": saved["tokenizer"],
-                              "base": "7" * 64, "assembly": "8" * 64, "profile": "9" * 64, "temperature": 0.8,
-                              "truncation": "none", "logprobs": "processed", "path": "forced"},
+                              "base": "7" * 64, "assembly": "8" * 64, "temperature": 0.8, "truncation": "none", "logprobs": "processed",
+                              "path": "forced"},
                   "samples": [{**{key: item for key, item in sample.items() if key not in ("group", "reward", "advantage_bits")},
                                "teacher_bits": [0xBF000000] * len(sample["behavior_bits"]),
                                "teacher_call": {"call": 3, "attempt": 3, "instance": index}} for index, sample in enumerate(samples)]}

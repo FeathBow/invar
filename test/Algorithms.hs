@@ -55,7 +55,7 @@ settings = do
     L.validate F.configured {L.optimizer = (L.optimizer F.configured) {L.epsilon = 0}} === Left (L.InvalidSettings "Invalid AdamW coefficients")
 
 teacher :: Algorithm.Teacher
-teacher = Algorithm.Teacher "teacher-model" "teacher-revision" (replicate 64 '6') (replicate 64 'c') (replicate 64 '7') (replicate 64 '8') (replicate 64 '9') 0.8 "none" "processed" "forced"
+teacher = Algorithm.Teacher "teacher-model" "teacher-revision" (replicate 64 '6') (replicate 64 'c') (replicate 64 '7') (replicate 64 '8') 0.8 "none" "processed" "forced"
 
 teaching :: PropertyT IO ()
 teaching = do
@@ -63,7 +63,7 @@ teaching = do
     let refused =
             [ (teacher {Algorithm.teacherModel = ""}, "The teacher's model and revision must be nonempty")
             , (teacher {Algorithm.teacherRevision = ""}, "The teacher's model and revision must be nonempty")
-            , (teacher {Algorithm.teacherProfile = "profile"}, "Expected lowercase SHA-256 teacher identities")
+            , (teacher {Algorithm.teacherAssembly = "assembly"}, "Expected lowercase SHA-256 teacher identities")
             , (teacher {Algorithm.teacherAdapter = "adapter"}, "Expected lowercase SHA-256 teacher identities")
             , (teacher {Algorithm.teacherBase = replicate 64 'A'}, "Expected lowercase SHA-256 teacher identities")
             , (teacher {Algorithm.teacherTokenizer = replicate 64 'd'}, "The teacher's tokenizer must be the student's")

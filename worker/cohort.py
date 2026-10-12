@@ -62,7 +62,6 @@ class Teacher:
     tokenizer: str
     base: str
     assembly: str
-    profile: str
     temperature: float
     truncation: str
     logprobs: str
@@ -174,7 +173,7 @@ def binding(value):
 
 
 def teacher(value, tokenizer):
-    value = fields(value, "model revision adapter tokenizer base assembly profile temperature truncation logprobs path")
+    value = fields(value, "model revision adapter tokenizer base assembly temperature truncation logprobs path")
     if any(not isinstance(value[name], str) or not value[name] for name in ("model", "revision")):
         raise ValueError("The teacher's model and revision must be nonempty")
     if identity(value["tokenizer"]) != tokenizer:
@@ -185,7 +184,7 @@ def teacher(value, tokenizer):
     if (value["truncation"], value["logprobs"], value["path"]) != ("none", "processed", "forced"):
         raise ValueError("The teacher must score the forced path with processed log probabilities and no truncation")
     return Teacher(**{**value, "adapter": identity(value["adapter"]), "base": identity(value["base"]), "assembly": identity(value["assembly"]),
-                      "profile": identity(value["profile"]), "temperature": temperature})
+                      "temperature": temperature})
 
 
 def shared_sample(value):

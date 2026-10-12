@@ -6,7 +6,6 @@ try:
 except ImportError as missing:
     raise unittest.SkipTest(f"{missing.name} is not installed") from missing
 
-import hashlib
 import json
 from pathlib import Path
 
@@ -36,7 +35,6 @@ class DistillationTests(Training, unittest.TestCase):
                      "teacher-mode": "resident", "teacher-model": TEACHER[0], "teacher-revision": TEACHER[1],
                      "teacher-digest": identity["adapter"], "teacher-base-digest": identity["base"],
                      "teacher-assembly-digest": identity["assembly"],
-                     "teacher-profile-digest": hashlib.sha256(b"mlx fixture teacher profile").hexdigest(),
                      "teacher-temperature": 0.8}
         records, shared = self.trained((*prepared[:5], workload, *prepared[6:]), "distilled", settings=distilled, staleness=0)
         self.assertEqual([value["update"] for value in records if value.get("phase") == "published"], [0, 1])

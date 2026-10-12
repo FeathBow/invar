@@ -120,7 +120,7 @@ planIdentity chosen initial declared steps scoring kind = Artifact.hex (SHA256.h
   where
     encoded = algorithmTag kind <> Builder.char7 (sourceTag scoring) <> Builder.word64LE (castDoubleToWord64 (Objective.epsilon chosen)) <> Builder.word64LE (castDoubleToWord64 (Objective.penalty chosen)) <> text (Text.pack initial) <> counted (map entry declared) <> counted (map (counted . map text) steps)
     algorithmTag Grouped = mempty
-    algorithmTag (Distilled teacher) = Builder.char7 'd' <> foldMap (text . Text.pack . ($ teacher)) [Definition.teacherModel, Definition.teacherRevision, Definition.teacherAdapter, Definition.teacherTokenizer, Definition.teacherBase, Definition.teacherAssembly, Definition.teacherProfile] <> Builder.word64LE (castDoubleToWord64 (Definition.teacherTemperature teacher)) <> foldMap (text . Text.pack . ($ teacher)) [Definition.teacherTruncation, Definition.teacherLogprobs, Definition.teacherPath]
+    algorithmTag (Distilled teacher) = Builder.char7 'd' <> foldMap (text . Text.pack . ($ teacher)) [Definition.teacherModel, Definition.teacherRevision, Definition.teacherAdapter, Definition.teacherTokenizer, Definition.teacherBase, Definition.teacherAssembly] <> Builder.word64LE (castDoubleToWord64 (Definition.teacherTemperature teacher)) <> foldMap (text . Text.pack . ($ teacher)) [Definition.teacherTruncation, Definition.teacherLogprobs, Definition.teacherPath]
     sourceTag FromEngine = 'e'
     sourceTag FromLearner = 'l'
     entry value = text (name value) <> counted (map Builder.word32LE (behaviorWords value)) <> counted (map Builder.word32LE (referenceWords value)) <> signalBytes (signal value)
