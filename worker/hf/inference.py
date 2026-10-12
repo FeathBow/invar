@@ -21,7 +21,7 @@ class Runtime:
     identity: tuple[str, str]
 
 
-def load(cache, adapter, *, expected, emit=report, declared=(MODEL, REVISION)):
+def load(cache, adapter, *, expected, emit=report, declared=(MODEL, REVISION), role=INFERENCE):
     from huggingface_hub import snapshot_download
 
     state = read_adapter(adapter, expected["adapter"])
@@ -34,13 +34,13 @@ def load(cache, adapter, *, expected, emit=report, declared=(MODEL, REVISION)):
     path = snapshot_download(model_name, revision=revision, cache_dir=cache, local_files_only=True)
     tokenizer = load_tokenizer(path)
     verify(tokenizer, expected["tokenizer"])
-    model = measure("load", lambda: load_model(path, role=INFERENCE, emit=emit, adapted=bool(state), identity=declared), emit=emit)
-    installed(model, state, expected)
+    model = measure("load", lambda: load_model(path, role=role, emit=emit, adapted=bool(state), identity=declared), emit=emit)
+    installed(model, state, expected, role=role)
     return Runtime(model=model, tokenizer=tokenizer, adapter=adapter, device="cuda", identity=declared)
 
 
-def installed(model, state, expected):
-    return activate(model, state, base=expected["base"], assembly=expected["assembly"], role=INFERENCE)
+def installed(model, state, expected, *, role=INFERENCE):
+    return activate(model, state, base=expected["base"], assembly=expected["assembly"], role=role)
 
 
 def materialized(runtime, requested):

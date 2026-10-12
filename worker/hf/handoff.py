@@ -83,7 +83,7 @@ def main():
     options = arguments()
     expected = CheckpointIdentity(adapter=options.adapter_digest, base=options.base_digest,
                                   assembly=options.assembly_digest, tokenizer=options.tokenizer_digest)
-    runtime = load(options.cache, options.adapter, expected=asdict(expected))
+    runtime = load(options.cache, options.adapter, expected=asdict(expected), role=LEARNING)
     receipt = export(runtime.model, options.output, tokenizer=runtime.tokenizer, expected=expected)
     print(json.dumps(receipt, sort_keys=True, allow_nan=False))
 
