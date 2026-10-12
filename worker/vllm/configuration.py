@@ -8,7 +8,10 @@ from worker.core import decode
 
 FORMAT = "invar-vllm-launch-v1"
 CHECKPOINT_FORMAT = "invar-vllm-checkpoint-launch-v1"
-FIELDS = "format model revision handoff engine"
+BASE_FORMAT = "invar-vllm-base-launch-v1"
+FIELDS = {FORMAT: "format model revision handoff engine",
+          CHECKPOINT_FORMAT: "format model revision handoff template engine",
+          BASE_FORMAT: "format model revision engine"}
 MODEL_ARGUMENTS = frozenset(("model", "model_weights", "revision", "tokenizer", "tokenizer_revision", "download_dir"))
 
 
@@ -16,7 +19,7 @@ MODEL_ARGUMENTS = frozenset(("model", "model_weights", "revision", "tokenizer", 
 class Configuration:
     model: str
     revision: str
-    handoff: str
+    handoff: str | None
     engine: str
     template: str | None
 
@@ -25,12 +28,13 @@ class Configuration:
 
 
 def adapter_template(value):
-    if not isinstance(value, dict) or value.get("format") not in (FORMAT, CHECKPOINT_FORMAT):
+    if not isinstance(value, dict) or value.get("format") not in FIELDS:
         raise ValueError("Unsupported native launch configuration")
-    checkpoint = value["format"] == CHECKPOINT_FORMAT
-    fields(value, FIELDS + (" template" if checkpoint else ""))
-    template = value["template"] if checkpoint else None
-    if checkpoint and (not isinstance(template, str) or not template):
+    fields(value, FIELDS[value["format"]])
+    if value["format"] != CHECKPOINT_FORMAT:
+        return None
+    template = value["template"]
+    if not isinstance(template, str) or not template:
         raise ValueError("Native checkpoint launch requires a PEFT configuration template directory")
     return template
 
@@ -44,7 +48,8 @@ def configuration(value):
     engine = value["engine"]
     if not isinstance(engine, dict) or MODEL_ARGUMENTS.intersection(engine):
         raise ValueError("Native engine arguments cannot override the pinned model or tokenizer location")
-    return Configuration(model=value["model"], revision=value["revision"], handoff=identity(value["handoff"]),
+    handoff = None if value["format"] == BASE_FORMAT else identity(value["handoff"])
+    return Configuration(model=value["model"], revision=value["revision"], handoff=handoff,
                          engine=json.dumps(engine, sort_keys=True, separators=(",", ":"), allow_nan=False),
                          template=template)
 

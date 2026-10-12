@@ -12,11 +12,15 @@ def parser(description):
     return result
 
 
-def batch_arguments(description):
+def batch_parser(description):
     result = parser(description)
     result.add_argument("--cache", type=Path, required=True)
     result.add_argument("--adapter", type=Path, required=True)
-    return result.parse_args()
+    return result
+
+
+def batch_arguments(description):
+    return batch_parser(description).parse_args()
 
 
 def report(stream, stage, values):

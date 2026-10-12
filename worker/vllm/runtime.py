@@ -2,13 +2,17 @@ from contextlib import ExitStack, contextmanager
 from dataclasses import asdict, dataclass, replace
 from functools import partial
 
+from safetensors.torch import load_file
+
 from worker.batch import FORMAT, capture
 from worker.report import ready, result
-from worker.hf.operation import verify
+from worker.hf.operation import digest as tokenizer_digest, verify
+from worker.hf.tensors import digest
 from worker.vllm.configuration import snapshot
 from worker.vllm.execution import generate
 from worker.vllm.lora import qwen_mlp_targets
-from worker.vllm.worker import REFERENCE_ID, identified, prepare, prepare_checkpoint
+from worker.vllm.mapping import UNADAPTED
+from worker.vllm.worker import REFERENCE_ID, identified, identified_unadapted, prepare, prepare_checkpoint
 
 ADAPTER_ID = 1
 SOURCE_PREFIX = "model.language_model.layers"
@@ -19,8 +23,8 @@ RUNTIME_PREFIX = "language_model.model.layers"
 class Runtime:
     engine: object
     tokenizer: object
-    lora: object
-    receipt: str
+    lora: object | None
+    receipt: str | None
     identity: tuple[str, str]
     source: tuple[tuple[str, str], ...]
     identities: tuple[tuple[str, str], ...]
@@ -56,11 +60,27 @@ def selection(engine, tokenizer, *, observed, directory, config, selection_facto
                    source=tuple(observed["source"].items()), identities=tuple(identities.items()))
 
 
+def unadapted(engine, tokenizer, *, adapter, config):
+    if load_file(adapter, device="cpu"):
+        raise ValueError("A native base launch runs without an adapter; its adapter file must hold no tensors")
+    observed, = engine.collective_rpc(identified_unadapted)
+    model = observed["model"]
+    identities = {"adapter": digest({}), "tokenizer": tokenizer_digest(tokenizer),
+                  "base": model["base"], "assembly": model["assembly"]}
+    runtime = Runtime(engine=engine, tokenizer=tokenizer, lora=None, receipt=None, identity=(config.model, config.revision),
+                      source=(), identities=tuple(identities.items()))
+    return runtime, observed["profile"]
+
+
 def configured(engine, tokenizer, *, directory, config, selection_factory, emit):
-    observed = materialize(engine, directory, config=config)
-    runtime = selection(engine, tokenizer, observed=observed, directory=directory, config=config,
-                        selection_factory=selection_factory)
-    emit("profile", {"model": config.model, "revision": config.revision, "native": observed["profile"]})
+    if config.handoff is None:
+        runtime, profile = unadapted(engine, tokenizer, adapter=directory, config=config)
+    else:
+        observed = materialize(engine, directory, config=config)
+        runtime = selection(engine, tokenizer, observed=observed, directory=directory, config=config,
+                            selection_factory=selection_factory)
+        profile = observed["profile"]
+    emit("profile", {"model": config.model, "revision": config.revision, "native": profile})
     return runtime
 
 
@@ -82,8 +102,12 @@ def load(cache, adapter, *, config, factory, tokenizer_loader, resolve, selectio
 def observed(prepared, runtime, *, tokenizer):
     resident, = prepared.resident
     model, = prepared.models
-    policy, = resident
     loaded, = model
+    if runtime.lora is None:
+        if resident or loaded.adapter_id != UNADAPTED:
+            raise ValueError("Native base execution prepared an adapter selection")
+        return {"adapter": digest({}), "tokenizer": tokenizer, "base": loaded.base, "assembly": loaded.assembly}
+    policy, = resident
     adapter_id = runtime.lora.lora_int_id
     if (policy.package, policy.adapter_id, loaded.adapter_id) != (runtime.receipt, adapter_id, adapter_id):
         raise ValueError("Native execution prepared a different adapter selection")

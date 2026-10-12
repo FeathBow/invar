@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from worker.vllm.configuration import CHECKPOINT_FORMAT, FORMAT, configuration, read
+from worker.vllm.configuration import BASE_FORMAT, CHECKPOINT_FORMAT, FORMAT, configuration, read
 
 
 def declared():
@@ -59,3 +59,14 @@ class ConfigurationTests(unittest.TestCase):
         for value in invalid:
             with self.subTest(value=value), self.assertRaises(ValueError):
                 configuration(value)
+
+    def test_base_launch_binds_no_handoff_or_template(self):
+        value = {**{key: item for key, item in declared().items() if key != "handoff"}, "format": BASE_FORMAT}
+        actual = configuration(value)
+        self.assertEqual((actual.handoff, actual.template), (None, None))
+        self.assertEqual(actual.arguments(), value["engine"])
+        for extra in ({"handoff": "2" * 64}, {"template": "configuration-source"}):
+            with self.subTest(extra=extra), self.assertRaises(ValueError):
+                configuration({**value, **extra})
+        with self.assertRaises(ValueError):
+            configuration({**declared(), "format": BASE_FORMAT})

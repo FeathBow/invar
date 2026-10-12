@@ -11,8 +11,11 @@ from worker.vllm.mapping import Selection
 from worker.vllm.state import Binding, Monitor
 
 
-class Native:
-    lora_index_to_id = ()
+class Routing:
+    model = None
+
+    def resident(self):
+        return ()
 
 
 def bound():
@@ -23,7 +26,7 @@ def bound():
 
 def monitor(*, models=None, observations=None):
     calls = [] if observations is None else observations
-    return Monitor(object(), Native(), bindings=(bound(),), verify=lambda **fields: fields["receipt"],
+    return Monitor(object(), Routing(), bindings=(bound(),),
                    observe_model=lambda: calls.append(1) or ("observed",), models=models), calls
 
 

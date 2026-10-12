@@ -3,6 +3,7 @@ from pathlib import Path
 
 from worker.hf.artifact import read, read_checkpoint
 from worker.vllm.lora import Target, activate, create, layout
+from worker.vllm.mapping import unadapted
 from worker.vllm.worker import REFERENCE_ID, identified, manager
 
 
@@ -29,7 +30,12 @@ def inspect(worker, *, receipt, adapter_id):
 
 
 def released(worker, *, adapter_id):
-    idle(worker, adapter_id=adapter_id)
+    if adapter_id is None:
+        if getattr(worker, "_invar_execution", None) is not None:
+            raise RuntimeError("Native resident base model still owns an execution")
+        unadapted(worker.model_runner)
+    else:
+        idle(worker, adapter_id=adapter_id)
     runner = worker.model_runner
     if runner.requests or runner.input_batch.req_id_to_index or runner.input_batch.num_reqs:
         raise RuntimeError("Native release retained cached request or sampler rows")
@@ -102,7 +108,7 @@ def release(runtime):
         raise RuntimeError("Native release retained scheduler work")
     if any(group.req_to_blocks for group in owned.kv_cache_manager.coordinator.single_type_managers):
         raise RuntimeError("Native release retained request-owned attention or recurrent cache blocks")
-    runtime.engine.collective_rpc(released, kwargs={"adapter_id": runtime.lora.lora_int_id})
+    runtime.engine.collective_rpc(released, kwargs={"adapter_id": None if runtime.lora is None else runtime.lora.lora_int_id})
 
 
 def select(runtime, directory, *, expected, config, selection_factory):

@@ -18,7 +18,8 @@ def delivered(output, tokenizer, *, bound, path, vocabulary):
     from vllm.lora.request import LoRARequest
     import json
 
-    lora = LoRARequest(**json.loads(bound.selection.description))
+    description = bound.selection.description
+    lora = None if description is None else LoRARequest(**json.loads(description))
     result = rollout.completion(output, prefix=path.prefix, lora=lora)
     tokens = rollout.response_tokens(result, limit=bound.request.limit, vocabulary=vocabulary)
     if tokens != path.response:
