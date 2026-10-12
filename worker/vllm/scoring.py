@@ -4,12 +4,12 @@ from functools import partial
 import hashlib
 import sys
 
-from worker import core, probeoutput, registry
+from worker import core, probeoutput, registry, resident
 from worker.distribution import FP32_BYTES, PROBE_FORMAT
 from worker.hf.metrics import measure
 from worker.hf.operation import verify
 from worker.invocation import approve, request as request_value
-from worker.resident import Transcript
+from worker.resident import Owner, Transcript
 from worker.probeschema import NATIVE_CACHE, NATIVE_PATH, VLLM_ENGINE, native_relation
 from worker.scoring import decode, provenance
 from worker.vllm import entry
@@ -108,8 +108,6 @@ def execute(runtime, envelope, *, incoming, transcript, measured, emit, measurem
 def run(options, *, engine_factory=entry.factory, source=None, output=None):
     incoming = sys.stdin if source is None else source
     transcript = Transcript(sys.stdout if output is None else output)
-    envelope = core.decode(incoming.readline())
-    call, _, _ = decode(envelope)
     measurements = []
 
     def emit(stage, values):
@@ -118,13 +116,45 @@ def run(options, *, engine_factory=entry.factory, source=None, output=None):
 
     with redirect_stdout(sys.stderr), ExitStack() as stack:
         loader, _, _ = entry.components(options, stack, emit=emit, engine_factory=engine_factory)
+        if options.session is not None:
+            serve(Owner(role="teacher", session=options.session), options, loader=loader, source=incoming,
+                  transcript=transcript, emit=emit, measurements=measurements)
+            return
+        envelope = core.decode(incoming.readline())
+        call, _, _ = decode(envelope)
         runtime = loader(options.cache, options.adapter, expected=call.identities)
         execute(runtime, envelope, incoming=incoming, transcript=transcript,
                 measured=partial(measure, emit=emit), emit=emit, measurements=measurements)
 
 
+def serve(owner, options, *, loader, source, transcript, emit, measurements):
+    from worker.vllm.residency import release
+
+    runtime = None
+    history = resident.History()
+    while True:
+        value = resident.decode(source.readline())
+        if isinstance(value, dict) and value.get("format") == resident.FORMAT:
+            resident.closing(owner, value)
+            resident.close(owner, history.groups, source=source, transcript=transcript, operation=lambda: None, measure=measure)
+            return
+        call, _, _ = decode(value)
+        following = history.advance((call,))
+        transcript.begin()
+        measurements.clear()
+        if runtime is None:
+            runtime = loader(options.cache, options.adapter, expected=call.identities)
+        execute(runtime, value, incoming=source, transcript=transcript,
+                measured=partial(measure, emit=emit), emit=emit, measurements=measurements)
+        resident.release(owner, (call.load,), source=source, transcript=transcript,
+                         operation=partial(release, runtime), measure=measure)
+        history = following
+
+
 def main():
-    run(entry.batch_arguments(__doc__))
+    parser = entry.batch_parser(__doc__)
+    parser.add_argument("--session", type=int)
+    run(parser.parse_args())
 
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@ import torch
 
 from worker.vllm.identity import attributes, base, canonical, digest, kind
 from worker.vllm.lora import TRANSFORM
+from worker.vllm.mapping import UNADAPTED
 from worker.vllm.quantization import observe as quantization
 
 CONFIGURATION_FIELDS = {
@@ -39,11 +40,11 @@ MODULE_FIELDS = ("eps", "epsilon", "variance_epsilon", "hidden_size", "intermedi
 METHOD_FIELDS = ("forward", "_forward_method", "forward_qkv", "forward_core", "apply", "sample")
 NUMERICAL = {
     "worker.vllm.configuration": "engine arguments and runtime configuration",
-    "worker.vllm.runtime": "engine load, adapter slot selection and reference scoring",
+    "worker.vllm.runtime": "engine load, adapter slot selection, base selection and reference scoring",
     "worker.vllm.residency": "policy activation under a fresh adapter ID in a resident engine",
     "worker.vllm.worker": "adapter preparation inside the engine worker",
     "worker.vllm.lora": "LoRA tensor transform and activation",
-    "worker.vllm.mapping": "LoRA row selection and kernel mapping",
+    "worker.vllm.mapping": "request row selection with or without LoRA, and LoRA kernel mapping",
     "worker.vllm.quantization": "BitsAndBytes consumers and the loaded CUDA library",
     "worker.vllm.gdn": "gated delta network kernel installation",
     "worker.vllm.recurrence": "recurrent state update",
@@ -109,7 +110,7 @@ NEUTRAL = {
 UNREACHED = {
     name: "Hugging Face inference path, imported only inside the Hugging Face entry functions of hf/infer and hf/operation"
     for name in ("hf/inference.py", "hf/model.py", "hf/rollout.py", "hf/decoding.py", "hf/backend.py",
-                 "hf/assembly.py", "implementation.py")
+                 "hf/assembly.py", "hf/score.py", "roles.py", "implementation.py")
 }
 
 
@@ -180,16 +181,16 @@ def declared_sources(names):
     return {name: import_module(name) for name in names}
 
 
-def description(runner, native):
+def description(runner, model, adapters):
     sources = declared_sources(NUMERICAL)
     result = {"format": "invar-native-assembly-v2", "configuration": configuration(runner),
-              "numerical": numerical(), "modules": modules(native.model, sources),
-              "quantization": quantization(native.model),
+              "numerical": numerical(), "modules": modules(model, sources),
+              "quantization": quantization(model),
               "sampler": component(runner.sampler, sources),
               "lora_buffers": {name: {factor: [{"dtype": str(value.dtype), "shape": list(value.shape)}
                                                for value in getattr(module, factor)]
                                       for factor in ("lora_a_stacked", "lora_b_stacked")}
-                               for name, module in native.modules.items()}}
+                               for name, module in adapters.items()}}
     result["sources"] = {name: hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest()
                          for name, module in sources.items()}
     return result
@@ -202,7 +203,7 @@ def transformed(package, targets):
 
 def inspection(runner, native, *, policies):
     frozen = base(native.model)
-    assembled = description(runner, native)
+    assembled = description(runner, native.model, native.modules)
     result = []
     for adapter_id, (package, targets) in policies.items():
         result.append(Loaded(adapter_id=adapter_id, base=frozen,
@@ -212,4 +213,15 @@ def inspection(runner, native, *, policies):
 
 def observe(runner, native, *, policies):
     models, _ = inspection(runner, native, policies=policies)
+    return models
+
+
+def bare(runner, model):
+    assembled = description(runner, model, {})
+    loaded = Loaded(adapter_id=UNADAPTED, base=base(model), assembly=digest({"native": assembled, "policy": None}))
+    return (loaded,), assembled
+
+
+def observe_bare(runner, model):
+    models, _ = bare(runner, model)
     return models

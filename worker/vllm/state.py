@@ -11,7 +11,7 @@ from vllm.model_executor.layers.logits_processor import LogitsProcessor
 from worker.trajectory import Request
 from worker.hf.tensors import assert_equal
 from worker.vllm.context import response_history
-from worker.vllm.mapping import Selection, observe
+from worker.vllm.mapping import Selection
 from worker.vllm.prescribed import Prescribed
 from worker.vllm.rollout import parameters
 
@@ -113,13 +113,6 @@ def after_sampler(module, args, output, *, monitor):
     monitor.after_sampler(output)
 
 
-def approved_policies(bindings):
-    policies = {value.selection.adapter: value.receipt for value in bindings}
-    if any(policies[value.selection.adapter] != value.receipt for value in bindings):
-        raise ValueError("One native adapter ID cannot bind different approved packages")
-    return MappingProxyType(policies)
-
-
 def prescribed_paths(bindings, paths, probes):
     if paths is None:
         if probes is not None:
@@ -135,8 +128,8 @@ def probe_measurement(probes, resources):
 
 
 class Monitor:
-    def __init__(self, runner, native, *, bindings, verify, observe_model, models=None, paths=None, probes=None, probe_resources=None):
-        self.runner, self.native, self.verify = runner, native, verify
+    def __init__(self, runner, routing, *, bindings, observe_model, models=None, paths=None, probes=None, probe_resources=None):
+        self.runner, self.routing = runner, routing
         self.observe_model = observe_model
         self.bindings = MappingProxyType({value.internal: value for value in bindings})
         if not self.bindings or len(self.bindings) != len(bindings):
@@ -144,7 +137,6 @@ class Monitor:
         self.prescribed = prescribed_paths(self.bindings, paths, probes)
         self.resources = probe_measurement(probes, probe_resources)
         self.selections = MappingProxyType({key: value.selection for key, value in self.bindings.items()})
-        self.policies = approved_policies(bindings)
         self.tokens = {key: [] for key in self.bindings}
         self.behavior = {key: [] for key in self.bindings}
         self.generators_seen = set()
@@ -156,12 +148,8 @@ class Monitor:
         self.logits_finished = False
         self.permitted = False
         self.hooks = ExitStack()
-        self.resident = self.verify_policies()
+        self.resident = routing.resident()
         self.models = self.observe_model() if models is None else models
-        self.slot_layout = tuple(native.lora_index_to_id)
-
-    def verify_policies(self):
-        return tuple(self.verify(receipt=receipt, adapter_id=adapter) for adapter, receipt in self.policies.items())
 
     def verify_model(self):
         if self.observe_model() != self.models:
@@ -170,7 +158,7 @@ class Monitor:
     def allow(self):
         if self.permitted:
             raise RuntimeError("Native execution permission was already consumed")
-        self.verify_policies()
+        self.routing.resident()
         if self.resources is not None:
             self.resources.start()
         self.permitted = True
@@ -179,7 +167,7 @@ class Monitor:
         with ExitStack() as hooks:
             if self.prescribed is not None:
                 self.prescribed.attach(self, hooks)
-            processors = [module for module in self.native.model.modules() if isinstance(module, LogitsProcessor)]
+            processors = [module for module in self.routing.model.modules() if isinstance(module, LogitsProcessor)]
             if len(processors) != 1:
                 raise ValueError("Native model must expose one actual logits row consumer")
             handle = processors[0].register_forward_pre_hook(partial(before_logits, monitor=self), with_kwargs=True)
@@ -201,11 +189,7 @@ class Monitor:
             raise RuntimeError("Native model execution overlaps another owned step")
         if arguments["input_ids"] is None or arguments.get("inputs_embeds") is not None:
             raise ValueError("Approved native text requests require their actual token IDs")
-        layout = tuple(self.native.lora_index_to_id)
-        if layout != self.slot_layout:
-            self.verify_policies()
-            self.slot_layout = layout
-        rows = observe(self.runner, self.native, expected=self.selections, token_count=arguments["input_ids"].numel())
+        rows = self.routing.rows(self.selections, token_count=arguments["input_ids"].numel())
         step = Step(rows=rows, model_tokens=arguments["input_ids"].numel(),
                     logits_indices=tuple(end - 1 for end in accumulate(row.tokens for row in rows)))
         self.sampling_requests = model_inputs(self.runner, step, bindings=self.bindings,
@@ -272,7 +256,7 @@ class Monitor:
         if self.prescribed is not None:
             self.prescribed.completed(self.tokens)
         resources = self.resources.finish() if self.resources is not None else None
-        self.verify_policies()
+        self.routing.resident()
         self.verify_model()
         return resources
 

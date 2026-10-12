@@ -6,10 +6,19 @@ import torch
 
 from worker.hf.artifact import read, read_checkpoint
 from worker.vllm.lora import Target, activate, verify
+from worker.vllm.mapping import Adapted, Unadapted, unadapted
 from worker.vllm.rollout import LOGPROBS_MODE
 from worker.vllm.resources import Interval
 
 REFERENCE_ID = 1 << 30
+
+
+def processed(worker):
+    runner = worker.model_runner
+    modes = (worker.model_config.logprobs_mode, runner.sampler.logprobs_mode,
+             runner.sampler.topk_topp_sampler.logprobs_mode)
+    if any(mode != LOGPROBS_MODE for mode in modes):
+        raise ValueError("Native worker must sample with processed behavior log probabilities")
 
 
 def manager(worker):
@@ -17,10 +26,7 @@ def manager(worker):
     native = runner.lora_manager._adapter_manager
     if runner.get_model() is not native.model:
         raise ValueError("Native runner and LoRA manager do not own the same model")
-    modes = (worker.model_config.logprobs_mode, runner.sampler.logprobs_mode,
-             runner.sampler.topk_topp_sampler.logprobs_mode)
-    if any(mode != LOGPROBS_MODE for mode in modes):
-        raise ValueError("Native worker must sample with processed behavior log probabilities")
+    processed(worker)
     return native
 
 
@@ -65,20 +71,38 @@ def identified(worker, *, receipt, adapter_id):
     return {"resident": resident, "model": asdict(model), "source": dict(policy[0].source), "profile": profile}
 
 
+def identified_unadapted(worker):
+    from worker.vllm.profile import bare
+
+    processed(worker)
+    models, profile = bare(worker.model_runner, unadapted(worker.model_runner))
+    model, = models
+    worker._invar_observed = (frozenset(), models)
+    return {"model": asdict(model), "profile": profile}
+
+
 def begin(worker, *, bindings, paths=None, probes=None):
     from worker.vllm.state import Monitor, binding
-    from worker.vllm.profile import observe
+    from worker.vllm.profile import observe, observe_bare
 
     if getattr(worker, "_invar_execution", None) is not None:
         raise RuntimeError("Native worker already owns an execution")
-    native = manager(worker)
-    selected = {value["selection"]["adapter"] for value in bindings}
-    policies = {key: value for key, value in worker._invar_lora_bindings.items() if key in selected}
+    runner = worker.model_runner
+    bound = tuple(binding(value) for value in bindings)
+    if runner.lora_config is None:
+        processed(worker)
+        routing = Unadapted(runner)
+        policies = {}
+        observe_model = partial(observe_bare, runner, routing.model)
+    else:
+        native = manager(worker)
+        routing = Adapted(runner, native, bindings=bound, verify=partial(consumed, worker))
+        policies = {key: value for key, value in worker._invar_lora_bindings.items() if key in routing.policies}
+        observe_model = partial(observe, runner, native, policies=policies)
     observed = getattr(worker, "_invar_observed", None)
-    monitor = Monitor(worker.model_runner, native, bindings=tuple(binding(value) for value in bindings),
-                      verify=partial(consumed, worker), paths=paths, probes=probes,
-                      probe_resources=None if probes is None else Interval(torch.cuda, device=worker.model_runner.device),
-                      observe_model=partial(observe, worker.model_runner, native, policies=policies),
+    monitor = Monitor(runner, routing, bindings=bound, paths=paths, probes=probes,
+                      probe_resources=None if probes is None else Interval(torch.cuda, device=runner.device),
+                      observe_model=observe_model,
                       models=observed[1] if observed is not None and observed[0] == frozenset(policies) else None)
     monitor.attach()
     worker._invar_execution = monitor
