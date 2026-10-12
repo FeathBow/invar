@@ -2,19 +2,22 @@
 
 module Teachers (teachers) where
 
-import Calls (request, wire)
+import Calls (change, request, wire)
 import Control.Monad (void)
-import Data.Aeson (Value (..), eitherDecodeStrict)
+import Data.Aeson (Value (..), eitherDecodeStrict, toJSON)
 import Data.Aeson.KeyMap qualified as Fields
+import Data.Word (Word32)
 import Hedgehog
 import InferenceObservations qualified as Source
 import Invar.Infer qualified as Infer
 import Invar.Infer.Observation qualified as Inference
+import Invar.Learn qualified as L
 import Invar.Learn.Algorithm qualified as Algorithm
 import Invar.Policy qualified as Policy
 import Invar.Score qualified as Score
 import Invar.Spec.Invocation qualified as V
 import Invar.Teacher qualified as Teacher
+import Scores qualified
 
 teachers :: Group
 teachers =
@@ -23,6 +26,8 @@ teachers =
         [ ("a teacher declaration scores the student's path under the teacher's materialization, bound to the teacher's model description", once scored)
         , ("a teacher with another temperature cannot score the path", once refused)
         , ("preparing a teacher's score applies the teacher rule to its declaration", once ruled)
+        , ("a teacher reading admits only finite nonpositive teacher words and keeps its score's call", once supported)
+        , ("the joined result of a distillation sample covers its trajectory, the teacher's call and every teacher word", once joined)
         ]
   where
     once = withTests 1 . property
@@ -63,3 +68,20 @@ ruled = do
     let declared = teacher {Algorithm.teacherLogprobs = "raw"}
     expected <- either pure (const failure) (Algorithm.teacher (Infer.tokenizer request) declared)
     void (Teacher.prepare declared path) === Left expected
+
+supported :: PropertyT IO ()
+supported = do
+    original <- Source.fixture
+    (call, events) <- Scores.fixtureFor original request
+    let report encoded = evalEither (Score.admit call 0 (wire (Scores.changeObservation (change "log_probability_bits" (toJSON (encoded :: [Word32]))) events)))
+    finite <- report [0xbf000000, 0xbe800000]
+    Teacher.reading finite === Right (L.Reading (Score.binding call) [0xbf000000, 0xbe800000])
+    unsupported <- report [0xbf000000, 0xff800000]
+    Teacher.reading unsupported === Left "Every teacher word must be a finite nonpositive FP32 log probability"
+
+joined :: PropertyT IO ()
+joined = do
+    let reading = L.Reading (V.Binding (V.CallId 30) (V.AttemptId 31) (V.Instance 32)) [0xbf000000, 0xbe800000]
+        trajectory = replicate 64 'a'
+        result = Teacher.joined trajectory reading
+    assert (result `notElem` [Teacher.joined (replicate 64 'b') reading, Teacher.joined trajectory reading {L.readingCall = V.Binding (V.CallId 30) (V.AttemptId 31) (V.Instance 33)}, Teacher.joined trajectory reading {L.readingWords = [0xbf000000, 0xbe800001]}, Teacher.joined trajectory reading {L.readingWords = [0xbf000000]}])

@@ -14,7 +14,9 @@ import Data.Text qualified as Text
 import Dataset qualified
 import GHC.Clock (getMonotonicTime)
 import InferenceInput qualified
+import Invar.Cohort qualified as Cohort
 import Invar.Learn qualified as Learn
+import Invar.Learn.Algorithm qualified as Algorithm
 import Invar.Learn.Protocol qualified as Protocol
 import Invar.Learn.Stream qualified as Stream
 import Invar.Learn.Worker qualified as Worker
@@ -23,6 +25,7 @@ import Invar.Rollout qualified as Rollout
 import Invar.Runtime qualified as Runtime
 import Invar.Spec.Invocation qualified as V
 import Invar.Store qualified as Store
+import Invar.Worker qualified as Infer
 import Invar.Workload qualified as Workload
 import Numeric.Natural (Natural)
 import Options qualified as O
@@ -39,11 +42,16 @@ run supplied = do
             | otherwise -> die "--resume takes no other option; the run declaration supplies them"
         Nothing -> do
             (config, chosen) <- either die pure (routed fields)
-            case chosen of
-                Concurrent lag -> do
+            case (chosen, Learn.algorithm (Loop.settings config)) of
+                (Concurrent lag, Learn.Grpo _) -> do
                     document <- Bytes.getContents >>= either die pure . Workload.decode
                     Runtime.run (Runtime.Run config lag document) (toJSON supplied) >>= either (die . show) pure
-                Lockstep -> do
+                (Concurrent lag, Learn.Opd _) -> do
+                    teacher <- either die pure (teacherWorker fields)
+                    document <- Bytes.getContents >>= either die pure . Workload.decodeOf @Cohort.Ungraded
+                    Runtime.distill teacher (Runtime.Run config lag document) (toJSON supplied) >>= either (die . show) pure
+                (Lockstep, Learn.Opd _) -> die "A distillation run goes through the event runtime, which shared execution enters with --staleness"
+                (Lockstep, Learn.Grpo _) -> do
                     let selected = selection (Loop.settings config)
                     encoded <- Bytes.getContents
                     cycles <- either die pure (Dataset.decode selected encoded)
@@ -110,7 +118,24 @@ report generated = Lazy.putStrLn (encode (object ["phase" .= ("published" :: Str
 configure :: O.Fields -> Either String Loop.Config
 configure fields = do
     backend <- Loop.Backend <$> string "python" <*> string "inference-python" <*> string "inference" <*> pure (O.optional fields "inference-config") <*> InferenceInput.mode (O.optional fields "inference-mode") <*> string "learning" <*> learningMode (O.optional fields "learning-mode") <*> string "cache" <*> Dataset.sessions (O.optional fields "devices")
-    Loop.Config backend <$> string "output" <*> string "checkpoint" <*> string "reference" <*> settings fields <*> publication fields
+    Loop.Config backend <$> string "output" <*> string "checkpoint" <*> string "reference" <*> (algorithm fields >>= (`settingsWith` fields)) <*> publication fields
+  where
+    string = O.required fields
+
+algorithm :: O.Fields -> Either String Learn.Algorithm
+algorithm fields = case O.optional fields "algorithm" of
+    Just "opd" -> do
+        when (isJust (O.optional fields "delta")) (Left "--delta applies to grpo")
+        Learn.Opd <$> (Algorithm.Teacher <$> string "teacher-model" <*> string "teacher-revision" <*> string "teacher-digest" <*> string "tokenizer-digest" <*> string "teacher-base-digest" <*> string "teacher-assembly-digest" <*> string "teacher-profile-digest" <*> O.numeric fields "teacher-temperature" <*> pure "none" <*> pure "processed" <*> pure "forced")
+    selected
+        | selected `notElem` [Nothing, Just "grpo"] -> Left "Invalid algorithm: expected grpo or opd"
+        | any (isJust . O.optional fields) teacherNames -> Left "The teacher options apply to opd"
+        | otherwise -> Learn.Grpo <$> O.numeric fields "delta"
+  where
+    string = O.required fields
+
+teacherWorker :: O.Fields -> Either String Infer.Worker
+teacherWorker fields = Infer.Worker <$> string "inference-python" <*> string "teacher" <*> string "cache" <*> string "teacher-adapter" <*> pure [] <*> pure (O.optional fields "teacher-config")
   where
     string = O.required fields
 
@@ -130,10 +155,13 @@ publication fields = do
         _ -> Left "Invalid publication method: expected rename or reference"
 
 settings :: O.Fields -> Either String Learn.Settings
-settings fields = do
+settings fields = O.numeric fields "delta" >>= (`settingsWith` fields) . Learn.Grpo
+
+settingsWith :: Learn.Algorithm -> O.Fields -> Either String Learn.Settings
+settingsWith chosen fields = do
     optimizer <- Learn.Optimizer <$> number "rate" <*> number "beta1" <*> number "beta2" <*> number "optimizer-epsilon" <*> number "decay"
     current <- string "policy"
-    Learn.Settings current <$> string "learner" <*> string "reference-digest" <*> string "tokenizer-digest" <*> string "base-digest" <*> string "assembly-digest" <*> string "behavior-base-digest" <*> string "behavior-assembly-digest" <*> number "clip" <*> number "penalty" <*> (Learn.Grpo <$> number "delta") <*> maybe (pure 1) (const (O.numeric fields "steps")) (O.optional fields "steps") <*> pure optimizer <*> pure (Learn.synchronous 0 current) <*> referenceSource fields
+    Learn.Settings current <$> string "learner" <*> string "reference-digest" <*> string "tokenizer-digest" <*> string "base-digest" <*> string "assembly-digest" <*> string "behavior-base-digest" <*> string "behavior-assembly-digest" <*> number "clip" <*> number "penalty" <*> pure chosen <*> maybe (pure 1) (const (O.numeric fields "steps")) (O.optional fields "steps") <*> pure optimizer <*> pure (Learn.synchronous 0 current) <*> referenceSource fields
   where
     string = O.required fields
     number = O.numeric fields
@@ -144,10 +172,27 @@ referenceSource fields = case O.optional fields "reference-source" of
     Just named -> maybe (Left "Invalid reference source: expected engine or learner") Right (Stream.readSource (Text.pack named))
 
 usage :: String
-usage = usageInfo "Usage: invar train OPTIONS < tasks.json\nAll options except --devices, --inference-config, --inference-mode, --learning-mode, --steps, --staleness and --reference-source are required. Input is a nonempty JSON array of declared cycles.\nUsage: invar train --resume DIRECTORY\nResume an interrupted run of the event runtime from the journal in its output directory, which supplies every other option and the workload." options
+usage = usageInfo "Usage: invar train OPTIONS < tasks.json\nAll options except --devices, --inference-config, --inference-mode, --learning-mode, --steps, --staleness, --reference-source, --algorithm and the teacher options are required; opd takes the teacher options in place of --delta. Input is a nonempty JSON array of declared cycles.\nUsage: invar train --resume DIRECTORY\nResume an interrupted run of the event runtime from the journal in its output directory, which supplies every other option and the workload." options
 
 options :: [OptDescr (String, String)]
-options = O.descriptions [("publication", "Checkpoint publication: rename or reference"), ("devices", "Optional comma-separated CUDA devices, one rollout worker process per device"), ("python", "Learning Python executable"), ("inference-python", "Inference Python executable"), ("inference", "Inference worker script"), ("inference-config", "Optional inference worker launch configuration"), ("inference-mode", "Inference execution: serial (default), batch, resident or shared"), ("learning", "Update worker script"), ("learning-mode", "Learning execution: process (default), resident or shared; shared requires both roles"), ("cache", "Pinned model cache"), ("output", "New output directory"), ("checkpoint", "Initial paired checkpoint directory"), ("reference", "Fixed reference adapter file"), ("staleness", "Optional staleness d, 0 when omitted: update u learns from rollouts of version max(0, u - d) while later rollouts may run. Every run goes through the event runtime except shared inference and learning without this option, which runs the lockstep loop; shared execution runs only with d = 0"), ("resume", "Output directory of an interrupted run of the event runtime; it takes no other option")] ++ settingsOptions
+options = O.descriptions [("publication", "Checkpoint publication: rename or reference"), ("devices", "Optional comma-separated CUDA devices, one rollout worker process per device"), ("python", "Learning Python executable"), ("inference-python", "Inference Python executable"), ("inference", "Inference worker script"), ("inference-config", "Optional inference worker launch configuration"), ("inference-mode", "Inference execution: serial (default), batch, resident or shared"), ("learning", "Update worker script"), ("learning-mode", "Learning execution: process (default), resident or shared; shared requires both roles"), ("cache", "Pinned model cache"), ("output", "New output directory"), ("checkpoint", "Initial paired checkpoint directory"), ("reference", "Fixed reference adapter file"), ("staleness", "Optional staleness d, 0 when omitted: update u learns from rollouts of version max(0, u - d) while later rollouts may run. Every run goes through the event runtime except shared inference and learning without this option, which runs the lockstep loop; shared execution runs only with d = 0"), ("resume", "Output directory of an interrupted run of the event runtime; it takes no other option"), ("algorithm", "Learning algorithm: grpo (default), or opd, which reads a workload without answers or groups and needs every teacher option except the optional --teacher-config")] ++ O.descriptions teacherOptions ++ settingsOptions
+
+teacherOptions :: [(String, String)]
+teacherOptions =
+    [ ("teacher", "Distillation teacher score worker script, run with --inference-python and --cache")
+    , ("teacher-adapter", "Teacher adapter file; a file with no tensors loads the teacher's base alone")
+    , ("teacher-config", "Optional teacher worker configuration")
+    , ("teacher-model", "Teacher model name")
+    , ("teacher-revision", "Teacher model revision")
+    , ("teacher-digest", "Teacher canonical adapter tensor SHA-256")
+    , ("teacher-base-digest", "Teacher frozen model tensor SHA-256")
+    , ("teacher-assembly-digest", "Teacher model assembly SHA-256")
+    , ("teacher-profile-digest", "Teacher numerical profile SHA-256")
+    , ("teacher-temperature", "Temperature the teacher scores at; every task must be sampled at it")
+    ]
+
+teacherNames :: [String]
+teacherNames = map fst teacherOptions
 
 settingsOptions :: [OptDescr (String, String)]
 settingsOptions = O.descriptions [("policy", "Consumed canonical policy tensor SHA-256"), ("tokenizer-digest", "Tokenizer operation SHA-256"), ("base-digest", "Learner frozen model tensor SHA-256"), ("assembly-digest", "Learner model assembly SHA-256"), ("behavior-base-digest", "Actual rollout frozen model SHA-256"), ("behavior-assembly-digest", "Actual rollout model assembly SHA-256"), ("learner", "Consumed learner file SHA-256"), ("reference-digest", "Canonical reference tensor SHA-256"), ("clip", "GRPO clipping coefficient"), ("penalty", "Reference penalty coefficient"), ("delta", "Advantage normalization epsilon"), ("steps", "Optional number of optimizer steps per update over consecutive mini-batches of the logical order (default 1)"), ("rate", "AdamW learning rate"), ("beta1", "AdamW first moment coefficient"), ("beta2", "AdamW second moment coefficient"), ("optimizer-epsilon", "AdamW epsilon"), ("decay", "AdamW weight decay"), ("reference-source", "Source of the objective's reference words: engine (default) or learner")]

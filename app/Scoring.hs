@@ -13,6 +13,7 @@ import Invar.Infer.Replay qualified as Replay
 import Invar.Infer.Session qualified as Session
 import Invar.Score qualified as Score
 import Invar.Score.Worker qualified as Execution
+import Invar.Transcript qualified as Transcript
 import Invar.Worker qualified as Worker
 import NativeCodec qualified
 import Options qualified as O
@@ -42,7 +43,7 @@ run supplied = do
     cache <- either die pure (O.required fields "cache")
     adapter <- either die pure (O.required fields "adapter")
     let worker = Worker.Worker python script cache adapter [] (O.optional fields "worker-config")
-    Execution.run worker call >>= either (die . show) (const (pure ()))
+    Execution.run worker Transcript.standard call >>= either (die . show) (const (pure ()))
 
 prepare :: O.Fields -> IO Score.Call
 prepare fields = do

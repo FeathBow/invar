@@ -11,13 +11,13 @@ import System.Exit (ExitCode)
 data Failure = WorkerExit ExitCode | InvalidOutput Score.Error | ProtocolFailure String
     deriving (Eq, Show)
 
-run :: Worker.Worker -> Score.Call -> IO (Either Failure Score.Report)
-run worker call = do
+run :: Worker.Worker -> Transcript.Transcript -> Score.Call -> IO (Either Failure Score.Report)
+run worker transcript call = do
     slot <- newIORef Nothing
     let arguments =
             [Worker.script worker, "--cache=" ++ Worker.cache worker, "--adapter=" ++ Worker.adapter worker]
                 ++ maybe [] (\path -> ["--config=" ++ path]) (Worker.configuration worker)
-        command = Process.Command (Worker.executable worker) arguments (Worker.environment worker) (Score.input call) Transcript.standard
+        command = Process.Command (Worker.executable worker) arguments (Worker.environment worker) (Score.input call) transcript
         authorize bytes = do
             previous <- readIORef slot
             case previous of

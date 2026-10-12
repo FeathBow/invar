@@ -1,6 +1,7 @@
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Runtime (Error (..), Run (..), run, resume, interpret, declaration, recovering) where
+module Invar.Runtime (Error (..), RunOf (..), Run, run, distill, resume, interpret, declaration, recovering) where
 
 import Control.Concurrent (forkFinally, killThread)
 import Control.Concurrent.Chan (Chan, newChan, readChan, writeChan)
@@ -28,9 +29,12 @@ import Invar.Async.Plan qualified as Plan
 import Invar.Async.Recorded qualified as Recorded
 import Invar.Async.Replay qualified as Replay
 import Invar.Cohort qualified as C
+import Invar.Infer.Observation qualified as Inference
+import Invar.Infer.Trajectory (Trajectory)
 import Invar.Infer.Trajectory qualified as Trajectory
 import Invar.Journal qualified as Journal
 import Invar.Learn qualified as L
+import Invar.Learn.Algorithm qualified as Algorithm
 import Invar.Learn.Protocol qualified as P
 import Invar.Learn.Stream qualified as S
 import Invar.Learn.Worker qualified as W
@@ -42,8 +46,11 @@ import Invar.Loop.Owner qualified as Joint
 import Invar.Policy qualified as Policy
 import Invar.Rollout qualified as R
 import Invar.Rollout.Internal qualified as Internal
+import Invar.Score qualified as Score
+import Invar.Score.Worker qualified as Scoring
 import Invar.Spec.Invocation qualified as V
 import Invar.Store qualified as Store
+import Invar.Teacher qualified as Teacher
 import Invar.Transcript qualified as Transcript
 import Invar.Worker qualified as Worker
 import Invar.Workload qualified as Workload
@@ -52,10 +59,16 @@ import System.Directory (canonicalizePath, createDirectory, getCurrentDirectory,
 import System.FilePath ((</>))
 import System.IO.Error (tryIOError)
 
-data Error = Declaration String | Recovery String | Rollout R.Error | Admission L.Error | Learning W.Failure | Unresolved Natural Error | Crashed String
+data Error = Declaration String | Recovery String | Rollout R.Error | Admission L.Error | Learning W.Failure | Teaching String | Unresolved Natural Error | Crashed String
     deriving (Show)
 
-data Run = Run Loop.Config Natural Workload.Document
+data RunOf grade = Run Loop.Config Natural (Workload.DocumentOf grade)
+
+type Run = RunOf C.Graded
+
+data Learning grade where
+    Grouping :: Learning C.Graded
+    Distilling :: Worker.Worker -> Algorithm.Teacher -> MVar (Map Natural (Map String L.Reading)) -> Learning C.Ungraded
 
 data Published = Published Loop.Checkpoint Policy.Description
 
@@ -63,16 +76,16 @@ data Origin = Origin Core.State [Command] (Map Natural Published) Natural Natura
 
 data Resumed = Resumed FilePath Run Plan.Plan [Entry.Generation] Origin
 
-data Shared scope = Shared
+data Shared scope grade = Shared
     { config :: Loop.Config
     , staleness :: Natural
     , plan :: Plan.Plan
-    , cycles :: [String -> Either String Loop.Cycle]
+    , cycles :: [String -> Either String (Loop.CycleOf grade)]
     , offsets :: [Natural]
     , recorder :: Recorder
     , core :: MVar Core.State
     , published :: MVar (Map Natural Published)
-    , batches :: MVar (Map Natural (MVar (R.Batch scope)))
+    , batches :: MVar (Map Natural (MVar (R.BatchOf scope grade)))
     , pending :: MVar (Map Natural [Request])
     , cohorts :: Chan (Natural, Natural)
     , updates :: Chan (Natural, Attempt)
@@ -80,6 +93,7 @@ data Shared scope = Shared
     , invoked :: MVar (Maybe Natural)
     , driver :: R.Driver scope
     , runner :: Owner.Runner
+    , learning :: Learning grade
     }
 
 data Recorder = Recorder
@@ -93,8 +107,16 @@ data Recorder = Recorder
     }
 
 run :: Run -> Value -> IO (Either Error ())
-run selected@(Run chosen _ document) arguments = do
-    prepared <- prepare selected
+run = launch Grouping
+
+distill :: Worker.Worker -> RunOf C.Ungraded -> Value -> IO (Either Error ())
+distill worker selected@(Run chosen _ _) arguments = case L.algorithm (Loop.settings chosen) of
+    L.Opd teacher -> newMVar Map.empty >>= \readings -> launch (Distilling worker teacher readings) selected arguments
+    L.Grpo _ -> pure (Left (Declaration "A distillation run needs distillation settings"))
+
+launch :: (C.Grade grade) => Learning grade -> RunOf grade -> Value -> IO (Either Error ())
+launch learned selected@(Run chosen _ document) arguments = do
+    prepared <- prepare learned selected
     case prepared of
         Left problem -> pure (Left problem)
         Right (planned, initial) -> do
@@ -103,7 +125,7 @@ run selected@(Run chosen _ document) arguments = do
             createDirectory (Loop.root chosen </> "transcripts")
             Journal.with (Loop.root chosen </> "journal.jsonl") (Entry.encode (Entry.Declared started (Fields.fromList ["arguments" .= arguments, "workload" .= Workload.value document]))) $ \recorded -> do
                 let (state, commands) = Core.start planned
-                begin selected planned (Origin state commands (Map.singleton 0 initial) 0 0 0) recorded
+                begin learned selected planned (Origin state commands (Map.singleton 0 initial) 0 0 0) recorded
 
 resume :: FilePath -> (Value -> Either String (Loop.Config, Natural)) -> IO (Either Error ())
 resume directory interpreter = do
@@ -130,11 +152,14 @@ admit target interpreter recorded = case traverse (parseEither Entry.decode) rec
 interpret :: FilePath -> (Value -> Either String (Loop.Config, Natural)) -> Object -> IO (Either Error Run)
 interpret target interpreter declared = case parseEither (\fields -> (,) <$> fields .: "arguments" <*> fields .: "workload") declared of
     Left problem -> pure (Left (Declaration problem))
-    Right (arguments, workload) -> case (,) <$> interpreter arguments <*> Workload.decode (Lazy.toStrict (encode (workload :: Value))) of
+    Right (arguments, workload) -> case interpreter arguments of
         Left problem -> pure (Left (Declaration problem))
-        Right ((chosen, lag), document) -> do
-            same <- (== target) <$> canonicalizePath (Loop.root chosen)
-            pure (if same then Right (Run chosen lag document) else Left (Declaration "The declared output directory is not the run's directory"))
+        Right (chosen, _) | L.Opd _ <- L.algorithm (Loop.settings chosen) -> pure (Left (Declaration "A distillation run is not resumed or inspected from its journal"))
+        Right (chosen, lag) -> case Workload.decode (Lazy.toStrict (encode (workload :: Value))) of
+            Left problem -> pure (Left (Declaration problem))
+            Right document -> do
+                same <- (== target) <$> canonicalizePath (Loop.root chosen)
+                pure (if same then Right (Run chosen lag document) else Left (Declaration "The declared output directory is not the run's directory"))
 
 origin :: Loop.Config -> Replay.Replayed -> [Command] -> Origin
 origin chosen replayed commands = Origin (Replay.state replayed) commands versions (Replay.epoch floors) (Replay.identity floors) (Replay.numbered floors)
@@ -148,22 +173,23 @@ proceed (Resumed started selected planned observed restarted@(Origin state _ _ _
     withCurrentDirectory started $ do
         Journal.append recorded (Entry.encode (Entry.Restarted observed))
         announce (object ["phase" .= ("resumed" :: String), "committed" .= [update | Update update <- Core.committed state]])
-        if Core.committed state == Plan.updates planned then pure (Right ()) else begin selected planned restarted recorded
+        if Core.committed state == Plan.updates planned then pure (Right ()) else begin Grouping selected planned restarted recorded
 
 declaration :: Run -> IO (Either Error Replay.Declaration)
-declaration selected@(Run chosen lag _) = fmap (\(planned, Published _ description) -> Replay.Declaration chosen lag planned (instantiated selected) (scanl (+) 0 (counts selected)) description) <$> prepare selected
+declaration selected@(Run chosen lag _) = fmap (\(planned, Published _ description) -> Replay.Declaration chosen lag planned (instantiated selected) (scanl (+) 0 (counts selected)) description) <$> prepare Grouping selected
 
-instantiated :: Run -> [String -> Either String Loop.Cycle]
+instantiated :: (C.Grade grade) => RunOf grade -> [String -> Either String (Loop.CycleOf grade)]
 instantiated (Run chosen _ document) = [\policy -> Loop.instantiate (policy, L.tokenizer settings, L.behaviorBase settings, L.behaviorAssembly settings) declared | declared <- Workload.cycles document]
   where
     settings = Loop.settings chosen
 
-counts :: Run -> [Natural]
+counts :: RunOf grade -> [Natural]
 counts (Run _ _ document) = [genericLength (Workload.tasks declared) | declared <- Workload.cycles document]
 
-prepare :: Run -> IO (Either Error (Plan.Plan, Published))
-prepare selected@(Run chosen lag _)
-    | L.Opd _ <- L.algorithm (Loop.settings chosen) = pure (Left (Declaration "The run's workload and its learning settings name different algorithms"))
+prepare :: (C.Grade grade) => Learning grade -> RunOf grade -> IO (Either Error (Plan.Plan, Published))
+prepare learned selected@(Run chosen lag document)
+    | Left problem <- algorithmic learned (L.algorithm (Loop.settings chosen)) = pure (Left (Declaration problem))
+    | Distilling _ teacher _ <- learned, any (any ((/= Algorithm.teacherTemperature teacher) . Workload.temperature) . Workload.tasks) (Workload.cycles document) = pure (Left (Declaration "Every task must be sampled at the teacher's temperature"))
     | sharedInference /= sharedLearning = pure (Left (Declaration "Both numerical roles must explicitly select shared execution"))
     | sharedInference && lag > 0 = pure (Left (Declaration "Shared execution requires staleness zero"))
     | sharedInference, Left problem <- Joint.validate (sharing chosen) = pure (Left (Declaration problem))
@@ -183,14 +209,19 @@ prepare selected@(Run chosen lag _)
     sharedInference = Loop.inferenceMode (Loop.backend chosen) == R.Shared
     sharedLearning = Loop.learningMode (Loop.backend chosen) == W.Shared
 
+algorithmic :: Learning grade -> L.Algorithm -> Either String ()
+algorithmic Grouping (L.Grpo _) = Right ()
+algorithmic Distilling {} (L.Opd _) = Right ()
+algorithmic _ _ = Left "The run's workload and its learning settings name different algorithms"
+
 sharing :: Loop.Config -> (Worker.Worker, W.Worker, [[(String, String)]])
 sharing chosen = (Loop.inferenceWorker chosen initial, Loop.updateWorker chosen (initial, 0), Loop.sessions (Loop.backend chosen))
   where
     settings = Loop.settings chosen
     initial = Loop.Checkpoint (Loop.checkpoint chosen) (L.policy settings) (L.learner settings)
 
-begin :: Run -> Plan.Plan -> Origin -> Journal.Journal -> IO (Either Error ())
-begin selected@(Run chosen lag _) planned (Origin state commands versions next identities numbers) recorded = do
+begin :: (C.Grade grade) => Learning grade -> RunOf grade -> Plan.Plan -> Origin -> Journal.Journal -> IO (Either Error ())
+begin learned selected@(Run chosen lag _) planned (Origin state commands versions next identities numbers) recorded = do
     let settings = Loop.settings chosen
         engine = Loop.backend chosen
         initial = Loop.Checkpoint (Loop.checkpoint chosen) (L.policy settings) (L.learner settings)
@@ -200,6 +231,7 @@ begin selected@(Run chosen lag _) planned (Origin state commands versions next i
     owner <- newMVar Nothing
     ended <- newEmptyMVar
     let recording = Recorder recorded (Loop.root chosen </> "transcripts") counted next linked prepared owner
+        running :: Internal.Driver scope -> Owner.Runner -> IO (Either Error ())
         running collector updater = do
             void (Internal.reserve collector identities)
             shared <-
@@ -214,6 +246,7 @@ begin selected@(Run chosen lag _) planned (Origin state commands versions next i
                     <*> newMVar Nothing
                     <*> pure collector
                     <*> pure updater
+                    <*> pure learned
             execute shared commands
     if Loop.inferenceMode engine == R.Shared
         then recovering ended $ either (Left . Learning) id <$> Joint.withRecordedShared (sharing chosen) (sharedTranscript recording) (\pool updater -> R.withDriver (\(Internal.Driver gate counter _ _) -> running (Internal.Driver gate counter (Just pool) Nothing) updater))
@@ -277,7 +310,7 @@ learnerProcess recording mode = case mode of
         pure number
     _ -> readMVar (owning recording) >>= maybe (ioError (userError "The resident learner owner was never reserved")) pure
 
-execute :: Shared scope -> [Command] -> IO (Either Error ())
+execute :: (C.Grade grade) => Shared scope grade -> [Command] -> IO (Either Error ())
 execute shared initial =
     bracket (worker (forever (readChan (cohorts shared) >>= guarded shared . collect shared))) stop $ \_ ->
         bracket (worker (forever (readChan (updates shared) >>= guarded shared . learn shared))) stop $ \_ -> do
@@ -296,7 +329,7 @@ execute shared initial =
         pure (thread, exited)
     stop (thread, exited) = killThread thread >> readMVar exited
 
-guarded :: Shared scope -> IO () -> IO ()
+guarded :: Shared scope grade -> IO () -> IO ()
 guarded shared action = do
     outcome <- try action
     case outcome of
@@ -305,25 +338,25 @@ guarded shared action = do
             | Just cancelled <- fromException problem -> throwIO (cancelled :: SomeAsyncException)
             | otherwise -> fail' shared (Crashed (show problem))
 
-finish :: Shared scope -> IO ()
+finish :: Shared scope grade -> IO ()
 finish shared = modifyMVar_ (invoked shared) $ \current -> do
     state <- readMVar (core shared)
     when (Core.committed state == Plan.updates (plan shared)) (void (tryPutMVar (finished shared) (Right ())))
     pure current
 
 -- The core reports an attempt in flight, but only the runtime knows whether its worker may have run, which is what leaves the attempt's effects unknown; the index names that update, which at a positive staleness may not be the update the failure came from. The marker, the failure it selects and the commit that clears it share one lock, so a failure is never classified against an update that has not started its learner, nor against one that has already committed.
-fail' :: Shared scope -> Error -> IO ()
+fail' :: Shared scope grade -> Error -> IO ()
 fail' shared problem = modifyMVar_ (invoked shared) $ \current -> do
     void (tryPutMVar (finished shared) (Left (maybe problem (`Unresolved` problem) current)))
     pure current
 
 -- Invoking the learner excludes recording a failure: whichever takes the lock first makes the other's classification true, so the worker runs before the failure is recorded or it never runs at all.
-start :: Shared scope -> Natural -> IO Bool
+start :: Shared scope grade -> Natural -> IO Bool
 start shared update = modifyMVar (invoked shared) $ \current -> do
     ended <- tryReadMVar (finished shared)
     pure (if isJust ended then (current, False) else (Just update, True))
 
-transition :: Shared scope -> Event -> IO [Command]
+transition :: Shared scope grade -> Event -> IO [Command]
 transition shared event = do
     returned <- modifyMVar (core shared) $ \state -> case Core.step state event of
         Left problem -> pure (state, Left problem)
@@ -336,10 +369,10 @@ transition shared event = do
             route shared commands
             pure commands
 
-route :: Shared scope -> [Command] -> IO ()
+route :: Shared scope grade -> [Command] -> IO ()
 route shared = mapM_ (routed shared)
 
-routed :: Shared scope -> Command -> IO ()
+routed :: Shared scope grade -> Command -> IO ()
 routed shared issued = case issued of
     Dispatch request (Version version) ->
         case Plan.owner (plan shared) request of
@@ -353,7 +386,7 @@ routed shared issued = case issued of
     Send (Update update) attempt -> writeChan (updates shared) (update, attempt)
     _ -> pure ()
 
-collect :: Shared scope -> (Natural, Natural) -> IO ()
+collect :: (C.Grade grade) => Shared scope grade -> (Natural, Natural) -> IO ()
 collect shared (update, version) = do
     Published checkpoint description <- (Map.! version) <$> readMVar (published shared)
     started <- getMonotonicTime
@@ -363,7 +396,7 @@ collect shared (update, version) = do
     let chosen = config shared
         offset = offsets shared !! fromIntegral update
         options = R.Options {R.worker = Loop.inferenceWorker chosen checkpoint, R.mode = Loop.inferenceMode (Loop.backend chosen), R.sessions = Loop.sessions (Loop.backend chosen), R.definition = C.Definition (Loop.policy checkpoint) tasks, R.order = Loop.order cycle', R.delivery = Loop.delivery cycle', R.reference = Loop.scoring chosen checkpoint}
-        observer = R.Observer (dispatched slots offset) (checked slots offset)
+        observer = R.Observer (dispatched slots offset) (checked slots offset tasks)
     generated <- R.runObserved (driver shared) observer options
     case generated of
         Left problem -> fail' shared (Rollout problem)
@@ -380,14 +413,45 @@ collect shared (update, version) = do
             atomicModifyIORef' slots (\held -> (Map.insert index slot held, ()))
             Journal.append (journal (recorder shared)) (Entry.encode (Entry.Dispatched (offset + index) slot (epoch (recorder shared)) binding number))
         forM_ requests $ \(index, _) -> void (transition shared (Started (Worker slot) (Epoch (epoch (recorder shared))) (Request (offset + index))))
-    checked slots offset index admitted = do
+    checked slots offset tasks index admitted = do
         slot <- maybe (ioError (userError "Checked result was never dispatched")) pure . Map.lookup index =<< readIORef slots
         let request = offset + index
             digest = Trajectory.digest admitted
         Journal.append (journal (recorder shared)) (Entry.encode (Entry.Stored request (Trajectory.binding admitted) digest))
-        void (transition shared (Completed (Worker slot) (Epoch (epoch (recorder shared))) (Request request) digest))
+        result <- completed shared (update, C.name (tasks !! fromIntegral index)) request admitted digest
+        void (transition shared (Completed (Worker slot) (Epoch (epoch (recorder shared))) (Request request) result))
 
-learn :: Shared scope -> (Natural, Attempt) -> IO ()
+completed :: Shared scope grade -> (Natural, String) -> Natural -> Trajectory -> String -> IO String
+completed shared (update, named) request admitted digest = case learning shared of
+    Grouping -> pure digest
+    Distilling worker teacher readings -> do
+        let teaching :: Either String value -> IO value
+            teaching = either (\problem -> fail' shared (Teaching problem) >> ioError (userError problem)) pure
+        planned <- teaching (Teacher.prepare teacher (Inference.sampled admitted))
+        ordinal <- Internal.reserve (driver shared) 1
+        let binding = V.ordinal ordinal
+        call <- teaching (first show (Score.bind binding planned))
+        number <- reserve (recorder shared) Entry.Teacher 0
+        transcript <- transcribe (recorder shared) number
+        Journal.append (journal (recorder shared)) (Entry.encode (Entry.Taught request binding number))
+        scored <- Scoring.run worker transcript call >>= teaching . first show
+        reading <- teaching (Teacher.reading scored)
+        let result = Teacher.joined digest reading
+        Journal.append (journal (recorder shared)) (Entry.encode (Entry.Read request binding result))
+        modifyMVar_ readings (pure . Map.insertWith Map.union update (Map.singleton named reading))
+        pure result
+
+planning :: Shared scope grade -> L.Settings -> Natural -> R.BatchOf scope grade -> IO (Either L.Error (L.PlanOf scope grade))
+planning shared settings update batch = case learning shared of
+    Grouping -> pure (L.prepare settings batch)
+    Distilling _ _ readings -> (\held -> L.distilled settings (Map.findWithDefault Map.empty update held) batch) <$> readMVar readings
+
+forget :: Shared scope grade -> Natural -> IO ()
+forget shared update = case learning shared of
+    Grouping -> pure ()
+    Distilling _ _ readings -> modifyMVar_ readings (pure . Map.delete update)
+
+learn :: Shared scope grade -> (Natural, Attempt) -> IO ()
 learn shared (update, attempt@(Attempt counter)) = do
     box <- modifyMVar (batches shared) $ \held -> case Map.lookup update held of
         Just existing -> pure (held, existing)
@@ -400,7 +464,8 @@ learn shared (update, attempt@(Attempt counter)) = do
         chosen = config shared
         settings = (Loop.settings chosen) {L.policy = Loop.policy current, L.learner = Loop.learner current, L.schedule = L.Schedule update (staleness shared) version (Loop.policy behavior)}
     started <- getMonotonicTime
-    case L.prepare settings batch of
+    prepared <- planning shared settings update batch
+    case prepared of
         Left problem -> fail' shared (Admission problem)
         Right planned -> do
             ordinal <- Internal.reserve (driver shared) 1
@@ -446,7 +511,7 @@ learn shared (update, attempt@(Attempt counter)) = do
         forM_ (drop count closed) $ \done -> void (transition shared (Applied (Update update) current done))
         writeIORef forwarded (length closed)
 
-publish :: Shared scope -> (Natural, Attempt, Natural) -> (Policy.Description, P.Result) -> [Command] -> IO ()
+publish :: Shared scope grade -> (Natural, Attempt, Natural) -> (Policy.Description, P.Result) -> [Command] -> IO ()
 publish shared (update, attempt, ordinal) (description, produced) commands = do
     unless (any recording commands) (ioError (userError "The event core did not ask to record the staged update"))
     successor <- either (ioError . userError) pure (Policy.successor (P.adapter produced) description)
@@ -464,12 +529,13 @@ publish shared (update, attempt, ordinal) (description, produced) commands = do
         void (transition shared (Committed (Update update) attempt))
         pure Nothing
     modifyMVar_ (batches shared) (pure . Map.delete update)
+    forget shared update
     finish shared
   where
     recording (Record (Update target) current _) = target == update && current == attempt
     recording _ = False
 
-interval :: Shared scope -> (Text, Natural) -> Double -> IO ()
+interval :: Shared scope grade -> (Text, Natural) -> Double -> IO ()
 interval shared (role, update) started = do
     ended <- getMonotonicTime
     Journal.append (journal (recorder shared)) (Entry.encode (Entry.Elapsed role update started ended))

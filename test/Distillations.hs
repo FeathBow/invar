@@ -1,12 +1,14 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TypeApplications #-}
 
 module Distillations (distillations) where
 
 import Control.Monad (void)
-import Data.Aeson (Key, Value (..), decodeStrict, object, toJSON, (.=))
+import Data.Aeson (Key, Value (..), decodeStrict, encode, object, toJSON, (.=))
 import Data.Aeson.KeyMap qualified as Fields
 import Data.Bifunctor (first)
+import Data.ByteString.Lazy qualified as Lazy
 import Data.Map.Strict qualified as Map
 import Hedgehog
 import Invar.Cohort qualified as C
@@ -25,6 +27,7 @@ import Invar.Spec.Invocation qualified as V
 import Invar.Store qualified as Store
 import Invar.Transcript qualified as Transcript
 import Invar.Worker qualified as Worker
+import Invar.Workload qualified as Workload
 import LearnerFixture qualified as F
 import Sessions qualified
 import Store (workspace)
@@ -39,6 +42,7 @@ distillations =
         , ("a distillation input needs distillation settings and exactly one reading per sample, and a GRPO input refuses distillation settings", once refused)
         , ("the GRPO loop and runtime refuse distillation settings before they create a directory or launch a worker", once guarded)
         , ("a distillation plan runs through the checked learner exchange", once executed)
+        , ("a distillation run is declared with distillation settings and tasks sampled at the teacher's temperature, and its journal is not resumed", once declared)
         ]
   where
     once = withTests 1 . property
@@ -130,3 +134,21 @@ executed = do
                 pure (first show (fmap (length . S.completions . P.stream . W.report) returned))
     closed <- evalEither outcome
     fromIntegral closed === L.steps taught
+
+declared :: PropertyT IO ()
+declared = do
+    root <- workspace
+    graded <- evalEither Sessions.workload
+    unanswered <- evalEither (Workload.decodeOf @C.Ungraded (Lazy.toStrict (encode [object ["tasks" .= [object ["name" .= ("a" :: String), "prompt" .= ("p" :: String), "tokens" .= (2 :: Int), "seed" .= (1 :: Int), "temperature" .= (0.8 :: Double)]], "order" .= [0 :: Int], "delivery" .= [0 :: Int]]])))
+    let backend = Loop.Backend "python" "python" "inference" Nothing R.Serial "learning" W.Process root [[]]
+        configured chosen = Loop.Config backend (root </> "run") (root </> "input") (root </> "reference") chosen Store.RenameExclusive
+        scorer = Worker.Worker "python" "teacher" root (root </> "teacher.safetensors") [] Nothing
+        cooler = taught {L.algorithm = L.Opd teacher {Algorithm.teacherTemperature = 0.7}}
+    refusal "The run's workload and its learning settings name different algorithms" =<< evalIO (Runtime.run (Runtime.Run (configured taught) 0 graded) Null)
+    refusal "A distillation run needs distillation settings" =<< evalIO (Runtime.distill scorer (Runtime.Run (configured F.configured) 0 unanswered) Null)
+    refusal "Every task must be sampled at the teacher's temperature" =<< evalIO (Runtime.distill scorer (Runtime.Run (configured cooler) 0 unanswered) Null)
+    refusal "A distillation run is not resumed or inspected from its journal" =<< evalIO (Runtime.interpret root (const (Right (configured taught, 0))) (Fields.fromList ["arguments" .= Null, "workload" .= Workload.value unanswered]))
+  where
+    refusal expected = \case
+        Left (Runtime.Declaration problem) -> problem === expected
+        other -> annotateShow (void other) >> failure
