@@ -18,7 +18,6 @@ import Invar.History.Trace qualified as Trace
 import Invar.Learn.Program qualified as Program
 import Invar.Learn.Protocol qualified as Protocol
 import Invar.Learn.Report qualified as Report
-import Invar.Learn.Request qualified as Request
 import Learning (taughtWorld)
 import Recoveries qualified
 import Traces qualified
@@ -98,12 +97,12 @@ teacherCalls = do
     forM_ ["call", "attempt", "instance"] $ \axis -> do
         let renumber sample = Updates.change "teacher_call" (Updates.change axis (Number 99) (Updates.field "teacher_call" sample)) sample
         changed <- evalEither (teacherSample renumber (Report.request original))
-        let retried = withRequest changed events
-        compared <- evalEither (reported retried)
+        let renumbered = withRequest changed events
+        compared <- evalEither (reported renumbered)
         Report.sameInput original compared === Right True
         Report.paired original compared === Right ()
-        Request.logical (Report.checkedRequest original) /== Request.logical (Report.checkedRequest compared)
-        case Updates.observe context (Updates.wire retried) of
+        Report.request original /== Report.request compared
+        case Updates.observe context (Updates.wire renumbered) of
             Left (Protocol.Mismatch problem) -> problem === "Actual update input differs from the checked lowering"
             unexpected -> annotateShow unexpected >> failure
 
@@ -119,9 +118,12 @@ teacherInputs = do
         Report.sameInput original compared === Right False
 
 teacherSample :: (Value -> Value) -> Value -> Either String Value
-teacherSample operation = parseEither (withObject "request" $ \fields -> do
-    samples <- fields .: "samples" :: Parser [Value]
-    pure (Object (Fields.insert "samples" (toJSON (Updates.alter 0 operation samples)) fields)))
+teacherSample operation =
+    parseEither
+        ( withObject "request" $ \fields -> do
+            samples <- fields .: "samples" :: Parser [Value]
+            pure (Object (Fields.insert "samples" (toJSON (Updates.alter 0 operation samples)) fields))
+        )
 
 withRequest :: Value -> [Value] -> [Value]
 withRequest input = Updates.alter 2 (Updates.change "request" input) . Updates.alter 1 (Updates.change "request" input)
