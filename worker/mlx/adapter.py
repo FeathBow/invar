@@ -63,6 +63,8 @@ def create(model, *, layers):
 
 
 def assembly(model):
+    if not state(model):
+        return {}
     selected = targets(model, len(model.layers))
     observed = {}
     for name, module in selected.items():

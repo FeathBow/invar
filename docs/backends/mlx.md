@@ -4,15 +4,15 @@ The MLX backend runs Invar's inference and learning on Apple Silicon. One Python
 
 ## Model and environment
 
-[The model loader](../../worker/mlx/model.py) pins `mlx-community/Qwen3.8-27B-4bit` through its `MODEL` and `REVISION` constants and loads it from the local Hugging Face cache on the Metal device, with all 64 layers. The weights are affine 4 bit with group size 64. `worker/mlx/adapter.py` adds FP32 LoRA with rank 8 and scale 2.0 to `gate_proj`, `up_proj` and `down_proj` of every layer, 192 projections, and freezes everything else. [The lock file](../../worker/locks/mlx.txt) pins CPython 3.14, MLX 0.32.1 and MLX-LM 0.31.3 with hashes.
+[The model loader](../../worker/mlx/model.py) loads `mlx-community/Qwen3.8-27B-4bit`, pinned by its `MODEL` and `REVISION` constants, from the local Hugging Face cache on the Metal device, with all 64 layers. The weights are affine 4 bit with group size 64. `worker/mlx/adapter.py` adds FP32 LoRA with rank 8 and scale 2.0 to `gate_proj`, `up_proj` and `down_proj` of every layer, 192 projections for this model, and freezes everything else. When the requested adapter is the empty tensor set, whose identity is the SHA-256 of no bytes, the loader freezes the base and adds no LoRA; a distillation teacher on another base is loaded this way. [The lock file](../../worker/locks/mlx.txt) pins CPython 3.14, MLX 0.32.1 and MLX-LM 0.31.3 with hashes.
 
-An optional runtime configuration with format `invar-mlx-runtime-v1` sets `batch_size`, the decode batch of MLX-LM's `BatchGenerator`, `prefill_step`, its prefill chunk, `cache_bytes`, the free buffer cache of the allocator, and `numerics`, the profile every entry loads: `primary`, the row independent profile, or `native`, the library projection, LoRA and attention with the project's cache and recurrence corrections. The defaults are 1, 512, 256 MiB and `primary`. Each entry reports the profile it loaded in its `profile` record.
+An optional runtime configuration with format `invar-mlx-runtime-v1` sets `batch_size`, the decode batch of MLX-LM's `BatchGenerator`, `prefill_step`, its prefill chunk, `cache_bytes`, the free buffer cache of the allocator, and `numerics`, the profile every entry loads: `primary`, the row independent profile, or `native`, the library projection, LoRA and attention with the project's cache and recurrence corrections. The defaults are 1, 512, 256 MiB and `primary`. `model` and `revision`, given together, name another checkpoint of the same architecture to load in place of the pinned one. Each entry reports the profile it loaded in its `profile` record.
 
 ## Entry points
 
 | Entry | Use |
 | --- | --- |
-| `entries/mlxoperation.py` | Prints the tokenizer operation digest |
+| `entries/mlxoperation.py` | Prints the tokenizer operation digest of the configured model |
 | `entries/mlxinitialize.py` | Writes the initial `adapter.safetensors` and `learner.pt` |
 | `entries/mlxinfer.py` | One checked request for `invar infer` |
 | `entries/mlxbatch.py` | One finite group for `invar infer batch` and batch evaluation |

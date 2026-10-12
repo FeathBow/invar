@@ -19,6 +19,7 @@ from worker.implementation import INFERENCE
 CORE = os.environ.get("INVAR_CORE", "invar")
 SOURCE_ENTRY = Path(__file__).with_name("scoresource.py").resolve()
 SCORE_ENTRY = Path(__file__).with_name("scorefixture.py").resolve()
+TEACHER_SEED = 43
 
 
 def flags(values):
@@ -26,12 +27,12 @@ def flags(values):
 
 
 def load(cache, *, scope, configuration, measure, emit, initial=None):
-    seed = json.loads((cache / "fixture.json").read_text())["seed"]
+    fixture = json.loads((cache / "fixture.json").read_text())
     previous = mx.set_cache_limit(configuration.cache_bytes)
     scope.callback(mx.set_cache_limit, previous)
 
     def prepare():
-        runtime = loaded(seed)
+        runtime = loaded(fixture["seed"], adapted=fixture["adapted"])
         if initial is not None:
             model.activate(runtime, initial[0], expected=initial[1])
         return runtime
@@ -46,16 +47,8 @@ class BoundScoreFixture:
         cls.config = cls.root / "config.json"
         cls.config.write_text(json.dumps({"format": "invar-mlx-runtime-v1", "batch_size": 1,
                                         "prefill_step": 2, "cache_bytes": 1048576}))
-        cls.targets = []
-        for seed in (71, 97):
-            cache = cls.root / str(seed)
-            cache.mkdir()
-            (cache / "fixture.json").write_text(json.dumps({"seed": seed}))
-            runtime = loaded(seed)
-            identity = model.identities(runtime, INFERENCE)
-            checkpoint = cache / "adapter.safetensors"
-            tensors.save_policy(checkpoint, adapter.state(runtime.model))
-            cls.targets.append((cache, checkpoint, identity))
+        cls.targets = [cls.target(seed, adapted=True) for seed in (71, 97)]
+        cls.teacher = cls.target(TEACHER_SEED, adapted=False)
         cache, checkpoint, identity = cls.targets[0]
         cls.source_inputs = {"digest": identity["adapter"],
                              **{key + "-digest": identity[key] for key in ("tokenizer", "base", "assembly")},
@@ -71,6 +64,17 @@ class BoundScoreFixture:
         if completed.returncode:
             raise RuntimeError(completed.stderr)
         cls.source_result = [json.loads(line) for line in completed.stdout.splitlines()][-1]
+
+    @classmethod
+    def target(cls, seed, *, adapted):
+        cache = cls.root / str(seed)
+        cache.mkdir()
+        (cache / "fixture.json").write_text(json.dumps({"seed": seed, "adapted": adapted}))
+        runtime = loaded(seed, adapted=adapted)
+        identity = model.identities(runtime, INFERENCE)
+        checkpoint = cache / "adapter.safetensors"
+        tensors.save_policy(checkpoint, adapter.state(runtime.model))
+        return cache, checkpoint, identity
 
     def inputs(self, identity, *, call):
         return {**{"source-" + key: value for key, value in self.source_inputs.items()},
@@ -118,6 +122,15 @@ class BoundScoringTests(BoundScoreFixture, unittest.TestCase):
                 self.assertEqual(ratio, 0)
             values.append(observed["log_probability_bits"])
         self.assertNotEqual(*values)
+
+    def test_a_teacher_without_an_adapter_scores_the_admitted_path(self):
+        cache, checkpoint, identity = self.teacher
+        self.assertEqual(identity["adapter"], "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+        result = self.command("teacher", ["score", *flags({**self.inputs(identity, call=40), "python": sys.executable,
+                              "worker": SCORE_ENTRY, "cache": cache, "adapter": checkpoint, "worker-config": self.config})])
+        observed = json.loads(result.stdout.splitlines()[-1])["observation"]
+        self.assertEqual(observed["target"]["adapter"], identity["adapter"])
+        self.assertNotEqual(observed["log_probability_bits"], self.source_result["behavior_bits"])
 
     def test_missing_or_wrong_permission_prevents_score_execution(self):
         cache, checkpoint, identity = self.targets[0]

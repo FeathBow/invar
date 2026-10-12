@@ -39,7 +39,7 @@ def tokenizer(*, vocabulary=len(WORDS)):
     return result
 
 
-def model(*, uniform_head=True, vocabulary=len(WORDS)):
+def model(*, uniform_head=True, vocabulary=len(WORDS), adapted=True):
     config = {"model_type": "qwen3_5_text", "hidden_size": 64, "intermediate_size": 128,
               "num_hidden_layers": LAYERS, "num_attention_heads": 4, "head_dim": 16,
               "num_key_value_heads": 2, "vocab_size": vocabulary, "linear_num_value_heads": 4,
@@ -50,7 +50,10 @@ def model(*, uniform_head=True, vocabulary=len(WORDS)):
     if uniform_head:
         value.language_model.lm_head.weight = mx.zeros_like(value.language_model.lm_head.weight)
     nn.quantize(value, group_size=64, bits=4, mode="affine")
-    mlx_adapter.create(value, layers=LAYERS)
+    if adapted:
+        mlx_adapter.create(value, layers=LAYERS)
+    else:
+        value.freeze()
     mx.eval(value.parameters())
     return value, config
 
