@@ -38,7 +38,7 @@ run supplied = do
     fields <- either die pure (O.parse options supplied)
     case O.optional fields "resume" of
         Just directory
-            | Map.size fields == 1 -> Runtime.resume directory declared >>= either (die . show) pure
+            | Map.size fields == 1 -> Runtime.resume directory declared taught >>= either (die . show) pure
             | otherwise -> die "--resume takes no other option; the run declaration supplies them"
         Nothing -> do
             (config, chosen) <- either die pure (routed fields)
@@ -83,6 +83,9 @@ declared arguments = do
     case chosen of
         Concurrent lag -> pure (config, lag)
         Lockstep -> Left "The run declaration declares shared execution without --staleness, which runs the lockstep loop and keeps no journal"
+
+taught :: Value -> Either String Infer.Worker
+taught arguments = parseEither parseJSON arguments >>= O.parse options >>= teacherWorker
 
 synchronous :: Loop.Config -> Dataset.Identity -> [Dataset.Cycle] -> IO ()
 synchronous config selected cycles = do

@@ -74,7 +74,7 @@ data Published = Published Loop.Checkpoint Policy.Description
 
 data Origin = Origin Core.State [Command] (Map Natural Published) Natural Natural Natural
 
-data Resumed = Resumed FilePath Run Plan.Plan [Entry.Generation] Origin
+data Resumed = forall grade. (C.Grade grade) => Resumed FilePath (Learning grade) (RunOf grade) Plan.Plan [Entry.Generation] Origin
 
 data Shared scope grade = Shared
     { config :: Loop.Config
@@ -127,41 +127,58 @@ launch learned selected@(Run chosen _ document) arguments = do
                 let (state, commands) = Core.start planned
                 begin learned selected planned (Origin state commands (Map.singleton 0 initial) 0 0 0) recorded
 
-resume :: FilePath -> (Value -> Either String (Loop.Config, Natural)) -> IO (Either Error ())
-resume directory interpreter = do
+resume :: FilePath -> (Value -> Either String (Loop.Config, Natural)) -> (Value -> Either String Worker.Worker) -> IO (Either Error ())
+resume directory interpreter teaching = do
     target <- canonicalizePath directory
-    either Left id <$> Journal.resume (target </> "journal.jsonl") (admit target interpreter) proceed
+    either Left id <$> Journal.resume (target </> "journal.jsonl") (admit target (interpreter, teaching)) proceed
 
-admit :: FilePath -> (Value -> Either String (Loop.Config, Natural)) -> [Object] -> IO (Either Error Resumed)
-admit target interpreter recorded = case traverse (parseEither Entry.decode) recorded of
+admit :: FilePath -> (Value -> Either String (Loop.Config, Natural), Value -> Either String Worker.Worker) -> [Object] -> IO (Either Error Resumed)
+admit target (interpreter, teaching) recorded = case traverse (parseEither Entry.decode) recorded of
     Left problem -> pure (Left (Recovery problem))
     Right (Entry.Declared started declared : later) ->
-        withCurrentDirectory started $ do
-            interpreted <- interpret target interpreter declared
-            prepared <- either (pure . Left) (\selected -> fmap (selected,) <$> declaration selected) interpreted
-            case prepared of
-                Left problem -> pure (Left problem)
-                Right (selected@(Run chosen _ _), replaying) -> do
-                    found <- tryIOError ((,) <$> Recorded.transcripts (Loop.root chosen) later <*> Recorded.generations (Loop.root chosen))
-                    pure $ do
-                        (transcribed, observed) <- first (Recovery . ("A transcript or a generation cannot be read: " ++) . show) found
-                        (replayed, commands) <- first Recovery (Replay.resume replaying later transcribed observed)
-                        pure (Resumed started selected (Replay.plan replaying) observed (origin chosen replayed commands))
+        withCurrentDirectory started $ case declaredRun interpreter declared of
+            Left problem -> pure (Left problem)
+            Right (arguments, chosen, lag, workload) -> case L.algorithm (Loop.settings chosen) of
+                L.Grpo _ -> locate target chosen lag workload >>= either (pure . Left) (replayed started later Grouping)
+                L.Opd teacher -> case teaching arguments of
+                    Left problem -> pure (Left (Declaration problem))
+                    Right worker -> do
+                        readings <- newMVar Map.empty
+                        locate target chosen lag workload >>= either (pure . Left) (replayed started later (Distilling worker teacher readings))
     _ -> pure (Left (Recovery "The journal does not start with a run declaration"))
+  where
+    replayed :: (C.Grade grade) => FilePath -> [Entry.Entry] -> Learning grade -> RunOf grade -> IO (Either Error Resumed)
+    replayed started later learned selected@(Run chosen _ _) = do
+        prepared <- declarationOf learned selected
+        case prepared of
+            Left problem -> pure (Left problem)
+            Right replaying -> do
+                found <- tryIOError ((,) <$> Recorded.transcripts (Loop.root chosen) later <*> Recorded.generations (Loop.root chosen))
+                pure $ do
+                    (transcribed, observed) <- first (Recovery . ("A transcript or a generation cannot be read: " ++) . show) found
+                    (resumedState, commands) <- first Recovery (Replay.resume replaying later transcribed observed)
+                    pure (Resumed started learned selected (Replay.plan replaying) observed (origin chosen resumedState commands))
 
 interpret :: FilePath -> (Value -> Either String (Loop.Config, Natural)) -> Object -> IO (Either Error Run)
-interpret target interpreter declared = case parseEither (\fields -> (,) <$> fields .: "arguments" <*> fields .: "workload") declared of
-    Left problem -> pure (Left (Declaration problem))
-    Right (arguments, workload) -> case interpreter arguments of
-        Left problem -> pure (Left (Declaration problem))
-        Right (chosen, _) | L.Opd _ <- L.algorithm (Loop.settings chosen) -> pure (Left (Declaration "A distillation run is not resumed or inspected from its journal"))
-        Right (chosen, lag) -> case Workload.decode (Lazy.toStrict (encode (workload :: Value))) of
-            Left problem -> pure (Left (Declaration problem))
-            Right document -> do
-                same <- (== target) <$> canonicalizePath (Loop.root chosen)
-                pure (if same then Right (Run chosen lag document) else Left (Declaration "The declared output directory is not the run's directory"))
+interpret target interpreter declared = case declaredRun interpreter declared of
+    Left problem -> pure (Left problem)
+    Right (_, chosen, _, _) | L.Opd _ <- L.algorithm (Loop.settings chosen) -> pure (Left (Declaration "A distillation run is not inspected from its journal"))
+    Right (_, chosen, lag, workload) -> locate target chosen lag workload
 
-origin :: Loop.Config -> Replay.Replayed -> [Command] -> Origin
+declaredRun :: (Value -> Either String (Loop.Config, Natural)) -> Object -> Either Error (Value, Loop.Config, Natural, Value)
+declaredRun interpreter declared = do
+    (arguments, workload) <- first Declaration (parseEither (\fields -> (,) <$> fields .: "arguments" <*> fields .: "workload") declared)
+    (chosen, lag) <- first Declaration (interpreter arguments)
+    pure (arguments, chosen, lag, workload)
+
+locate :: (Workload.Declared grade) => FilePath -> Loop.Config -> Natural -> Value -> IO (Either Error (RunOf grade))
+locate target chosen lag workload = case Workload.decodeOf (Lazy.toStrict (encode workload)) of
+    Left problem -> pure (Left (Declaration problem))
+    Right document -> do
+        same <- (== target) <$> canonicalizePath (Loop.root chosen)
+        pure (if same then Right (Run chosen lag document) else Left (Declaration "The declared output directory is not the run's directory"))
+
+origin :: Loop.Config -> Replay.Replayed grade -> [Command] -> Origin
 origin chosen replayed commands = Origin (Replay.state replayed) commands versions (Replay.epoch floors) (Replay.identity floors) (Replay.numbered floors)
   where
     floors = Replay.floors replayed
@@ -169,14 +186,21 @@ origin chosen replayed commands = Origin (Replay.state replayed) commands versio
     located version = if version == 0 then Loop.checkpoint chosen else Loop.root chosen </> ("generation" ++ show version)
 
 proceed :: Resumed -> Journal.Journal -> IO (Either Error ())
-proceed (Resumed started selected planned observed restarted@(Origin state _ _ _ _ _)) recorded =
+proceed (Resumed started learned selected planned observed restarted@(Origin state _ _ _ _ _)) recorded =
     withCurrentDirectory started $ do
         Journal.append recorded (Entry.encode (Entry.Restarted observed))
         announce (object ["phase" .= ("resumed" :: String), "committed" .= [update | Update update <- Core.committed state]])
-        if Core.committed state == Plan.updates planned then pure (Right ()) else begin Grouping selected planned restarted recorded
+        if Core.committed state == Plan.updates planned then pure (Right ()) else begin learned selected planned restarted recorded
 
-declaration :: Run -> IO (Either Error Replay.Declaration)
-declaration selected@(Run chosen lag _) = fmap (\(planned, Published _ description) -> Replay.Declaration chosen lag planned (instantiated selected) (scanl (+) 0 (counts selected)) description) <$> prepare Grouping selected
+declaration :: Run -> IO (Either Error (Replay.Declaration C.Graded))
+declaration = declarationOf Grouping
+
+declarationOf :: (C.Grade grade) => Learning grade -> RunOf grade -> IO (Either Error (Replay.Declaration grade))
+declarationOf learned selected@(Run chosen lag _) = fmap (\(planned, Published _ description) -> Replay.Declaration chosen lag planned (instantiated selected) (scanl (+) 0 (counts selected)) description (method learned)) <$> prepare learned selected
+
+method :: Learning grade -> Replay.Method grade
+method Grouping = Replay.Rewarded
+method (Distilling _ teacher _) = Replay.Taught teacher
 
 instantiated :: (C.Grade grade) => RunOf grade -> [String -> Either String (Loop.CycleOf grade)]
 instantiated (Run chosen _ document) = [\policy -> Loop.instantiate (policy, L.tokenizer settings, L.behaviorBase settings, L.behaviorAssembly settings) declared | declared <- Workload.cycles document]

@@ -89,7 +89,7 @@ replays =
   where
     once = withTests 1 . property
 
-data Run = Run {declaration :: Replay.Declaration, entries :: [Entry.Entry], transcripts :: Map Natural ByteString, records :: [Value], published :: Entry.Generation, members :: Natural, learnerProcess :: Natural, tasks :: [C.Task]}
+data Run = Run {declaration :: Replay.Declaration C.Graded, entries :: [Entry.Entry], transcripts :: Map Natural ByteString, records :: [Value], published :: Entry.Generation, members :: Natural, learnerProcess :: Natural, tasks :: [C.Task]}
 
 described :: PropertyT IO Policy.Description
 described = evalEither (Policy.describe ("test-model", "test-revision") (L.policy settings, L.tokenizer settings, L.behaviorBase settings, L.behaviorAssembly settings))
@@ -164,7 +164,7 @@ built inference learning = do
     planned <- evalEither (first show (Plan.prepare 0 [Declared requests [requests]]))
     pure
         Run
-            { declaration = Replay.Declaration config 0 planned [const (Right cycle')] [0] initial
+            { declaration = Replay.Declaration config 0 planned [const (Right cycle')] [0] initial Replay.Rewarded
             , entries = kept ++ attempt ++ closes
             , transcripts = Map.insert number (F.wire learner') sessions
             , records = learner'
@@ -184,7 +184,7 @@ fieldsOf :: Value -> PropertyT IO Object
 fieldsOf (Object fields) = pure fields
 fieldsOf _ = failure
 
-replayOf :: Run -> Either String Replay.Replayed
+replayOf :: Run -> Either String (Replay.Replayed C.Graded)
 replayOf run = Replay.replay (declaration run) (entries run) (transcripts run)
 
 through :: Entry.Entry -> [Entry.Entry] -> [Entry.Entry]

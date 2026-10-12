@@ -1,6 +1,7 @@
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Async.Replay (Declaration (..), Status (..), Outcome (..), Learned (..), Evidence, Floors (..), Replayed, replay, resume, state, versions, statuses, learned, evidence, floors, reserved, unended, loaded, committing, trajectories, execution, report, frames, admittedUnder) where
+module Invar.Async.Replay (Declaration (..), Method (..), Status (..), Outcome (..), Learned (..), Evidence, Floors (..), Replayed, replay, resume, state, versions, statuses, learned, evidence, floors, reserved, unended, loaded, committing, trajectories, execution, report, frames, admittedUnder) where
 
 import Control.Monad (foldM, forM_, unless, when, zipWithM)
 import Data.Aeson (Object, Value (..), withObject)
@@ -27,12 +28,14 @@ import Invar.Cohort qualified as C
 import Invar.Infer.Batch qualified as Batch
 import Invar.Infer.Framing qualified as Framing
 import Invar.Infer.Invocation qualified as Call
+import Invar.Infer.Observation qualified as Inference
 import Invar.Infer.Replay qualified as Replay
 import Invar.Infer.Session qualified as Session
 import Invar.Infer.Trajectory (Trajectory)
 import Invar.Infer.Trajectory qualified as Trajectory
 import Invar.Json qualified as Json
 import Invar.Learn qualified as L
+import Invar.Learn.Algorithm qualified as Algorithm
 import Invar.Learn.Framing qualified as Learner
 import Invar.Learn.Report qualified as Report
 import Invar.Learn.Stream qualified as S
@@ -43,19 +46,26 @@ import Invar.Policy qualified as Policy
 import Invar.Resident qualified as Boundary
 import Invar.Resident.Owner qualified as Owner
 import Invar.Rollout qualified as R
+import Invar.Score qualified as Score
 import Invar.Spec.Invocation qualified as V
+import Invar.Teacher qualified as Teacher
 import Invar.Transcript qualified as Transcript
 import Numeric.Natural (Natural)
 import System.Exit (ExitCode (..))
 
-data Declaration = Declaration
+data Declaration grade = Declaration
     { config :: Loop.Config
     , staleness :: Natural
     , plan :: Plan.Plan
-    , cycles :: [String -> Either String Loop.Cycle]
+    , cycles :: [String -> Either String (Loop.CycleOf grade)]
     , offsets :: [Natural]
     , initial :: Policy.Description
+    , method :: Method grade
     }
+
+data Method grade where
+    Rewarded :: Method C.Graded
+    Taught :: Algorithm.Teacher -> Method C.Ungraded
 
 data Status = Unfinished String | Admitted String | Stored String | Completed String
     deriving (Eq, Show)
@@ -65,30 +75,30 @@ data Outcome = Committed Natural | Concluded | Incomplete String
 
 data Learned = Learned {binding :: V.Binding, process :: Natural, consumed :: [V.Binding], completions :: [Completion], confirmed :: Natural, outcome :: Outcome}
 
-data Evidence = Evidence (Natural, Natural) (L.Settings, [C.Task]) [Replay.Logged] Trace.Attempt Report.Report
+data Evidence grade = Evidence (Natural, Natural) (L.Settings, [C.TaskOf grade]) [Replay.Logged] Trace.Attempt Report.Report
 
-committing :: Evidence -> (Natural, Natural)
+committing :: Evidence grade -> (Natural, Natural)
 committing (Evidence key _ _ _ _) = key
 
-admittedUnder :: Evidence -> (L.Settings, [C.Task])
+admittedUnder :: Evidence grade -> (L.Settings, [C.TaskOf grade])
 admittedUnder (Evidence _ declaration _ _ _) = declaration
 
-trajectories :: Evidence -> [Replay.Logged]
+trajectories :: Evidence grade -> [Replay.Logged]
 trajectories (Evidence _ _ logged _ _) = logged
 
-execution :: Evidence -> Trace.Attempt
+execution :: Evidence grade -> Trace.Attempt
 execution (Evidence _ _ _ attempted _) = attempted
 
-report :: Evidence -> Report.Report
+report :: Evidence grade -> Report.Report
 report (Evidence _ _ _ _ reported) = reported
 
-frames :: Evidence -> [Framing.Frame]
+frames :: Evidence grade -> [Framing.Frame]
 frames = Trace.records . execution
 
 data Floors = Floors {identity :: Natural, numbered :: Natural, epoch :: Natural, attempt :: Natural}
     deriving (Eq, Show)
 
-data Replayed = Replayed {state :: Core.State, versions :: Map Natural (String, String, Policy.Description), statuses :: Map V.Binding (Natural, Status), learned :: Map (Natural, Natural) Learned, evidence :: Map Natural Evidence, reserved :: [Natural], unended :: [Natural], loaded :: Map Natural (Entry.Role, [Object]), floors :: Floors}
+data Replayed grade = Replayed {state :: Core.State, versions :: Map Natural (String, String, Policy.Description), statuses :: Map V.Binding (Natural, Status), learned :: Map (Natural, Natural) Learned, evidence :: Map Natural (Evidence grade), reserved :: [Natural], unended :: [Natural], loaded :: Map Natural (Entry.Role, [Object]), floors :: Floors}
 
 data Life = Running | Ended (Maybe Transcript.Outcome)
     deriving (Eq)
@@ -103,53 +113,55 @@ data Learner = Launched | Owning (Either String (Owner.State, [Framing.Frame])) 
 
 data Boundary = Exit | Release (Either String ())
 
-data Tried = Tried {tryBinding :: V.Binding, tryProcess :: Natural, inputs :: [V.Binding], declaredFor :: Maybe (L.Settings, [C.Task]), traced :: Either String Trace.Attempt, boundary :: Boundary, applied :: Natural, staged :: Maybe String, verified :: Maybe String}
+data Tried grade = Tried {tryBinding :: V.Binding, tryProcess :: Natural, inputs :: [V.Binding], declaredFor :: Maybe (L.Settings, [C.TaskOf grade]), traced :: Either String Trace.Attempt, boundary :: Boundary, applied :: Natural, staged :: Maybe String, verified :: Maybe String}
 
 data Generation = Generation String String Policy.Description
 
-data Fold = Fold
+data Fold grade = Fold
     { core :: Core.State
     , processes :: Map Natural Process
     , calls :: Map V.Binding (Natural, Natural, Natural)
     , latest :: Map Natural V.Binding
     , products :: Map V.Binding (Either String Replay.Logged)
     , stored :: Map V.Binding String
-    , completed :: Set V.Binding
+    , completed :: Map V.Binding String
     , inferences :: Map Natural Inference
     , learners :: Map Natural Learner
-    , tries :: Map (Natural, Natural) Tried
+    , tries :: Map (Natural, Natural) (Tried grade)
     , generations :: Map Natural Generation
     , committers :: Map Natural (Natural, Natural)
     , identities :: Set V.Binding
     , epochs :: Natural
     , prefixes :: Map Natural [Framing.Frame]
+    , taught :: Map V.Binding (Natural, V.Binding, Natural)
+    , readings :: Map V.Binding (L.Reading, String)
     }
 
-replay :: Declaration -> [Entry.Entry] -> Map Natural ByteString -> Either String Replayed
+replay :: (C.Grade grade) => Declaration grade -> [Entry.Entry] -> Map Natural ByteString -> Either String (Replayed grade)
 replay declared entries transcripts = folded declared entries transcripts >>= drained declared
 
-resume :: Declaration -> [Entry.Entry] -> Map Natural ByteString -> [Entry.Generation] -> Either String (Replayed, [Core.Command])
+resume :: (C.Grade grade) => Declaration grade -> [Entry.Entry] -> Map Natural ByteString -> [Entry.Generation] -> Either String (Replayed grade, [Core.Command])
 resume declared entries transcripts observed = do
     (restartedFold, commands) <- folded declared entries transcripts >>= (`restarted` observed)
     replayed <- drained declared restartedFold
     pure (replayed, commands)
 
-folded :: Declaration -> [Entry.Entry] -> Map Natural ByteString -> Either String Fold
+folded :: (C.Grade grade) => Declaration grade -> [Entry.Entry] -> Map Natural ByteString -> Either String (Fold grade)
 folded declared entries transcripts = foldM (entry declared transcripts) started entries
   where
     settings = Loop.settings (config declared)
-    started = Fold (fst (Core.start (plan declared))) Map.empty Map.empty Map.empty Map.empty Map.empty Set.empty Map.empty Map.empty Map.empty (Map.singleton 0 (Generation (L.policy settings) (L.learner settings) (initial declared))) Map.empty Set.empty 0 Map.empty
+    started = Fold (fst (Core.start (plan declared))) Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty (Map.singleton 0 (Generation (L.policy settings) (L.learner settings) (initial declared))) Map.empty Set.empty 0 Map.empty Map.empty Map.empty
 
-drained :: Declaration -> Fold -> Either String Replayed
+drained :: (C.Grade grade) => Declaration grade -> Fold grade -> Either String (Replayed grade)
 drained declared fold = summarize <$> foldM (settle declared) fold (Map.keys (inferences fold))
 
-entry :: Declaration -> Map Natural ByteString -> Fold -> Entry.Entry -> Either String Fold
+entry :: (C.Grade grade) => Declaration grade -> Map Natural ByteString -> Fold grade -> Entry.Entry -> Either String (Fold grade)
 entry declared transcripts fold recorded = case recorded of
     Entry.Declared _ _ -> Left "The journal declares its run twice"
     Entry.Opened _ used -> pure fold {epochs = max (epochs fold) (used + 1)}
     Entry.Reserved number chosen place used -> do
         when (Map.member number (processes fold)) (Left "A process number is reserved twice")
-        unless (chosen `elem` [inferenceRole declared, learnerRole declared]) (Left "A process is reserved under a role the declared modes do not run")
+        unless (chosen `elem` roles declared) (Left "A process is reserved under a role the declared modes do not run")
         when (chosen == Entry.Shared && or [life == Running | Process Entry.Shared _ _ life <- Map.elems (processes fold)]) (Left "A shared process is reserved while another shared process runs")
         pure fold {processes = Map.insert number (Process chosen place used Running) (processes fold), epochs = max (epochs fold) (used + 1)}
     Entry.Dispatched request worker used bound number -> do
@@ -206,7 +218,7 @@ entry declared transcripts fold recorded = case recorded of
             Right logged
                 | Trajectory.digest (Replay.trajectory logged) /= digest -> Left "A stored result differs from its admitted trajectory"
                 | otherwise -> pure advanced {stored = Map.insert bound digest (stored advanced)}
-    Entry.Happened claimed -> happened fold claimed
+    Entry.Happened claimed -> happened declared fold claimed
     Entry.Verified update tried digest -> do
         finished' <- concluded fold (update, tried)
         reported <- Report.artifact "learner" finished'
@@ -214,10 +226,52 @@ entry declared transcripts fold recorded = case recorded of
         pure fold {tries = Map.adjust (\chosen -> chosen {verified = Just digest}) (update, tried) (tries fold)}
     Entry.Restarted observed -> fst <$> restarted fold observed
     Entry.Elapsed {} -> pure fold
-    Entry.Taught {} -> Left "A teacher call belongs to a distillation run, whose journal is not replayed"
-    Entry.Read {} -> Left "A teacher reading belongs to a distillation run, whose journal is not replayed"
+    Entry.Taught request bound number -> do
+        case Map.lookup number (processes fold) of
+            Just (Process Entry.Teacher _ _ Running) -> pure ()
+            _ -> Left "A teacher call names a process that is not a running teacher"
+        rollout <- maybe (Left "A teacher call names a request that was never dispatched") Right (Map.lookup request (latest fold))
+        unless (Map.member rollout (stored fold)) (Left "A teacher call precedes its rollout's stored result")
+        _ <- transcript transcripts number
+        fresh fold bound
+        pure fold {taught = Map.insert bound (request, rollout, number) (taught fold), identities = Set.insert bound (identities fold)}
+    Entry.Read request bound digest -> do
+        (called, rollout, number) <- maybe (Left "A teacher reading names a call that was never journaled") Right (Map.lookup bound (taught fold))
+        unless (called == request) (Left "A teacher reading names another request's call")
+        when (Map.member rollout (readings fold)) (Left "A rollout's teacher reading is journaled twice")
+        reading <- taughtReading declared transcripts fold (rollout, bound, number)
+        let joined = Teacher.joined (Map.findWithDefault "" rollout (stored fold)) reading
+        unless (joined == digest) (Left "A teacher reading differs from the teacher's admitted score")
+        pure fold {readings = Map.insert rollout (reading, joined) (readings fold)}
 
-running :: Fold -> Natural -> (Entry.Role, Natural, Natural) -> Either String ()
+taughtReading :: Declaration grade -> Map Natural ByteString -> Fold grade -> (V.Binding, V.Binding, Natural) -> Either String L.Reading
+taughtReading declared transcripts fold (rollout, bound, number) = do
+    teacher <- case method declared of
+        Taught chosen -> Right chosen
+        Rewarded -> Left "A GRPO run journals a teacher reading"
+    case Map.lookup number (processes fold) of
+        Just (Process _ _ _ (Ended (Just (Transcript.Exited ExitSuccess Transcript.Complete)))) -> pure ()
+        _ -> Left "A teacher reading is journaled before its process exited cleanly"
+    encoded <- transcript transcripts number
+    admitted <- case Map.lookup rollout (products fold) of
+        Just (Right logged) -> Right (Replay.trajectory logged)
+        _ -> Left "A teacher reading names a rollout without an admitted trajectory"
+    planned <- Teacher.prepare teacher (Inference.sampled admitted)
+    call <- first show (Score.bind bound planned)
+    scored <- first show (Score.admit call 0 encoded)
+    Teacher.reading scored
+
+completion :: Method grade -> Fold grade -> V.Binding -> Maybe String
+completion Rewarded fold bound = Map.lookup bound (stored fold)
+completion (Taught _) fold bound = snd <$> Map.lookup bound (readings fold)
+
+roles :: Declaration grade -> [Entry.Role]
+roles declared =
+    [inferenceRole declared, learnerRole declared] ++ case method declared of
+        Rewarded -> []
+        Taught _ -> [Entry.Teacher]
+
+running :: Fold grade -> Natural -> (Entry.Role, Natural, Natural) -> Either String ()
 running fold number (expected, worker, used) = case Map.lookup number (processes fold) of
     Just (Process chosen place reserved life)
         | chosen /= expected || place /= worker || reserved /= used -> Left "A call names a process of another role, slot or epoch"
@@ -231,22 +285,22 @@ transcript transcripts number = maybe (Left "An entry names a process whose tran
 inferenceOwner :: Boundary.Role -> Natural -> ByteString -> Inference
 inferenceOwner role place encoded = let (records, ending) = output encoded in Hosting (Right ((Session.start Session.Resident, Owner.start (Boundary.Owner role place)), records)) ending []
 
-hostedOwner :: Declaration -> Natural -> ByteString -> Inference
+hostedOwner :: Declaration grade -> Natural -> ByteString -> Inference
 hostedOwner declared place encoded = case Loop.inferenceMode (Loop.backend (config declared)) of
     R.Resident -> inferenceOwner Boundary.Inference place encoded
     R.Shared -> inferenceOwner Boundary.Shared place encoded
     _ -> Finite []
 
-inferenceRole :: Declaration -> Entry.Role
+inferenceRole :: Declaration grade -> Entry.Role
 inferenceRole declared = if Loop.inferenceMode (Loop.backend (config declared)) == R.Shared then Entry.Shared else Entry.Inference
 
-learnerRole :: Declaration -> Entry.Role
+learnerRole :: Declaration grade -> Entry.Role
 learnerRole declared = if Loop.learningMode (Loop.backend (config declared)) == W.Shared then Entry.Shared else Entry.Learner
 
 learnerOwner :: Natural -> ByteString -> Learner
 learnerOwner place encoded = let (records, ending) = output encoded in Owning (Right (Owner.start (Boundary.Owner Boundary.Learning place), records)) ending
 
-fresh :: Fold -> V.Binding -> Either String ()
+fresh :: Fold grade -> V.Binding -> Either String ()
 fresh fold bound = when (any (overlaps bound) (Set.toList (identities fold))) (Left "A call identity is reused")
   where
     overlaps (V.Binding call tried instanceId) (V.Binding otherCall otherTry otherInstance) = call == otherCall || tried == otherTry || instanceId == otherInstance
@@ -261,7 +315,7 @@ output encoded = case reverse (Bytes.split '\n' encoded) of
         Left problem -> ([], Unreadable ("A transcript line is not a record: " ++ problem))
     parsed [] remainder = ([], if Bytes.null remainder then Whole else Fragment)
 
-finished :: Declaration -> Map Natural ByteString -> Fold -> (Natural, Entry.Role, Natural) -> Transcript.Outcome -> Either String Fold
+finished :: (C.Grade grade) => Declaration grade -> Map Natural ByteString -> Fold grade -> (Natural, Entry.Role, Natural) -> Transcript.Outcome -> Either String (Fold grade)
 finished declared transcripts prior (number, role, place) outcome = do
     encoded <- transcript transcripts number
     let backend = Loop.backend (config declared)
@@ -299,7 +353,7 @@ attach bound admitted = case admitted of
     Right logged -> [(chosen, maybe (Left "The session admitted no trajectory for the call") Right (lookup chosen [(Trajectory.binding (Replay.trajectory one), one) | one <- logged])) | chosen <- bound]
     Left problem -> [(chosen, Left (show problem)) | chosen <- bound]
 
-produced :: Declaration -> Fold -> V.Binding -> Either String (Fold, Either String Replay.Logged)
+produced :: (C.Grade grade) => Declaration grade -> Fold grade -> V.Binding -> Either String (Fold grade, Either String Replay.Logged)
 produced declared fold bound = case Map.lookup bound (products fold) of
     Just found -> pure (fold, found)
     Nothing -> case Map.lookup bound (calls fold) >>= \(_, number, _) -> (,) number <$> Map.lookup number (inferences fold) of
@@ -319,7 +373,7 @@ produced declared fold bound = case Map.lookup bound (products fold) of
             produced declared advanced bound
         _ -> pure (fold, Left "The call's process never established a result")
 
-declarationOf :: Declaration -> Fold -> [V.Binding] -> Either String Session.Declaration
+declarationOf :: (C.Grade grade) => Declaration grade -> Fold grade -> [V.Binding] -> Either String Session.Declaration
 declarationOf declared fold bound = do
     located <- traverse (\chosen -> maybe (Left "A call was never dispatched") (Right . (,) chosen) (Map.lookup chosen (calls fold))) bound
     chosenVersions <- case Set.toList (Set.fromList [selected | (_, (_, _, selected)) <- located]) of
@@ -329,7 +383,7 @@ declarationOf declared fold bound = do
     scoring <- referenceOf declared fold chosenVersions
     pure (Session.Declaration prepared scoring)
 
-taskOf :: Declaration -> Fold -> Natural -> Natural -> Either String C.Task
+taskOf :: (C.Grade grade) => Declaration grade -> Fold grade -> Natural -> Natural -> Either String (C.TaskOf grade)
 taskOf declared fold request selected = do
     Update update <- maybe (Left "A request belongs to no update") Right (Plan.owner (plan declared) (Request request))
     tasks <- tasksOf declared fold update selected
@@ -337,22 +391,22 @@ taskOf declared fold request selected = do
         chosen : _ -> pure chosen
         [] -> Left "A request lies outside its declared cycle"
 
-tasksOf :: Declaration -> Fold -> Natural -> Natural -> Either String [C.Task]
+tasksOf :: (C.Grade grade) => Declaration grade -> Fold grade -> Natural -> Natural -> Either String [C.TaskOf grade]
 tasksOf declared fold update selected = do
     Generation chosen _ described <- generationOf fold selected
     cycle' <- (cycles declared !! fromIntegral update) chosen
     first show (Loop.bindTasks described (Loop.tasks cycle'))
 
-referenceOf :: Declaration -> Fold -> Natural -> Either String (Maybe String)
+referenceOf :: Declaration grade -> Fold grade -> Natural -> Either String (Maybe String)
 referenceOf declared fold selected = do
     Generation chosen learnerDigest _ <- generationOf fold selected
     pure (Batch.identity <$> Loop.scoring (config declared) (Loop.Checkpoint "" chosen learnerDigest))
 
-generationOf :: Fold -> Natural -> Either String Generation
+generationOf :: Fold grade -> Natural -> Either String Generation
 generationOf fold selected = maybe (Left "A call uses a version that was never published") Right (Map.lookup selected (generations fold))
 
-happened :: Fold -> Entry.Claim -> Either String Fold
-happened fold claimed = case claimed of
+happened :: Declaration grade -> Fold grade -> Entry.Claim -> Either String (Fold grade)
+happened declared fold claimed = case claimed of
     Entry.Connected worker used -> stepped fold (Core.Connected (Worker worker) (Epoch used))
     Entry.Lost worker used -> stepped fold (Core.Lost (Worker worker) (Epoch used))
     Entry.Started worker used request -> do
@@ -360,9 +414,9 @@ happened fold claimed = case claimed of
         stepped fold (Core.Started (Worker worker) (Epoch used) (Request request))
     Entry.Completed worker used request digest -> do
         bound <- callOf fold (worker, used) request
-        unless (Map.lookup bound (stored fold) == Just digest) (Left "A completed request has no stored result with its digest")
+        unless (completion (method declared) fold bound == Just digest) (Left "A completed request has no stored result with its digest")
         advanced <- stepped fold (Core.Completed (Worker worker) (Epoch used) (Request request) digest)
-        pure advanced {completed = Set.insert bound (completed advanced)}
+        pure advanced {completed = Map.insert bound digest (completed advanced)}
     Entry.Ready update tried bound identityDigest before -> do
         record <- tryOf fold (update, tried)
         traced' <- traced record
@@ -398,7 +452,7 @@ happened fold claimed = case claimed of
         pure advanced {generations = Map.insert (update + 1) published (generations advanced), committers = Map.insert (update + 1) (update, tried) (committers advanced)}
     Entry.Abandoned update tried -> stepped fold (Core.Abandoned (Update update) (Attempt tried))
 
-stepped :: Fold -> Core.Event -> Either String Fold
+stepped :: Fold grade -> Core.Event -> Either String (Fold grade)
 stepped fold event = do
     (next, _) <- first show (Core.step (core fold) event)
     pure fold {core = next}
@@ -410,10 +464,10 @@ opened attempted index
         done : _ -> Just (Completion.after done)
         [] -> Nothing
 
-tryOf :: Fold -> (Natural, Natural) -> Either String Tried
+tryOf :: Fold grade -> (Natural, Natural) -> Either String (Tried grade)
 tryOf fold key = maybe (Left "A learner event names an attempt that was never journaled") Right (Map.lookup key (tries fold))
 
-successorOf :: Fold -> (Natural, Natural) -> Either String Generation
+successorOf :: Fold grade -> (Natural, Natural) -> Either String Generation
 successorOf fold (update, tried) = do
     record <- tryOf fold (update, tried)
     adapter <- maybe (Left "A committed attempt staged no adapter") Right (staged record)
@@ -422,7 +476,7 @@ successorOf fold (update, tried) = do
     described <- Policy.successor adapter previous
     pure (Generation adapter learnerDigest described)
 
-callOf :: Fold -> (Natural, Natural) -> Natural -> Either String V.Binding
+callOf :: Fold grade -> (Natural, Natural) -> Natural -> Either String V.Binding
 callOf fold (worker, used) request = do
     bound <- maybe (Left "A request is reported without a call dispatched since the last restart") Right (Map.lookup request (latest fold))
     reporting <- case Map.lookup bound (calls fold) >>= \(_, number, _) -> Map.lookup number (processes fold) of
@@ -431,7 +485,7 @@ callOf fold (worker, used) request = do
     unless (reporting == (worker, used)) (Left "A request is reported by another worker or epoch than the process its call was dispatched to")
     pure bound
 
-concluded :: Fold -> (Natural, Natural) -> Either String Report.Report
+concluded :: Fold grade -> (Natural, Natural) -> Either String Report.Report
 concluded fold key = do
     record <- tryOf fold key
     attempted <- traced record
@@ -443,7 +497,7 @@ concluded fold key = do
             _ -> Left "A learner result is used before its process exited cleanly"
     pure finished'
 
-learnerInput :: Declaration -> Fold -> Natural -> V.Binding -> Either String (L.Settings, (V.Binding, Text, Value), [V.Binding], [C.Task])
+learnerInput :: (C.Grade grade) => Declaration grade -> Fold grade -> Natural -> V.Binding -> Either String (L.Settings, (V.Binding, Text, Value), [V.Binding], [C.TaskOf grade])
 learnerInput declared fold update bound = do
     Generation current currentLearner _ <- generationOf fold update
     let behavior = if update > staleness declared then update - staleness declared else 0
@@ -461,16 +515,25 @@ learnerInput declared fold update bound = do
                 ( \cohort -> do
                     observations <- first show (zipWithM C.record (C.members cohort) (map snd used))
                     batch <- first show (C.admit cohort observations)
-                    first show (L.observedInput settings batch)
+                    observedOf (method declared) settings (readingsOf fold tasks (map fst used)) batch
                 )
             )
     request <- Json.decode payload
     pure (settings, (bound, decodeUtf8 program, request), map fst used, tasks)
 
-trajectoryOf :: Fold -> Natural -> Either String (V.Binding, Trajectory)
+observedOf :: Method grade -> L.Settings -> Either String (Map String L.Reading) -> C.BatchOf scope grade -> Either String (ByteString, ByteString)
+observedOf Rewarded settings _ batch = first show (L.observedInput settings batch)
+observedOf (Taught _) settings found batch = found >>= \chosen -> first show (L.observedDistilled settings chosen batch)
+
+readingsOf :: Fold grade -> [C.TaskOf grade] -> [V.Binding] -> Either String (Map String L.Reading)
+readingsOf fold tasks bound = Map.fromList <$> traverse named (zip tasks bound)
+  where
+    named (task, chosen) = maybe (Left "An update's request has no admitted teacher reading") (\(reading, _) -> Right (C.name task, reading)) (Map.lookup chosen (readings fold))
+
+trajectoryOf :: Fold grade -> Natural -> Either String (V.Binding, Trajectory)
 trajectoryOf fold request = do
     bound <- maybe (Left "An update's request was never dispatched") Right (Map.lookup request (latest fold))
-    unless (Set.member bound (completed fold)) (Left "An update's request has no completed result")
+    unless (Map.member bound (completed fold)) (Left "An update's request has no completed result")
     case Map.lookup bound (products fold) of
         Just (Right logged) -> pure (bound, Replay.trajectory logged)
         _ -> Left "An update's request has no admitted trajectory"
@@ -501,7 +564,7 @@ admittedLoad number loading current
     | null loading = current
     | otherwise = Map.insertWith (\_ earlier -> earlier) number loading current
 
-restarted :: Fold -> [Entry.Generation] -> Either String (Fold, [Core.Command])
+restarted :: Fold grade -> [Entry.Generation] -> Either String (Fold grade, [Core.Command])
 restarted fold observed = do
     let committedCount = length (Core.committed (core fold))
         sorted = sortOn Entry.version observed
@@ -527,20 +590,20 @@ restarted fold observed = do
             Nothing -> (generations fold, committers fold)
     pure (fold {core = next, generations = published, committers = committing', latest = Map.empty, processes = Map.map (\(Process chosen place used life) -> Process chosen place used (if life == Running then Ended Nothing else life)) (processes fold)}, commands)
 
-settle :: Declaration -> Fold -> Natural -> Either String Fold
+settle :: (C.Grade grade) => Declaration grade -> Fold grade -> Natural -> Either String (Fold grade)
 settle declared fold number = case Map.lookup number (inferences fold) of
     Just (Hosting _ _ (pending : _)) -> do
         (advanced, _) <- produced declared fold pending
         settle declared advanced number
     _ -> pure fold
 
-summarize :: Fold -> Replayed
+summarize :: Fold grade -> Replayed grade
 summarize fold = Replayed (core fold) published classified attempted committed (Map.keys (processes fold)) [number | (number, Process _ _ _ Running) <- Map.toList (processes fold)] (Map.intersectionWith (\(Process chosen _ _ _) loading -> (chosen, map Framing.fields loading)) (processes fold) (prefixes fold)) (Floors next numbers (epochs fold) (Core.issued (core fold)))
   where
     published = Map.map (\(Generation chosen learnerDigest described) -> (chosen, learnerDigest, described)) (generations fold)
     classified = Map.mapWithKey (\bound (request, _, _) -> (request, status bound)) (calls fold)
     status bound
-        | Set.member bound (completed fold) = Completed (stored fold Map.! bound)
+        | Just digest <- Map.lookup bound (completed fold) = Completed digest
         | Just digest <- Map.lookup bound (stored fold) = Stored digest
         | Just (Right logged) <- Map.lookup bound (products fold) = Admitted (Trajectory.digest (Replay.trajectory logged))
         | Just (Left problem) <- Map.lookup bound (products fold) = Unfinished problem

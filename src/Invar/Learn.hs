@@ -1,6 +1,6 @@
 {-# LANGUAGE RoleAnnotations #-}
 
-module Invar.Learn (Optimizer (..), Schedule (..), ReferenceSource (..), Algorithm (..), Settings (..), Reading (..), PlanOf, Plan, Error (..), synchronous, validate, materialization, prepare, distilled, observedInput, input, program, emission, rollout, invocation) where
+module Invar.Learn (Optimizer (..), Schedule (..), ReferenceSource (..), Algorithm (..), Settings (..), Reading (..), PlanOf, Plan, Error (..), synchronous, validate, materialization, prepare, distilled, observedInput, observedDistilled, input, program, emission, rollout, invocation) where
 
 import Control.Monad (unless)
 import Data.Aeson (encode)
@@ -91,19 +91,28 @@ observedInput settings batch = do
 
 distilled :: Settings -> Map.Map String Reading -> R.BatchOf scope Cohort.Ungraded -> Either Error (PlanOf scope Cohort.Ungraded)
 distilled settings readings batch = do
+    (checked, sources, command, payload) <- distilledInput settings readings [(R.name sample, R.trajectory sample) | sample <- R.samples batch]
+    pure Plan {planBatch = batch, planChecked = checked, planWorld = sources, planEmission = command, planInput = payload}
+
+observedDistilled :: Settings -> Map.Map String Reading -> Cohort.BatchOf scope Cohort.Ungraded -> Either Error (ByteString, ByteString)
+observedDistilled settings readings batch = do
+    (checked, _, _, payload) <- distilledInput settings readings [(Cohort.name (Cohort.source sample), Cohort.observed sample) | sample <- Cohort.observations batch]
+    pure (A.bytes checked, payload)
+
+distilledInput :: Settings -> Map.Map String Reading -> [(String, Trajectory)] -> Either Error (A.Checked, E.World, E.Emission, ByteString)
+distilledInput settings readings samples = do
     validate settings
     chosen <- case algorithm settings of
         Opd teacher -> Right teacher
         Grpo _ -> Left (InvalidSettings "A distillation update needs distillation settings")
-    unless (Map.keysSet readings == Set.fromList (map R.name (R.samples batch))) (Left UnmatchedReadings)
-    let trajectories = map R.trajectory (R.samples batch)
-        read' = [readings Map.! R.name sample | sample <- R.samples batch]
+    unless (Map.keysSet readings == Set.fromList (map fst samples)) (Left UnmatchedReadings)
+    let trajectories = map snd samples
+        read' = [readings Map.! named | (named, _) <- samples]
         keyed project = Mapping (Map.fromList (zip [0 ..] (map project read')))
         coefficients = record [("epsilon", number (clip settings)), ("penalty", number (penalty settings)), ("steps", Atom (Number (fromIntegral (steps settings))))]
         own = Map.fromList [(Semantic "algorithm", coefficients), (Semantic "teacher", teacherValue chosen), (Semantic "teacher_scores", keyed (Sequence . map (Atom . Bits32) . readingWords)), (Semantic "teacher_calls", keyed (bindingValue . readingCall))]
     admitted settings trajectories
-    (checked, sources, command, payload) <- emitted P.distilled (Map.union own (sharedWorld settings trajectories))
-    pure Plan {planBatch = batch, planChecked = checked, planWorld = sources, planEmission = command, planInput = payload}
+    emitted P.distilled (Map.union own (sharedWorld settings trajectories))
 
 compileInput :: Settings -> [InputSample] -> Either Error (A.Checked, E.World, E.Emission, ByteString)
 compileInput settings samples = do
