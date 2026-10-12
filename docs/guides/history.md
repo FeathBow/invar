@@ -9,7 +9,7 @@ The runtime runs with the `serial`, `batch` or `resident` worker modes, and with
 `--output` names a new directory. It holds:
 
 - `journal.jsonl`, the run's declaration followed by every event in order. The declaration records the directory the run started in, the training arguments and the workload.
-- `transcripts/<N>.jsonl`, everything process N wrote, one file for each inference, learner or shared process.
+- `transcripts/<N>.jsonl`, everything process N wrote, one file for each inference, learner, shared or teacher process. A distillation run starts one teacher process for each rollout it scores.
 - `staging<N>`, the files one update wrote: its adapter, learner state, gradients, probabilities and successor policy description.
 - `generation<K>`, the K-th published checkpoint. With `--publication reference` it is a symbolic link to a staging directory in the same output directory.
 

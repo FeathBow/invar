@@ -1,3 +1,4 @@
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Invar.History.Runtime (Checked, inspect, config, workload, generations, finalPolicy, identities, profiles, loads, describe, recorded) where
@@ -18,14 +19,19 @@ import Invar.Async.Plan qualified as Plan
 import Invar.Async.Recorded qualified as Recorded
 import Invar.Async.Replay qualified as Replay
 import Invar.Cohort qualified as C
+import Invar.History.Cohort qualified as Cohort
 import Invar.History.Generation qualified as Generation
 import Invar.History.Profile qualified as Profile
+import Invar.Infer.Replay qualified as Logged
+import Invar.Infer.Trajectory qualified as Trajectory
 import Invar.Infer.Wire qualified as Wire
 import Invar.Journal qualified as Journal
+import Invar.Learn qualified as L
 import Invar.Loop qualified as Loop
 import Invar.Policy qualified as Policy
 import Invar.Resident qualified as Resident
 import Invar.Runtime qualified as Runtime
+import Invar.Spec.Invocation qualified as V
 import Invar.Store qualified as Store
 import Invar.Workload qualified as Workload
 import Numeric.Natural (Natural)
@@ -33,7 +39,7 @@ import System.Directory (canonicalizePath, makeAbsolute, withCurrentDirectory)
 import System.FilePath ((</>))
 import System.IO.Error (tryIOError)
 
-data Checked = Checked Runtime.Run (Replay.Declaration C.Graded) (Replay.Replayed C.Graded) [Generation.Generation] Policy.Description [[Entry.Generation]]
+data Checked = forall grade. Checked (Runtime.RunOf grade) (Replay.Declaration grade) (Replay.Replayed grade) [Generation.Generation] Policy.Description [[Entry.Generation]]
 
 inspect :: FilePath -> (Value -> Either String (Loop.Config, Natural)) -> IO (Either String Checked)
 inspect directory interpreter = do
@@ -41,15 +47,11 @@ inspect directory interpreter = do
     Journal.inspect (target </> "journal.jsonl") $ \journaled -> case traverse (parseEither Entry.decode) journaled of
         Left problem -> pure (Left problem)
         Right (Entry.Declared started declared : later) -> do
-            interpreted <- withCurrentDirectory started (Runtime.interpret target interpreter declared >>= traverse (located target))
-            prepared <- either (pure . Left) (\selected -> fmap (selected,) <$> Runtime.declaration selected) interpreted
-            case prepared of
+            interpreted <- withCurrentDirectory started (Runtime.interpret target interpreter declared)
+            case interpreted of
                 Left problem -> pure (Left (show problem))
-                Right (selected, replaying) -> do
-                    found <- tryIOError ((,) <$> Recorded.transcripts target later <*> Recorded.generations target)
-                    pure $ case found of
-                        Right (transcribed, observed) -> admit selected replaying later transcribed observed
-                        Left problem -> Left ("A transcript or a generation cannot be read: " ++ show problem)
+                Right (Runtime.Rewarded selected) -> withCurrentDirectory started (located target selected) >>= checked target later Replay.Rewarded
+                Right (Runtime.Distilled teacher selected) -> withCurrentDirectory started (located target selected) >>= checked target later (Replay.Taught teacher)
         Right _ -> pure (Left "The journal does not start with a run declaration")
   where
     located target (Runtime.Run chosen lag document) = do
@@ -57,7 +59,18 @@ inspect directory interpreter = do
         reference <- makeAbsolute (Loop.reference chosen)
         pure (Runtime.Run chosen {Loop.root = target, Loop.checkpoint = checkpoint, Loop.reference = reference} lag document)
 
-admit :: Runtime.Run -> Replay.Declaration C.Graded -> [Entry.Entry] -> Map Natural ByteString -> [Entry.Generation] -> Either String Checked
+checked :: (C.Grade grade) => FilePath -> [Entry.Entry] -> Replay.Method grade -> Runtime.RunOf grade -> IO (Either String Checked)
+checked target later chosenMethod selected = do
+    prepared <- Runtime.declarationOf chosenMethod selected
+    case prepared of
+        Left problem -> pure (Left (show problem))
+        Right replaying -> do
+            found <- tryIOError ((,) <$> Recorded.transcripts target later <*> Recorded.generations target)
+            pure $ case found of
+                Right (transcribed, observed) -> admit selected replaying later transcribed observed
+                Left problem -> Left ("A transcript or a generation cannot be read: " ++ show problem)
+
+admit :: (C.Grade grade) => Runtime.RunOf grade -> Replay.Declaration grade -> [Entry.Entry] -> Map Natural ByteString -> [Entry.Generation] -> Either String Checked
 admit selected declared entries transcribed observed = do
     replayed <- Replay.replay declared entries transcribed
     let chosen = Replay.config declared
@@ -67,21 +80,28 @@ admit selected declared entries transcribed observed = do
     unless (null (Replay.unended replayed)) (Left ("A process has no recorded end: " ++ unwords (map show (Replay.unended replayed))))
     unless ([(Entry.version seen, Entry.adapter seen, Entry.learner seen, Entry.description seen) | seen <- observed] == published) (Left "The published generations differ from the committed updates")
     unless (Map.keys (Replay.evidence replayed) == [1 .. genericLength updates]) (Left "A committed update has no evidence")
-    built <- traverse (generation chosen) (Map.elems (Replay.evidence replayed))
+    built <- traverse (generation chosen (Replay.teacherReadings replayed)) (Map.elems (Replay.evidence replayed))
     final <- case reverse published of
         (_, _, _, described) : _ -> Right described
         [] -> Left "A runtime history requires a committed update"
     pure (Checked selected declared replayed built final [seen | Entry.Restarted seen <- entries])
   where
-    generation chosen evidenced =
+    generation chosen readings evidenced = do
         let (settings, tasks) = Replay.admittedUnder evidenced
-         in Generation.generation settings (Loop.root chosen, Store.methodName (Loop.publication chosen)) (tasks, Replay.trajectories evidenced) (Replay.execution evidenced) ([], [], [])
+        inputs <- cohort (Replay.method declared) tasks (Replay.trajectories evidenced) readings
+        Generation.generation settings (Loop.root chosen, Store.methodName (Loop.publication chosen)) inputs (Replay.execution evidenced) ([], [], [])
+
+cohort :: Replay.Method grade -> [C.TaskOf grade] -> [Logged.Logged] -> Map V.Binding L.Reading -> Either String Cohort.Inputs
+cohort Replay.Rewarded tasks logged _ = Right (Cohort.Rewarded tasks logged)
+cohort (Replay.Taught _) tasks logged readings = Cohort.Distilled tasks logged . Map.fromList <$> traverse named (zip tasks logged)
+  where
+    named (task, one) = maybe (Left "A committed update's rollout has no teacher reading") (Right . (C.name task,)) (Map.lookup (Trajectory.binding (Logged.trajectory one)) readings)
 
 config :: Checked -> Loop.Config
 config (Checked (Runtime.Run chosen _ _) _ _ _ _ _) = chosen
 
-workload :: Checked -> Workload.Document
-workload (Checked (Runtime.Run _ _ document) _ _ _ _ _) = document
+workload :: Checked -> Workload.Shape
+workload (Checked (Runtime.Run _ _ document) _ _ _ _ _) = Workload.shape document
 
 generations :: Checked -> [Generation.Generation]
 generations (Checked _ _ _ built _ _) = built

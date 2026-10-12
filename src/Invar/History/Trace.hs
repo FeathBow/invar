@@ -13,6 +13,7 @@ import Data.ByteString.Char8 qualified as Bytes
 import Data.Text (Text)
 import Invar.Artifact qualified as Artifact
 import Invar.Cohort qualified as C
+import Invar.History.Cohort qualified as Cohort
 import Invar.History.Execution (Frame (..), Mode (..))
 import Invar.History.Execution qualified as Execution
 import Invar.History.Generation qualified as Generation
@@ -61,7 +62,7 @@ admit run initial declared encoded = do
         attempted <- maybe (Left "Missing learner execution in a training cycle") Right (Execution.learned executed)
         let learnedRecords = map Framing.raw (Attempt.records attempted)
             context = [record | record <- map Execution.encoded diagnostic, Framing.raw record `notElem` learnedRecords]
-        selected <- Generation.generation current (output run, method run) (tasks, ordered) attempted (context, Execution.groups executed, Execution.profiles executed)
+        selected <- Generation.generation current (output run, method run) (Cohort.Rewarded tasks ordered) attempted (context, Execution.groups executed, Execution.profiles executed)
         pure (selected, finished)
 
 frame :: ByteString -> Either String Frame

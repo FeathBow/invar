@@ -105,7 +105,17 @@ sameInput :: Report -> Report -> Either String Bool
 sameInput (Report _ left first _ _) (Report _ right second _ _) = do
     leftProgram <- parseEither (withObject "invocation" (.: "program")) left :: Either String Text
     rightProgram <- parseEither (withObject "invocation" (.: "program")) right
-    pure (leftProgram == rightProgram && Request.logical first == Request.logical second)
+    firstInput <- comparisonInput first
+    secondInput <- comparisonInput second
+    pure (leftProgram == rightProgram && firstInput == secondInput)
+
+-- Admission keeps teacher bindings in Request.logical; comparison excludes them.
+comparisonInput :: Request.Request -> Either String Value
+comparisonInput = parseEither (withObject "logical update request" withoutCalls) . Request.logical
+  where
+    withoutCalls fields = do
+        samples <- fields .: "samples" :: Parser [Object]
+        pure (Object (Fields.insert "samples" (toJSON (map (Fields.delete "teacher_call") samples)) fields))
 
 describe :: Report -> Value
 describe report@(Report digest _ _ _ _) = object ["log_digest" .= digest, "invocation" .= invocation report, "request" .= request report, "digest" .= gradient report, "result" .= result report]

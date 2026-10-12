@@ -15,7 +15,7 @@ from safetensors.torch import save_file
 
 from worker import float32
 from worker.hf.score import scored
-from worker.tests.hf.overlap import CHILD_SECONDS, CORE, PROMPT, SEEDS, execute, flags, journaled, prepared, transcribed
+from worker.tests.hf.overlap import CHILD_SECONDS, CORE, PROMPT, SEEDS, execute, flags, inspected, journaled, prepared, transcribed
 from worker.tests.hf.scoring import MODELS, SCORE_ENTRY, TEACHER, identities
 
 TEMPERATURE = 0.8
@@ -216,6 +216,15 @@ class DistillationTests(unittest.TestCase):
         lines = journal.read_bytes().splitlines(keepends=True)
         crashed(output, [json.dumps(replaced[index]).encode() + b"\n" if index in replaced else lines[index] for index in range(completed + 1) if index not in dropped])
         self.assertIn("Score consumption differs from the complete declared call", self.refused(output, {}))
+
+    def test_the_history_admits_the_run_with_the_teacher_reading_of_every_sample(self):
+        history = inspected(self.root, self.output, 2, "distilled")
+        self.assertEqual(len(history["artifacts"]), 2)
+        readings = [(json.dumps(reading["call"], sort_keys=True), reading["words"])
+                    for generation in history["training"]["generations"] for reading in generation["cohort"]["teacher_readings"]]
+        consumed = [value["request"] for value in transcribed(self.output, "learner") if value.get("stage") == "consumed" and "samples" in value["request"]]
+        self.assertEqual(readings, [(json.dumps(sample["teacher_call"], sort_keys=True), sample["teacher_bits"]) for request in consumed for sample in request["samples"]])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -5,11 +5,9 @@ module Invar.History.Generation (Generation, Publication (..), generation, cohor
 import Control.Monad (unless)
 import Data.Aeson (Value (..), object, toJSON, (.=))
 import Data.ByteString (ByteString)
-import Invar.Cohort qualified as C
 import Invar.History.Cohort qualified as Cohort
 import Invar.History.Profile qualified as Profile
 import Invar.Infer.Framing qualified as Framing
-import Invar.Infer.Replay qualified as Replay
 import Invar.Learn qualified as Learn
 import Invar.Learn.Report qualified as Report
 import Invar.Learn.Request qualified as Request
@@ -23,7 +21,7 @@ data Publication = Publication {directory :: FilePath, method :: String}
 
 data Generation = Generation Cohort.Checked Publication [Framing.Frame] [Framing.Frame] [Group.Group] [Profile.Observation]
 
-generation :: Learn.Settings -> (FilePath, String) -> ([C.Task], [Replay.Logged]) -> Trace.Attempt -> ([Framing.Frame], [Group.Group], [Profile.Observation]) -> Either String Generation
+generation :: Learn.Settings -> (FilePath, String) -> Cohort.Inputs -> Trace.Attempt -> ([Framing.Frame], [Group.Group], [Profile.Observation]) -> Either String Generation
 generation settings (output, declared) inputs attempted (context, groups, observations) = do
     unless (declared `elem` ["rename", "reference"]) (Left "Unknown declared publication method")
     reported <- maybe (Left ("A generation needs a learner attempt with an admitted result" ++ maybe "" (": " ++) (Trace.stopped attempted))) Right (Trace.result attempted)

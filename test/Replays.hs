@@ -32,6 +32,7 @@ import Invar.Async.Plan (Declared (Declared), Request (..), Update (..))
 import Invar.Async.Plan qualified as Plan
 import Invar.Async.Replay qualified as Replay
 import Invar.Cohort qualified as C
+import Invar.History.Cohort qualified as HistoryCohort
 import Invar.History.Generation qualified as Generation
 import Invar.Infer.Replay qualified as Logged
 import Invar.Infer.Trajectory qualified as Trajectory
@@ -676,14 +677,14 @@ generations = do
     result <- evalEither (replayOf run)
     evidenced <- evalMaybe (Map.lookup 1 (Replay.evidence result))
     let settings = Loop.settings (Replay.config (declaration run))
-        built' cohort = Generation.generation settings ("output", "rename") (tasks run, cohort) (Replay.execution evidenced) ([], [], [])
+        built' cohort = Generation.generation settings ("output", "rename") (HistoryCohort.Rewarded (tasks run) cohort) (Replay.execution evidenced) ([], [], [])
         stepping = [Lazy.toStrict (encode record) | record <- records run, F.stage record `elem` map Just ["proximal", "reference", "current"]]
     selected <- evalEither (built' (Replay.trajectories evidenced))
     Generation.publication selected === Generation.Publication ("output" </> "generation1") "rename"
     assert (not (null stepping))
     Generation.stepOutputs selected === stepping
     assert (isLeft (built' (drop 1 (Replay.trajectories evidenced))))
-    assert (isLeft (Generation.generation settings ("output", "copy") (tasks run, Replay.trajectories evidenced) (Replay.execution evidenced) ([], [], [])))
+    assert (isLeft (Generation.generation settings ("output", "copy") (HistoryCohort.Rewarded (tasks run) (Replay.trajectories evidenced)) (Replay.execution evidenced) ([], [], [])))
 
 restarts :: PropertyT IO ()
 restarts = do

@@ -1,7 +1,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Runtime (Error (..), RunOf (..), Run, run, distill, resume, interpret, declaration, recovering) where
+module Invar.Runtime (Error (..), RunOf (..), Run, Interpreted (..), run, distill, resume, interpret, declarationOf, recovering) where
 
 import Control.Concurrent (forkFinally, killThread)
 import Control.Concurrent.Chan (Chan, newChan, readChan, writeChan)
@@ -66,6 +66,8 @@ data RunOf grade = Run Loop.Config Natural (Workload.DocumentOf grade)
 
 type Run = RunOf C.Graded
 
+data Interpreted = Rewarded Run | Distilled Algorithm.Teacher (RunOf C.Ungraded)
+
 data Learning grade where
     Grouping :: Learning C.Graded
     Distilling :: Worker.Worker -> Algorithm.Teacher -> MVar (Map Natural (Map String L.Reading)) -> Learning C.Ungraded
@@ -116,7 +118,7 @@ distill worker selected@(Run chosen _ _) arguments = case L.algorithm (Loop.sett
 
 launch :: (C.Grade grade) => Learning grade -> RunOf grade -> Value -> IO (Either Error ())
 launch learned selected@(Run chosen _ document) arguments = do
-    prepared <- prepare learned selected
+    prepared <- prepare (method learned) selected
     case prepared of
         Left problem -> pure (Left problem)
         Right (planned, initial) -> do
@@ -149,7 +151,7 @@ admit target (interpreter, teaching) recorded = case traverse (parseEither Entry
   where
     replayed :: (C.Grade grade) => FilePath -> [Entry.Entry] -> Learning grade -> RunOf grade -> IO (Either Error Resumed)
     replayed started later learned selected@(Run chosen _ _) = do
-        prepared <- declarationOf learned selected
+        prepared <- declarationOf (method learned) selected
         case prepared of
             Left problem -> pure (Left problem)
             Right replaying -> do
@@ -159,11 +161,12 @@ admit target (interpreter, teaching) recorded = case traverse (parseEither Entry
                     (resumedState, commands) <- first Recovery (Replay.resume replaying later transcribed observed)
                     pure (Resumed started learned selected (Replay.plan replaying) observed (origin chosen resumedState commands))
 
-interpret :: FilePath -> (Value -> Either String (Loop.Config, Natural)) -> Object -> IO (Either Error Run)
+interpret :: FilePath -> (Value -> Either String (Loop.Config, Natural)) -> Object -> IO (Either Error Interpreted)
 interpret target interpreter declared = case declaredRun interpreter declared of
     Left problem -> pure (Left problem)
-    Right (_, chosen, _, _) | L.Opd _ <- L.algorithm (Loop.settings chosen) -> pure (Left (Declaration "A distillation run is not inspected from its journal"))
-    Right (_, chosen, lag, workload) -> locate target chosen lag workload
+    Right (_, chosen, lag, workload) -> case L.algorithm (Loop.settings chosen) of
+        L.Grpo _ -> fmap Rewarded <$> locate target chosen lag workload
+        L.Opd teacher -> fmap (Distilled teacher) <$> locate target chosen lag workload
 
 declaredRun :: (Value -> Either String (Loop.Config, Natural)) -> Object -> Either Error (Value, Loop.Config, Natural, Value)
 declaredRun interpreter declared = do
@@ -192,11 +195,8 @@ proceed (Resumed started learned selected planned observed restarted@(Origin sta
         announce (object ["phase" .= ("resumed" :: String), "committed" .= [update | Update update <- Core.committed state]])
         if Core.committed state == Plan.updates planned then pure (Right ()) else begin learned selected planned restarted recorded
 
-declaration :: Run -> IO (Either Error (Replay.Declaration C.Graded))
-declaration = declarationOf Grouping
-
-declarationOf :: (C.Grade grade) => Learning grade -> RunOf grade -> IO (Either Error (Replay.Declaration grade))
-declarationOf learned selected@(Run chosen lag _) = fmap (\(planned, Published _ description) -> Replay.Declaration chosen lag planned (instantiated selected) (scanl (+) 0 (counts selected)) description (method learned)) <$> prepare learned selected
+declarationOf :: (C.Grade grade) => Replay.Method grade -> RunOf grade -> IO (Either Error (Replay.Declaration grade))
+declarationOf chosenMethod selected@(Run chosen lag _) = fmap (\(planned, Published _ description) -> Replay.Declaration chosen lag planned (instantiated selected) (scanl (+) 0 (counts selected)) description chosenMethod) <$> prepare chosenMethod selected
 
 method :: Learning grade -> Replay.Method grade
 method Grouping = Replay.Rewarded
@@ -210,10 +210,10 @@ instantiated (Run chosen _ document) = [\policy -> Loop.instantiate (policy, L.t
 counts :: RunOf grade -> [Natural]
 counts (Run _ _ document) = [genericLength (Workload.tasks declared) | declared <- Workload.cycles document]
 
-prepare :: (C.Grade grade) => Learning grade -> RunOf grade -> IO (Either Error (Plan.Plan, Published))
-prepare learned selected@(Run chosen lag document)
-    | Left problem <- algorithmic learned (L.algorithm (Loop.settings chosen)) = pure (Left (Declaration problem))
-    | Distilling _ teacher _ <- learned, any (any ((/= Algorithm.teacherTemperature teacher) . Workload.temperature) . Workload.tasks) (Workload.cycles document) = pure (Left (Declaration "Every task must be sampled at the teacher's temperature"))
+prepare :: (C.Grade grade) => Replay.Method grade -> RunOf grade -> IO (Either Error (Plan.Plan, Published))
+prepare chosenMethod selected@(Run chosen lag document)
+    | Left problem <- algorithmic chosenMethod (L.algorithm (Loop.settings chosen)) = pure (Left (Declaration problem))
+    | Replay.Taught teacher <- chosenMethod, any (any ((/= Algorithm.teacherTemperature teacher) . Workload.temperature) . Workload.tasks) (Workload.cycles document) = pure (Left (Declaration "Every task must be sampled at the teacher's temperature"))
     | sharedInference /= sharedLearning = pure (Left (Declaration "Both numerical roles must explicitly select shared execution"))
     | sharedInference && lag > 0 = pure (Left (Declaration "Shared execution requires staleness zero"))
     | sharedInference, Left problem <- Joint.validate (sharing chosen) = pure (Left (Declaration problem))
@@ -233,9 +233,9 @@ prepare learned selected@(Run chosen lag document)
     sharedInference = Loop.inferenceMode (Loop.backend chosen) == R.Shared
     sharedLearning = Loop.learningMode (Loop.backend chosen) == W.Shared
 
-algorithmic :: Learning grade -> L.Algorithm -> Either String ()
-algorithmic Grouping (L.Grpo _) = Right ()
-algorithmic Distilling {} (L.Opd _) = Right ()
+algorithmic :: Replay.Method grade -> L.Algorithm -> Either String ()
+algorithmic Replay.Rewarded (L.Grpo _) = Right ()
+algorithmic (Replay.Taught declared) (L.Opd chosen) | declared == chosen = Right ()
 algorithmic _ _ = Left "The run's workload and its learning settings name different algorithms"
 
 sharing :: Loop.Config -> (Worker.Worker, W.Worker, [[(String, String)]])

@@ -11,6 +11,8 @@ The Haskell core owns the training loop. Each cycle it chooses the policy, decla
 5. Verify the gradients, probabilities, adapter and learner state the worker wrote.
 6. Publish the checkpoint under a new name and make it current for the next cycle.
 
+With `--algorithm opd` the cohort has no rewards: step 2 also scores every rollout under a teacher, and step 3 takes the teacher's words in place of rewards and advantages, as described in [On-policy distillation](#on-policy-distillation).
+
 ## Cohorts and schedules
 
 `invar train` reads a JSON array of cycles from standard input. Each cycle has `tasks`, `order` and `delivery`, and each task has a name, a group, a prompt, a token limit, a temperature, a seed and an answer. `Invar.Cohort` checks the declaration before anything runs: names are distinct, every group has at least two members so normalization is defined, and every task requests the cohort's policy.
@@ -55,6 +57,18 @@ After the update the worker writes `probabilities.json` with each sample's proxi
 ## Update execution
 
 `Invar.Learn.Worker.prepare` binds the learning plan to a call, attempt and instance. The worker receives one JSON line holding the invocation, the lowered request and a separate load program, together with the model cache, the current checkpoint, the fixed reference adapter and a new output directory. It reports the learner load and consumption, exchanges the optimizer steps described above, and reports the result. The core accepts the result only after load, consumption and every step matched the binding, and then verifies the output: `gradients.safetensors`, which holds the first step's gradients before AdamW, and `learner.pt` by file digest, `adapter.safetensors` by the digest of its tensor contents, and `probabilities.json` by digest and against the exchange. The gradient norms in the update summary cover the same first step. Any mismatch stops the cycle before publication.
+
+## On-policy distillation
+
+`invar train --algorithm opd` trains the policy toward a teacher's log probabilities on the student's own rollouts, with the update `opd-token-mean/v1`. Its tasks have a name, a prompt, a token limit, a temperature and a seed, and no answer or group. The teacher is declared on the command line: its model, revision, adapter, base, assembly and profile identities and the temperature it scores at. Its tokenizer must be the student's, and every task must be sampled at the teacher's temperature. A teacher without an adapter declares the digest of the empty tensor set, and the Hugging Face and MLX workers then load its base alone. `--teacher` names the teacher's score worker, which runs with `--inference-python` and `--cache`, `--teacher-adapter` its adapter file and `--teacher-config` its configuration, which names the teacher's checkpoint for those workers.
+
+Distillation runs through the event runtime. When a rollout's trajectory is admitted, the runtime prepares the teacher's score of that exact token path under the teacher's identities and runs it in its own score process. The process must load the declared model and identities and report one FP32 log probability for every response token at the student's temperature, with no truncation. The journal reserves the process under the role `teacher` and records the teacher call and the admitted reading, and the rollout is complete only after its reading is admitted and journaled: its completion carries one digest over the trajectory, the teacher call and every teacher word. The teacher scores in the rollout thread, so it delays the next cohort's rollout.
+
+The update takes each sample's teacher words t as a fixed input. Every teacher word must be a finite FP32 log probability no greater than 0. `Invar.Learn.Stream` sets the advantage of each token to A = round32(t − o), with o the frozen proximal word, and the scalar objective above runs with that advantage per token, so the weight w, the clipping and the reference penalty apply unchanged. The original recipe takes the sampled word b where this update takes o; the two agree when o = b. At the start of an update, where c = o, clipping does not bind and the penalty is 0, each token's cotangent in real arithmetic is −w·A/N, the gradient of the unclipped importance-sampled objective with the same A. With several optimizer steps, active clipping or rollouts from an earlier version, the objective is a declared per-token surrogate for the sequence-level reverse KL.
+
+The teacher supplies identified readings: the core checks that each reading comes from the declared teacher and scores that sample's path. The core decides how the readings become advantages, losses and cotangents, and the run, the probabilities artifact and the history apply the same functions to the same words. The models' forward passes, gradients and optimizer steps remain the workers' computations, checked against their records as [contract.md](contract.md) describes. The difference between teacher and student words is the training signal.
+
+`invar train --resume` replays a distillation run as it does any run, readmitting every teacher transcript as the score of the rollout it names and checking each journaled digest. The results of published updates are kept, so their readings are never scored again; an update that was not published runs again from its rollouts, teacher scores included. `invar inspect history --run` admits a distillation run the same way and reports each generation's teacher readings beside its inferences.
 
 ## Request and step contract
 

@@ -1,7 +1,7 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.Workload (DocumentOf, Document, CycleOf, Cycle, TaskOf, Task, Declared (..), decode, decodeOf, digest, value, describe, cycles, tasks, order, delivery, name, group, prompt, tokens, temperature, seed, rule, grade) where
+module Invar.Workload (DocumentOf, Document, CycleOf, Cycle, TaskOf, Task, Declared (..), Shape (..), decode, decodeOf, digest, value, describe, shape, cycles, tasks, order, delivery, name, group, prompt, tokens, temperature, seed, rule, grade) where
 
 import Control.Monad (unless, when)
 import Crypto.Hash.SHA256 qualified as SHA256
@@ -93,7 +93,13 @@ value :: DocumentOf grade -> Value
 value (Document _ original _) = original
 
 describe :: DocumentOf grade -> Value
-describe document = object ["digest" .= digest document, "cohorts" .= map (map taskValue . tasks) (cycles document)]
+describe document = object ["digest" .= digest document, "cohorts" .= shapeCohorts (shape document)]
+
+data Shape = Shape {shapeDigest :: String, shapeCohorts :: [[Value]], shapeCycles :: [([String], [Natural], [Natural])]}
+    deriving (Eq, Show)
+
+shape :: DocumentOf grade -> Shape
+shape document = Shape (digest document) [map taskValue (tasks selected) | selected <- cycles document] [(map name (tasks selected), order selected, delivery selected) | selected <- cycles document]
 
 cycles :: DocumentOf grade -> [CycleOf grade]
 cycles (Document _ _ listed) = listed

@@ -404,7 +404,7 @@ finishedHistory = do
     checked <- inspected fixture output >>= evalEither
     evalIO (Bytes.readFile journal) >>= (=== before)
     case chosen fixture of
-        Runtime.Run _ _ document -> History.workload checked === document
+        Runtime.Run _ _ document -> History.workload checked === Workload.shape document
     Loop.checkpoint (History.config checked) === root fixture </> "input"
     length [() | Object fields <- History.loads checked, Fields.lookup "stage" fields == Just "load"] === 2
     length (History.generations checked) === 1
