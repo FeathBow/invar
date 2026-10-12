@@ -39,6 +39,7 @@ data Backend = Backend
     , learningMode :: W.Mode
     , cache :: FilePath
     , sessions :: [[(String, String)]]
+    , teacherMode :: W.Mode
     }
 data Config = Config {backend :: Backend, root :: FilePath, checkpoint :: FilePath, reference :: FilePath, settings :: L.Settings, publication :: S.Method}
 data CycleOf grade = Cycle {tasks :: [C.TaskOf grade], order :: [Natural], delivery :: [Natural]}

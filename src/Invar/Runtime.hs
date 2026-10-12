@@ -47,6 +47,7 @@ import Invar.Policy qualified as Policy
 import Invar.Rollout qualified as R
 import Invar.Rollout.Internal qualified as Internal
 import Invar.Score qualified as Score
+import Invar.Score.Resident qualified as Hosted
 import Invar.Score.Worker qualified as Scoring
 import Invar.Spec.Invocation qualified as V
 import Invar.Store qualified as Store
@@ -72,6 +73,10 @@ data Learning grade where
     Grouping :: Learning C.Graded
     Distilling :: Worker.Worker -> Algorithm.Teacher -> MVar (Map Natural (Map String L.Reading)) -> Learning C.Ungraded
 
+data Scorer grade where
+    Absent :: Scorer C.Graded
+    Present :: (Natural -> V.Binding -> Score.Call -> IO (Either Scoring.Failure Score.Report)) -> Scorer C.Ungraded
+
 data Published = Published Loop.Checkpoint Policy.Description
 
 data Origin = Origin Core.State [Command] (Map Natural Published) Natural Natural Natural
@@ -96,6 +101,7 @@ data Shared scope grade = Shared
     , driver :: R.Driver scope
     , runner :: Owner.Runner
     , learning :: Learning grade
+    , scorer :: Scorer grade
     }
 
 data Recorder = Recorder
@@ -130,19 +136,19 @@ launch learned selected@(Run chosen _ document) arguments = do
                 begin learned selected planned (Origin state commands (Map.singleton 0 initial) 0 0 0) recorded
 
 resume :: FilePath -> (Value -> Either String (Loop.Config, Natural)) -> (Value -> Either String Worker.Worker) -> IO (Either Error ())
-resume directory interpreter teaching = do
+resume directory interpreter teachers = do
     target <- canonicalizePath directory
-    either Left id <$> Journal.resume (target </> "journal.jsonl") (admit target (interpreter, teaching)) proceed
+    either Left id <$> Journal.resume (target </> "journal.jsonl") (admit target (interpreter, teachers)) proceed
 
 admit :: FilePath -> (Value -> Either String (Loop.Config, Natural), Value -> Either String Worker.Worker) -> [Object] -> IO (Either Error Resumed)
-admit target (interpreter, teaching) recorded = case traverse (parseEither Entry.decode) recorded of
+admit target (interpreter, teachers) recorded = case traverse (parseEither Entry.decode) recorded of
     Left problem -> pure (Left (Recovery problem))
     Right (Entry.Declared started declared : later) ->
         withCurrentDirectory started $ case declaredRun interpreter declared of
             Left problem -> pure (Left problem)
             Right (arguments, chosen, lag, workload) -> case L.algorithm (Loop.settings chosen) of
                 L.Grpo _ -> locate target chosen lag workload >>= either (pure . Left) (replayed started later Grouping)
-                L.Opd teacher -> case teaching arguments of
+                L.Opd teacher -> case teachers arguments of
                     Left problem -> pure (Left (Declaration problem))
                     Right worker -> do
                         readings <- newMVar Map.empty
@@ -256,7 +262,7 @@ begin learned selected@(Run chosen lag _) planned (Origin state commands version
     ended <- newEmptyMVar
     let recording = Recorder recorded (Loop.root chosen </> "transcripts") counted next linked prepared owner
         running :: Internal.Driver scope -> Owner.Runner -> IO (Either Error ())
-        running collector updater = do
+        running collector updater = teaching recording (Loop.teacherMode engine) learned $ \present -> do
             void (Internal.reserve collector identities)
             shared <-
                 Shared chosen lag planned (instantiated selected) (scanl (+) 0 (counts selected)) recording
@@ -271,6 +277,7 @@ begin learned selected@(Run chosen lag _) planned (Origin state commands version
                     <*> pure collector
                     <*> pure updater
                     <*> pure learned
+                    <*> pure present
             execute shared commands
     if Loop.inferenceMode engine == R.Shared
         then recovering ended $ either (Left . Learning) id <$> Joint.withRecordedShared (sharing chosen) (sharedTranscript recording) (\pool updater -> R.withDriver (\(Internal.Driver gate counter _ _) -> running (Internal.Driver gate counter (Just pool) Nothing) updater))
@@ -279,6 +286,24 @@ begin learned selected@(Run chosen lag _) planned (Origin state commands version
                 owned <- Owner.withRecordedRunner (Loop.learningMode engine) (Loop.updateWorker chosen (initial, 0)) (learnerTranscript recording (Loop.learningMode engine)) (running collector)
                 pure (either (Left . Learning) id owned)
             pure (either (Left . Rollout) id outcome)
+
+teaching :: Recorder -> W.Mode -> Learning grade -> (Scorer grade -> IO (Either Error ())) -> IO (Either Error ())
+teaching _ _ Grouping continue = continue Absent
+teaching recording W.Resident (Distilling worker _ _) continue = do
+    number <- reserve recording Entry.Teacher 0
+    opened <- transcribe recording number
+    hosted <- Hosted.withResident worker 0 opened $ \owner -> Right <$> continue (Present (\request binding call -> taught recording (request, binding, number) >> Hosted.run owner call))
+    pure (either (Left . Teaching . show) id hosted)
+teaching recording _ (Distilling worker _ _) continue = continue (Present single)
+  where
+    single request binding call = do
+        number <- reserve recording Entry.Teacher 0
+        opened <- transcribe recording number
+        taught recording (request, binding, number)
+        Scoring.run worker opened call
+
+taught :: Recorder -> (Natural, V.Binding, Natural) -> IO ()
+taught recording (request, binding, number) = Journal.append (journal recording) (Entry.encode (Entry.Taught request binding number))
 
 -- A cleanup that fails after the run has recorded its own failure must not replace it, or the report loses the update number and the cause the run was ending for; a cleanup failure on a run that recorded nothing is still the report.
 recovering :: MVar (Either Error ()) -> IO (Either Error ()) -> IO (Either Error ())
@@ -446,20 +471,17 @@ collect shared (update, version) = do
         void (transition shared (Completed (Worker slot) (Epoch (epoch (recorder shared))) (Request request) result))
 
 completed :: Shared scope grade -> (Natural, String) -> Natural -> Trajectory -> String -> IO String
-completed shared (update, named) request admitted digest = case learning shared of
-    Grouping -> pure digest
-    Distilling worker teacher readings -> do
-        let teaching :: Either String value -> IO value
-            teaching = either (\problem -> fail' shared (Teaching problem) >> ioError (userError problem)) pure
-        planned <- teaching (Teacher.prepare teacher (Inference.sampled admitted))
+completed shared (update, named) request admitted digest = case (learning shared, scorer shared) of
+    (Grouping, _) -> pure digest
+    (Distilling _ declared readings, Present score) -> do
+        let failed :: Either String value -> IO value
+            failed = either (\problem -> fail' shared (Teaching problem) >> ioError (userError problem)) pure
+        planned <- failed (Teacher.prepare declared (Inference.sampled admitted))
         ordinal <- Internal.reserve (driver shared) 1
         let binding = V.ordinal ordinal
-        call <- teaching (first show (Score.bind binding planned))
-        number <- reserve (recorder shared) Entry.Teacher 0
-        transcript <- transcribe (recorder shared) number
-        Journal.append (journal (recorder shared)) (Entry.encode (Entry.Taught request binding number))
-        scored <- Scoring.run worker transcript call >>= teaching . first show
-        reading <- teaching (Teacher.reading scored)
+        call <- failed (first show (Score.bind binding planned))
+        scored <- score request binding call >>= failed . first show
+        reading <- failed (Teacher.reading scored)
         let result = Teacher.joined digest reading
         Journal.append (journal (recorder shared)) (Entry.encode (Entry.Read request binding result))
         modifyMVar_ readings (pure . Map.insertWith Map.union update (Map.singleton named reading))

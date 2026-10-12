@@ -151,7 +151,7 @@ built inference learning = do
     learner <- evalEither (parseEither (.: "learner") finished)
     successor <- evalEither (Policy.successor adapter initial)
     let worker = R.worker chosen
-        backend = Loop.Backend "unused learning executable" (Worker.executable worker) (Worker.script worker) (Worker.configuration worker) inference "unused update script" learning (Worker.cache worker) (R.sessions chosen)
+        backend = Loop.Backend "unused learning executable" (Worker.executable worker) (Worker.script worker) (Worker.configuration worker) inference "unused update script" learning (Worker.cache worker) (R.sessions chosen) Learner.Process
         config = Loop.Config backend (root </> "run") (root </> "input") (root </> "reference") settings Store.RenameExclusive
         requests = map Request [0 .. count - 1]
         exited = Entry.Finished number (Transcript.Exited ExitSuccess Transcript.Complete)

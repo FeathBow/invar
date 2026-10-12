@@ -141,8 +141,8 @@ responseLine session (exchange, (collected, granted)) received = do
                 case replied of
                     Left problem -> reject session (Rejected problem)
                     Right encoded -> send (pipes session) encoded >> response session exchange (observed, granted)
-        Right "result" | not granted -> reject session (Protocol "Batch result arrived without approved consumption")
-        Right "result" -> do
+        Right terminal | terminal `elem` ["result", "score_result"], not granted -> reject session (Protocol "Batch result arrived without approved consumption")
+        Right terminal | terminal `elem` ["result", "score_result"] -> do
             completed <- completion exchange output
             case completed of
                 Left problem -> reject session (Rejected problem)

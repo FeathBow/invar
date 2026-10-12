@@ -26,6 +26,7 @@ module Invar.Score (
     logRatio,
     fullVocabulary,
     fact,
+    loadFact,
     describe,
 ) where
 
@@ -207,6 +208,9 @@ logRatio (Report _ _ body _) = Output.logRatio body
 
 fullVocabulary :: Report -> Maybe S.Distribution
 fullVocabulary (Report _ _ body _) = Output.fullVocabulary body
+
+loadFact :: Report -> L.Fact
+loadFact (Report _ value _ _) = value
 
 fact :: Report -> S.Fact
 fact (Report _ _ _ value) = value

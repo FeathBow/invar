@@ -57,7 +57,7 @@ agreed = do
     preparing <- Sessions.optionsWith (base </> "prepared") 1 0 (adapter, Just (L.reference settings))
     let worker = R.worker opening
         inferring = base </> "inference.sh"
-        backend = Loop.Backend "/bin/sh" (Worker.executable worker) inferring Nothing R.Serial (base </> "learner.sh") Learner.Process (Worker.cache worker) (R.sessions opening)
+        backend = Loop.Backend "/bin/sh" (Worker.executable worker) inferring Nothing R.Serial (base </> "learner.sh") Learner.Process (Worker.cache worker) (R.sessions opening) Learner.Process
         config output = Loop.Config backend output (base </> "input") (base </> "reference") settings Store.RenameExclusive
         updated = settings {L.policy = adapter, L.learner = learner, L.schedule = L.synchronous 1 adapter}
         scoring = Loop.scoring (config base) (Loop.Checkpoint "" adapter learner)

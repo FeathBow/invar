@@ -120,7 +120,7 @@ report generated = Lazy.putStrLn (encode (object ["phase" .= ("published" :: Str
 
 configure :: O.Fields -> Either String Loop.Config
 configure fields = do
-    backend <- Loop.Backend <$> string "python" <*> string "inference-python" <*> string "inference" <*> pure (O.optional fields "inference-config") <*> InferenceInput.mode (O.optional fields "inference-mode") <*> string "learning" <*> learningMode (O.optional fields "learning-mode") <*> string "cache" <*> Dataset.sessions (O.optional fields "devices")
+    backend <- Loop.Backend <$> string "python" <*> string "inference-python" <*> string "inference" <*> pure (O.optional fields "inference-config") <*> InferenceInput.mode (O.optional fields "inference-mode") <*> string "learning" <*> learningMode (O.optional fields "learning-mode") <*> string "cache" <*> Dataset.sessions (O.optional fields "devices") <*> teacherMode (O.optional fields "teacher-mode")
     Loop.Config backend <$> string "output" <*> string "checkpoint" <*> string "reference" <*> (algorithm fields >>= (`settingsWith` fields)) <*> publication fields
   where
     string = O.required fields
@@ -141,6 +141,12 @@ teacherWorker :: O.Fields -> Either String Infer.Worker
 teacherWorker fields = Infer.Worker <$> string "inference-python" <*> string "teacher" <*> string "cache" <*> string "teacher-adapter" <*> pure [] <*> pure (O.optional fields "teacher-config")
   where
     string = O.required fields
+
+teacherMode :: Maybe String -> Either String Worker.Mode
+teacherMode Nothing = Right Worker.Process
+teacherMode (Just "process") = Right Worker.Process
+teacherMode (Just "resident") = Right Worker.Resident
+teacherMode _ = Left "Invalid teacher mode: expected process or resident"
 
 learningMode :: Maybe String -> Either String Worker.Mode
 learningMode Nothing = Right Worker.Process
@@ -178,13 +184,14 @@ usage :: String
 usage = usageInfo "Usage: invar train OPTIONS < tasks.json\nAll options except --devices, --inference-config, --inference-mode, --learning-mode, --steps, --staleness, --reference-source, --algorithm and the teacher options are required; opd takes the teacher options in place of --delta. Input is a nonempty JSON array of declared cycles.\nUsage: invar train --resume DIRECTORY\nResume an interrupted run of the event runtime from the journal in its output directory, which supplies every other option and the workload." options
 
 options :: [OptDescr (String, String)]
-options = O.descriptions [("publication", "Checkpoint publication: rename or reference"), ("devices", "Optional comma-separated CUDA devices, one rollout worker process per device"), ("python", "Learning Python executable"), ("inference-python", "Inference Python executable"), ("inference", "Inference worker script"), ("inference-config", "Optional inference worker launch configuration"), ("inference-mode", "Inference execution: serial (default), batch, resident or shared"), ("learning", "Update worker script"), ("learning-mode", "Learning execution: process (default), resident or shared; shared requires both roles"), ("cache", "Pinned model cache"), ("output", "New output directory"), ("checkpoint", "Initial paired checkpoint directory"), ("reference", "Fixed reference adapter file"), ("staleness", "Optional staleness d, 0 when omitted: update u learns from rollouts of version max(0, u - d) while later rollouts may run. Every run goes through the event runtime except shared inference and learning without this option, which runs the lockstep loop; shared execution runs only with d = 0"), ("resume", "Output directory of an interrupted run of the event runtime; it takes no other option"), ("algorithm", "Learning algorithm: grpo (default), or opd, which reads a workload without answers or groups and needs every teacher option except the optional --teacher-config")] ++ O.descriptions teacherOptions ++ settingsOptions
+options = O.descriptions [("publication", "Checkpoint publication: rename or reference"), ("devices", "Optional comma-separated CUDA devices, one rollout worker process per device"), ("python", "Learning Python executable"), ("inference-python", "Inference Python executable"), ("inference", "Inference worker script"), ("inference-config", "Optional inference worker launch configuration"), ("inference-mode", "Inference execution: serial (default), batch, resident or shared"), ("learning", "Update worker script"), ("learning-mode", "Learning execution: process (default), resident or shared; shared requires both roles"), ("cache", "Pinned model cache"), ("output", "New output directory"), ("checkpoint", "Initial paired checkpoint directory"), ("reference", "Fixed reference adapter file"), ("staleness", "Optional staleness d, 0 when omitted: update u learns from rollouts of version max(0, u - d) while later rollouts may run. Every run goes through the event runtime except shared inference and learning without this option, which runs the lockstep loop; shared execution runs only with d = 0"), ("resume", "Output directory of an interrupted run of the event runtime; it takes no other option"), ("algorithm", "Learning algorithm: grpo (default), or opd, which reads a workload without answers or groups and needs every teacher option except --teacher-config and --teacher-mode")] ++ O.descriptions teacherOptions ++ settingsOptions
 
 teacherOptions :: [(String, String)]
 teacherOptions =
     [ ("teacher", "Distillation teacher score worker script, run with --inference-python and --cache")
     , ("teacher-adapter", "Teacher adapter file; a file with no tensors loads the teacher's base alone")
     , ("teacher-config", "Optional teacher worker configuration")
+    , ("teacher-mode", "Teacher execution: process (default), one score process per rollout, or resident, one process for the run")
     , ("teacher-model", "Teacher model name")
     , ("teacher-revision", "Teacher model revision")
     , ("teacher-digest", "Teacher canonical adapter tensor SHA-256")

@@ -22,7 +22,7 @@ import Invar.Spec.Invocation qualified as Invocation
 import Invar.Spec.Load qualified as Load
 import Numeric.Natural (Natural)
 
-data Role = Inference | Learning | Shared deriving (Eq, Show)
+data Role = Inference | Learning | Shared | Teacher deriving (Eq, Show)
 data Owner = Owner Role Natural deriving (Eq, Show)
 data Release = Release Owner String [Load.Fact]
 
@@ -41,6 +41,7 @@ ownerValue (Owner role session) = object ["role" .= name role, "session" .= sess
     name Inference = "inference" :: Text
     name Learning = "learning"
     name Shared = "shared"
+    name Teacher = "teacher"
 
 releaseValue :: Text -> Release -> Value
 releaseValue action (Release owner digest facts) =

@@ -139,7 +139,7 @@ class BoundScoringTests(BoundScoreFixture, unittest.TestCase):
         for permission in ("", json.dumps({"binding": call["binding"], "program": "incorrect"}) + "\n"):
             incoming = io.StringIO(planned.stdout + permission)
             output = io.StringIO()
-            options = SimpleNamespace(cache=cache, adapter=checkpoint, config=self.config)
+            options = SimpleNamespace(cache=cache, adapter=checkpoint, config=self.config, session=None)
             with self.assertRaises(ValueError):
                 scoring.run(options, loader=load, source=incoming, output=output)
             stages = [json.loads(line)["stage"] for line in output.getvalue().splitlines()]

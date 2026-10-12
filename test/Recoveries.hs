@@ -102,7 +102,7 @@ preparedFrom document = do
         worker = R.worker sessions
         inferring = base </> "inference.sh"
         following = Worker.script (R.worker retried)
-        backend = Loop.Backend "/bin/sh" (Worker.executable worker) inferring Nothing R.Serial (base </> "learner.sh") Learner.Process (Worker.cache worker) (R.sessions sessions)
+        backend = Loop.Backend "/bin/sh" (Worker.executable worker) inferring Nothing R.Serial (base </> "learner.sh") Learner.Process (Worker.cache worker) (R.sessions sessions) Learner.Process
         config = Loop.Config backend (base </> "run") (base </> "input") (base </> "reference") settings Store.RenameExclusive
     evalIO $ do
         writeFile (base </> "learner0.sh") (copying 0 ++ firstLearner)
