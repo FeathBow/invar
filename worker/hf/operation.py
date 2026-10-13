@@ -42,14 +42,13 @@ def load(path):
 
 
 def main():
-    from huggingface_hub import snapshot_download
-    from worker.hf.model import MODEL, REVISION
+    from worker.hf.model import declared, snapshot
 
-    parser = argparse.ArgumentParser(description="Identify the pinned tokenizer operation without loading model weights")
+    parser = argparse.ArgumentParser(description="Identify the declared model's tokenizer operation without loading model weights")
     parser.add_argument("--cache", type=Path, required=True)
+    parser.add_argument("--config", type=Path, required=True)
     options = parser.parse_args()
-    path = snapshot_download(MODEL, revision=REVISION, cache_dir=options.cache, local_files_only=True)
-    print(digest(load(path)))
+    print(digest(load(snapshot(options.cache, declared(options.config)))))
 
 
 if __name__ == "__main__":

@@ -27,7 +27,7 @@ import System.FilePath ((</>))
 import System.IO (hClose)
 
 data Mode = Process | Resident | Shared deriving (Eq, Show)
-data Worker = Worker {executable :: FilePath, script :: FilePath, cache :: FilePath, checkpoint :: FilePath, reference :: FilePath, output :: FilePath}
+data Worker = Worker {executable :: FilePath, script :: FilePath, cache :: FilePath, checkpoint :: FilePath, reference :: FilePath, output :: FilePath, configuration :: Maybe FilePath}
 
 type role CallOf nominal nominal
 data CallOf scope grade = Call (L.PlanOf scope grade) V.Binding V.Runtime String Hooks

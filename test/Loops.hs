@@ -37,7 +37,7 @@ setup :: FilePath -> PropertyT IO (Loop.Config, Loop.Cycle)
 setup root = do
     chosen <- Fixture.options root
     let worker = R.worker chosen
-        backend = Loop.Backend "unused learning executable" (W.executable worker) (W.script worker) Nothing R.Serial "unused update script" Learner.Process (W.cache worker) [[]] Learner.Process
+        backend = Loop.Backend "unused learning executable" (W.executable worker) (W.script worker) Nothing R.Serial "unused update script" Nothing Learner.Process (W.cache worker) [[]] Learner.Process
         learning = F.configured
     initialDescription <- evalEither (Policy.describe ("protocol-fixture", "fixture-revision") (L.policy learning, L.tokenizer learning, L.behaviorBase learning, L.behaviorAssembly learning))
     evalIO $ do

@@ -44,13 +44,17 @@ def run(options, *, source, loader, execute, permission):
 
 
 def main():
-    options = arguments()
+    parser = argparse.ArgumentParser(description="Standalone inference with an explicitly bound adapter")
+    parser.add_argument("--config", type=Path, required=True)
+    options = arguments(parser=parser)
     from functools import partial
     from worker.hf.inference import execute, load
+    from worker.hf.model import declared
     from worker.invocation import approve
     from worker.hf.metrics import measure
 
-    run(options, source=sys.stdin, loader=load, execute=partial(execute, measure=measure), permission=approve)
+    run(options, source=sys.stdin, loader=partial(load, declared=declared(options.config)),
+        execute=partial(execute, measure=measure), permission=approve)
 
 
 if __name__ == "__main__":

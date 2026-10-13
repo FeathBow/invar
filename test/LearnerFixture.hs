@@ -136,12 +136,12 @@ scenario :: [Exchange scope grade] -> Scenario scope grade
 scenario exchanges = Scenario exchanges (object ["stage" .= String "closed", "format" .= String "invar-resident-v1", "owner" .= owner, "groups" .= length exchanges, "measurement" .= measurement "closed"]) "IFS= read -r extra && exit 29\nexit 0"
 
 worker :: FilePath -> W.Worker
-worker root = W.Worker "/bin/sh" (root </> "learner.sh") root "initial launch checkpoint" (root </> "fixed reference") "initial launch output"
+worker root = W.Worker "/bin/sh" (root </> "learner.sh") root "initial launch checkpoint" (root </> "fixed reference") "initial launch output" (Just "learner configuration")
 
 script :: FilePath -> Scenario scope grade -> String
 script root selected = unlines (header ++ concat (zipWith groupScript [0 :: Int ..] (groups selected)) ++ closing)
   where
-    header = ["test \"$1\" = " ++ quote ("--cache=" ++ root) ++ " || exit 20", "test \"$2\" = " ++ quote ("--reference=" ++ W.reference (worker root)) ++ " || exit 20", "test \"$3\" = '--session=0' || exit 20", "printf '%s\\n' \"$$\" >> " ++ quote (root </> "learner-pids")]
+    header = ["test \"$1\" = " ++ quote ("--cache=" ++ root) ++ " || exit 20", "test \"$2\" = " ++ quote ("--reference=" ++ W.reference (worker root)) ++ " || exit 20", "test \"$3\" = '--session=0' || exit 20", "test \"$4\" = '--config=learner configuration' || exit 20", "printf '%s\\n' \"$$\" >> " ++ quote (root </> "learner-pids")]
     closing = [receive "closing" (Bytes.init (wire [object ["format" .= String "invar-resident-v1", "owner" .= owner, "action" .= String "close"]])), "printf '%s\\n' closed > " ++ quote (root </> "learner-closed"), emit [closed selected], ending selected]
     groupScript index exchange =
         [ receive "request" (Bytes.init (wire [object ["format" .= String "invar-learning-resident-v1", "checkpoint" .= Resident.checkpoint (paths exchange), "output" .= Resident.output (paths exchange), "call" .= W.input (call exchange)]]))

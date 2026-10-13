@@ -6,10 +6,9 @@ from pathlib import Path
 import sys
 
 from worker import core, registry, resident
-from worker.cohort import fields
 from worker.hf.inference import load, materialized
 from worker.hf.metrics import measure
-from worker.hf.model import MODEL, REVISION
+from worker.hf.model import declared
 from worker.hf.score import forced
 from worker.invocation import approve, request as request_value
 from worker.resident import Owner, Transcript
@@ -22,13 +21,6 @@ CACHE_ORIGIN = "fresh model cache per path; no source cache input"
 NUMERICS = "transformers/float32_softmax"
 IMPLEMENTATIONS = ("worker.scoring", "worker.hf.scoring", "worker.hf.score", "worker.hf.rollout", "worker.hf.decoding",
                    "worker.hf.inference", "worker.hf.model", "worker.hf.policy", "worker.tokenization")
-
-
-def declared(path):
-    if path is None:
-        return MODEL, REVISION
-    value = fields(core.decode(path.read_bytes()), "model revision")
-    return value["model"], value["revision"]
 
 
 def observe(runtime, selected, identities, *, measured):
@@ -101,7 +93,7 @@ def arguments():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cache", type=Path, required=True)
     parser.add_argument("--adapter", type=Path, required=True)
-    parser.add_argument("--config", type=Path)
+    parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--session", type=int)
     return parser.parse_args()
 

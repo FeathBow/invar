@@ -36,6 +36,7 @@ data Backend = Backend
     , inferenceConfiguration :: Maybe FilePath
     , inferenceMode :: R.Mode
     , learning :: FilePath
+    , learningConfiguration :: Maybe FilePath
     , learningMode :: W.Mode
     , cache :: FilePath
     , sessions :: [[(String, String)]]
@@ -201,6 +202,7 @@ updateWorker config (selected, ordinal) =
         , W.checkpoint = directory selected
         , W.reference = reference config
         , W.output = root config </> stagedName ordinal
+        , W.configuration = learningConfiguration (backend config)
         }
 
 publish :: Driver scope -> (Cursor, Observation.Observation scope) -> IO (Generation scope)

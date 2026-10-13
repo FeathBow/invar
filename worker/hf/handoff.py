@@ -70,6 +70,7 @@ def export(model, output, *, tokenizer, expected):
 def arguments():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cache", type=Path, required=True)
+    parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--adapter", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     for name in ("adapter", "base", "assembly", "tokenizer"):
@@ -79,11 +80,12 @@ def arguments():
 
 def main():
     from worker.hf.inference import load
+    from worker.hf.model import declared
 
     options = arguments()
     expected = CheckpointIdentity(adapter=options.adapter_digest, base=options.base_digest,
                                   assembly=options.assembly_digest, tokenizer=options.tokenizer_digest)
-    runtime = load(options.cache, options.adapter, expected=asdict(expected), role=LEARNING)
+    runtime = load(options.cache, options.adapter, expected=asdict(expected), declared=declared(options.config), role=LEARNING)
     receipt = export(runtime.model, options.output, tokenizer=runtime.tokenizer, expected=expected)
     print(json.dumps(receipt, sort_keys=True, allow_nan=False))
 
