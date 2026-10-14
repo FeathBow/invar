@@ -253,7 +253,7 @@ untaught = forM_ changes $ \(change, refusal) -> do
   where
     teacher path value = Map.adjust (nested path value) (S.Semantic "teacher")
     changes =
-        [ (teacher ["tokenizer"] (text (replicate 64 'e')), "The teacher's tokenizer must be the student's")
+        [ (teacher ["tokenizer"] (text "tokenizer"), "Expected lowercase SHA-256 teacher identities")
         , (Map.insert (S.Semantic "teacher_scores") (Mapping (Map.fromList [(2, Sequence [Atom (Bits32 0x3f000000)]), (9, Sequence [Atom (Bits32 0xbe800000)])])), "Expected finite FP32 words and nonpositive log probabilities")
         , (Map.insert (S.Semantic "teacher_scores") (Mapping (Map.fromList [(2, Sequence [Atom (Bits32 0xbfc00000), Atom (Bits32 0xbfc00000)]), (9, Sequence [Atom (Bits32 0xbe800000)])])), "Teacher scores must cover every response token")
         , (Map.adjust (nested ["epsilon"] (number 1)) (S.Semantic "algorithm"), "Invalid distillation coefficient configuration")

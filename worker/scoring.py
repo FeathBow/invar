@@ -33,19 +33,19 @@ class Source:
     inspection: bytes
 
 
-def prescribed(request, path, tokenizer, prefix):
+def bounded(request, path, coordinates):
     if not isinstance(path, TokenPath):
         raise ValueError("Native scoring requires an immutable prescribed token path")
-    if path.prefix != prefix:
-        raise ValueError("Scoring source prefix differs from the actual target tokenizer")
-    vocabulary = len(tokenizer)
-    if any(token >= vocabulary for token in (*path.prefix, *path.response)):
-        raise ValueError("Scoring source has a token outside the target tokenizer vocabulary")
-    eos = tokenizer.eos_token_id
-    if eos in path.response[:-1] or len(path.response) > request.limit:
-        raise ValueError("Scoring source extends past the declared stopping boundary")
-    if path.response[-1] != eos and len(path.response) != request.limit:
-        raise ValueError("Scoring source does not reach EOS or the declared horizon")
+    if any(token >= coordinates["input"] for token in (*path.prefix, *path.response[:-1])):
+        raise ValueError("Scoring path has a token outside the target's input embedding")
+    if any(token >= coordinates["output"] for token in path.response):
+        raise ValueError("Scoring path has a token outside the target's output distribution")
+    if len(path.response) > request.limit:
+        raise ValueError("Scoring path extends past the source horizon")
+
+
+def normalization(coordinates):
+    return {"over": "every target output coordinate", "width": coordinates["output"]}
 
 
 def source(encoded):
@@ -102,8 +102,8 @@ def decode(value):
         probe = Probe(steps=tuple(steps))
         probe.validate(len(selected.path.response))
     call = decode_call({key: item for key, item in value.items() if key not in ("source_inspection", "probe_steps")})
-    if request_value(selected.request) != request_value(call.request) or selected.tokenizer != call.identities["tokenizer"]:
-        raise ValueError("Score source differs from the declared target request or tokenizer")
+    if request_value(selected.request) != request_value(call.request):
+        raise ValueError("Score source differs from the declared target request")
     return call, selected, probe
 
 

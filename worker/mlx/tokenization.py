@@ -19,3 +19,7 @@ def digest(tokenizer):
 def verify(tokenizer, expected):
     return operation.verify(tokenizer, expected, prompt_settings=PROMPT_SETTINGS)
 
+
+
+def described(tokenizer, expected):
+    return operation.described(tokenizer, expected, prompt_settings=PROMPT_SETTINGS)

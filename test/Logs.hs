@@ -18,6 +18,7 @@ import Invar.Infer.Trajectory (Trajectory)
 import Invar.Spec.Invocation qualified as Invocation
 import Invar.Spec.Load qualified as Load
 import System.Exit (ExitCode (..))
+import TokenizerFixture qualified as Tokens
 
 single :: Infer.Plan -> Invocation.Binding -> (String, Bool) -> PropertyT IO ByteString
 single planned binding (text, limited) = do
@@ -30,7 +31,7 @@ single planned binding (text, limited) = do
         loading = field "load" envelope
         image = Infer.image requested
         materialization = ["tokenizer" .= Infer.tokenizer requested, "base" .= Infer.base requested, "assembly" .= Infer.assembly requested]
-        loaded = object (materialization ++ ["stage" .= String "loaded_adapter", "binding" .= bound, "load" .= loading, "image" .= object ["artifact" .= Bytes.unpack (Load.artifact image), "profile" .= Bytes.unpack (Load.profile image)], "requested" .= Infer.artifact requested, "consumed" .= Infer.artifact requested, "model" .= String "test-model", "revision" .= String "test-revision"])
+        loaded = object (materialization ++ ["stage" .= String "loaded_adapter", "tokenizer_description" .= Tokens.description, "binding" .= bound, "load" .= loading, "image" .= object ["artifact" .= Bytes.unpack (Load.artifact image), "profile" .= Bytes.unpack (Load.profile image)], "requested" .= Infer.artifact requested, "consumed" .= Infer.artifact requested, "model" .= String "test-model", "revision" .= String "test-revision"])
         consumed = object (materialization ++ ["stage" .= String "consumed", "binding" .= bound, "program" .= field "program" envelope, "load" .= loading, "adapter" .= Infer.artifact requested, "request" .= semantic])
         result = object (materialization ++ ["stage" .= String "result", "binding" .= bound, "adapter" .= Infer.artifact requested, "request" .= semantic, "tokens" .= [1, 2, 3 :: Int], "prompt_length" .= Number 1, "behavior" .= [-0.5, -0.25 :: Double], "behavior_bits" .= [0xbf000000, 0xbe800000 :: Word32], "text" .= text, "truncated" .= limited])
     pure (wire [object ["stage" .= String "load", "cpu_seconds" .= Number 1], loaded, consumed, object ["stage" .= String "inference", "cpu_seconds" .= Number 1], result])

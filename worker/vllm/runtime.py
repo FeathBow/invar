@@ -6,7 +6,7 @@ from safetensors.torch import load_file
 
 from worker.batch import FORMAT, capture
 from worker.report import ready, result
-from worker.hf.operation import digest as tokenizer_digest, verify
+from worker.hf.operation import described, digest as tokenizer_digest, verify
 from worker.hf.tensors import digest
 from worker.vllm.configuration import snapshot
 from worker.vllm.execution import generate
@@ -126,8 +126,8 @@ def execute(runtime, call, *, approve, measure, emit, previous=None, reference=N
     def permission(prepared):
         identities = observed(prepared, runtime, tokenizer=tokenizer)
         bound(identities, call.identities)
-        verify(runtime.tokenizer, tokenizer)
-        ready(call, identities, model=runtime.identity, previous=previous, emit=emit)
+        ready(call, identities, model=runtime.identity, description=described(runtime.tokenizer, tokenizer),
+              previous=previous, emit=emit)
         approve(call.invocation)
         verify(runtime.tokenizer, tokenizer)
 
@@ -164,7 +164,7 @@ def referenced(runtime, reference, *, config, selection_factory):
 
 def scored(scoring, trajectories, *, tokenizer, expected):
     from worker.scoring import TokenPath
-    from worker.vllm.crossscore import score
+    from worker.vllm.crossscore import coordinates, score
 
     paths = [TokenPath(prefix=tuple(item.tokens[0, :item.prompt_length].tolist()),
                        response=tuple(item.tokens[0, item.prompt_length:].tolist())) for item in trajectories]
@@ -174,8 +174,9 @@ def scored(scoring, trajectories, *, tokenizer, expected):
             raise ValueError("Native reference scoring prepared a different adapter or model")
 
     count = len(paths)
-    execution = score(scoring.engine, scoring.tokenizer, [item.request for item in trajectories], paths=paths,
-                      loras=[scoring.lora] * count, receipts=[scoring.receipt] * count, approve=check)
+    execution = score(scoring.engine, [item.request for item in trajectories], paths=paths,
+                      loras=[scoring.lora] * count, receipts=[scoring.receipt] * count, approve=check,
+                      coordinated=coordinates(scoring.engine))
     return tuple((expected["adapter"], item.log_probability_bits) for item in execution.scores)
 
 
@@ -192,8 +193,9 @@ def execute_batch(runtime, calls, *, approve, measure, emit, reference=None, con
         identities = observed(prepared, runtime, tokenizer=tokenizer)
         for call in calls:
             bound(identities, call.identities)
-        verify(runtime.tokenizer, tokenizer)
-        readiness = [capture(partial(ready, call, identities, model=runtime.identity, previous=None)) for call in calls]
+        description = described(runtime.tokenizer, tokenizer)
+        readiness = [capture(partial(ready, call, identities, model=runtime.identity, description=description, previous=None))
+                     for call in calls]
         emit("consumed", {"format": FORMAT, "calls": readiness})
         approve(tuple(call.invocation for call in calls))
         verify(runtime.tokenizer, tokenizer)

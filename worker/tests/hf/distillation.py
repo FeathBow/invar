@@ -128,7 +128,7 @@ class DistillationTests(unittest.TestCase):
     def setUpClass(cls):
         cls.root, settings = prepared("invar-distillation-")
         cls.teacher = MODELS[TEACHER]()
-        identity = identities(cls.teacher)
+        identity = identities(cls.teacher, TEACHER)
         adapter = cls.root / "teacher.safetensors"
         save_file({}, adapter)
         config = cls.root / "teacher.json"
@@ -136,7 +136,7 @@ class DistillationTests(unittest.TestCase):
         cls.settings = {**{key: value for key, value in settings.items() if key != "delta"},
                         "algorithm": "opd", "teacher": SCORE_ENTRY, "teacher-adapter": adapter, "teacher-config": config,
                         "teacher-model": TEACHER[0], "teacher-revision": TEACHER[1], "teacher-digest": identity["adapter"],
-                        "teacher-base-digest": identity["base"], "teacher-assembly-digest": identity["assembly"],
+                        "teacher-tokenizer-digest": identity["tokenizer"], "teacher-base-digest": identity["base"], "teacher-assembly-digest": identity["assembly"],
                         "teacher-temperature": TEMPERATURE, "teacher-mode": cls.mode}
         cls.output = cls.root / "distilled"
         cls.records = execute([CORE, "train", *flags({**cls.settings, "output": cls.output, "staleness": 0})],

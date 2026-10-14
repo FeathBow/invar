@@ -28,30 +28,31 @@ class Execution:
     observations: tuple[dict, ...]
 
 
-def enqueued(engine, identities, *, requests, prefixes, choices, receipts, eos):
+def enqueued(engine, identities, *, requests, prefixes, choices, receipts, limits, stop):
     states = engine.llm_engine.output_processor.request_states
     if len(set(identities)) != len(requests) or set(states) != set(identities):
         raise ValueError("Native enqueue returned a different or repeated owned request set")
     result = tuple(Binding(internal=identity, external=states[identity].external_req_id, request=request,
-                           prompt=prefix, eos=eos, selection=choice, receipt=receipt)
-                   for identity, request, prefix, choice, receipt in
-                   zip(identities, requests, prefixes, choices, receipts, strict=True))
+                           prompt=prefix, tokens=limit, stop=stop, selection=choice, receipt=receipt)
+                   for identity, request, prefix, choice, receipt, limit in
+                   zip(identities, requests, prefixes, choices, receipts, limits, strict=True))
     if len({value.external for value in result}) != len(result):
         raise ValueError("Native output identities alias different owned requests")
     return result
 
 
-def bindings(engine, requests, *, prefixes, loras, receipts, eos):
+def bindings(engine, requests, *, prefixes, loras, receipts, limits, stop):
     if engine.llm_engine.has_unfinished_requests():
         raise RuntimeError("Native execution requires an engine with no other queued requests")
     if engine.llm_engine.model_config.logprobs_mode != LOGPROBS_MODE:
         raise ValueError("Native execution requires processed behavior log probabilities")
     selected = tuple(selection(lora) for lora in loras)
     identities = engine.enqueue([{"prompt_token_ids": list(prefix)} for prefix in prefixes],
-                                sampling_params=[parameters(request, eos=eos) for request in requests],
+                                sampling_params=[parameters(request, tokens=limit, stop=stop) for request, limit in zip(requests, limits, strict=True)],
                                 lora_request=list(loras), use_tqdm=False)
     try:
-        return enqueued(engine, identities, requests=requests, prefixes=prefixes, choices=selected, receipts=receipts, eos=eos)
+        return enqueued(engine, identities, requests=requests, prefixes=prefixes, choices=selected, receipts=receipts,
+                        limits=limits, stop=stop)
     except BaseException:
         engine.llm_engine.abort_request(identities, internal=True)
         raise
@@ -121,7 +122,8 @@ def generate(engine, tokenizer, requests, *, loras, receipts, approve):
     if not requests or len(requests) != len(loras) or len(requests) != len(receipts):
         raise ValueError("Native execution requires a prepared package for every request")
     prefixes = tuple(tuple(prompt(tokenizer, request.prompt)[0].tolist()) for request in requests)
-    queued = bindings(engine, requests, prefixes=prefixes, loras=loras, receipts=receipts, eos=tokenizer.eos_token_id)
+    queued = bindings(engine, requests, prefixes=prefixes, loras=loras, receipts=receipts,
+                      limits=tuple(request.limit for request in requests), stop=(tokenizer.eos_token_id,))
     with owned(engine, queued) as (prepared, observations):
         approve(prepared)
         engine.collective_rpc(permit)

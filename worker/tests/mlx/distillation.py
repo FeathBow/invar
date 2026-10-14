@@ -33,7 +33,8 @@ class DistillationTests(Training, unittest.TestCase):
         distilled = {**{key: value for key, value in settings.items() if key != "delta"},
                      "algorithm": "opd", "teacher": SCORE_ENTRY, "teacher-adapter": adapter, "teacher-config": configuration,
                      "teacher-mode": "resident", "teacher-model": TEACHER[0], "teacher-revision": TEACHER[1],
-                     "teacher-digest": identity["adapter"], "teacher-base-digest": identity["base"],
+                     "teacher-digest": identity["adapter"], "teacher-tokenizer-digest": identity["tokenizer"],
+                     "teacher-base-digest": identity["base"],
                      "teacher-assembly-digest": identity["assembly"],
                      "teacher-temperature": 0.8}
         records, shared = self.trained((*prepared[:5], workload, *prepared[6:]), "distilled", settings=distilled, staleness=0)

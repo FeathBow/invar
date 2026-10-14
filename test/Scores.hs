@@ -17,13 +17,16 @@ import Invar.Infer.Result qualified as Result
 import Invar.Score qualified as Score
 import Invar.Spec.Invocation qualified as V
 import Invar.Spec.Load qualified as Load
+import Invar.Tokenizer qualified as Tokenizer
+import TokenizerFixture qualified as Tokens
 import Workloads (replace)
 
 scores :: Group
 scores =
     Group
         "Bound cached path scores"
-        [ ("a score takes the path, prompt, horizon, temperature and seed from its source and refuses a target with another tokenizer", once sourceInputs)
+        [ ("a score takes the path, prompt, horizon, temperature and seed from its source, and a target with another tokenizer consumes it only under the token space and coordinates it loaded", once sourceInputs)
+        , ("the last response token must fit the input embedding only when the execution feeds it, as the MLX lookahead does", once lookahead)
         , ("checked load and consumption produce a distinct score completion", once admitted)
         , ("path ratios preserve finite arithmetic signed zero and zero support", once arithmetic)
         , ("score bindings programs and materializations cannot be relabeled", once bindings)
@@ -61,7 +64,7 @@ fixtureWith configure original target = do
             foldr
                 (uncurry change)
                 sourceLoaded
-                [("binding", bound), ("load", field "load" envelope), ("image", object ["artifact" .= Bytes.unpack (Load.artifact image), "profile" .= Bytes.unpack (Load.profile image)]), ("requested", toJSON (Infer.artifact target)), ("consumed", toJSON (Infer.artifact target)), ("tokenizer", toJSON (Infer.tokenizer target)), ("base", toJSON (Infer.base target)), ("assembly", toJSON (Infer.assembly target))]
+                [("binding", bound), ("load", field "load" envelope), ("image", object ["artifact" .= Bytes.unpack (Load.artifact image), "profile" .= Bytes.unpack (Load.profile image)]), ("requested", toJSON (Infer.artifact target)), ("consumed", toJSON (Infer.artifact target)), ("tokenizer", toJSON (Infer.tokenizer target)), ("coordinates", Tokens.coordinates), ("base", toJSON (Infer.base target)), ("assembly", toJSON (Infer.assembly target))]
         consumed = change "stage" (String "consumed") envelope
         sourceResult = Inference.result source
         (prefix, response) = splitAt (fromIntegral (Result.promptLength sourceResult)) (Result.tokens sourceResult)
@@ -77,8 +80,8 @@ fixtureWith configure original target = do
                 , "prefix_tokens" .= prefix
                 , "response_tokens" .= response
                 , "log_probability_bits" .= Result.behaviorBits sourceResult
-                , "probability" .= object ["role" .= String "behavior", "log_base" .= String "e", "representation" .= String "F32 words", "zero_support_word" .= (0xff800000 :: Word32), "temperature" .= Infer.temperature request, "mask" .= String "none", "top_k" .= String "disabled", "top_p" .= String "disabled"]
-                , "execution" .= object ["engine" .= String "mlx_lm.generate.BatchGenerator", "sampling" .= object ["batch_size" .= (1 :: Int), "prefill_step" .= (2 :: Int)], "cache_origin" .= String "fresh native caches; no reference cache input", "unused_native_lookahead_draws" .= (1 :: Int), "truncated" .= Result.truncated sourceResult]
+                , "probability" .= object ["role" .= String "behavior", "log_base" .= String "e", "representation" .= String "F32 words", "zero_support_word" .= (0xff800000 :: Word32), "temperature" .= Infer.temperature request, "mask" .= String "none", "top_k" .= String "disabled", "top_p" .= String "disabled", "normalization" .= object ["over" .= String "every target output coordinate", "width" .= (100352 :: Int)]]
+                , "execution" .= object ["engine" .= String "mlx_lm.generate.BatchGenerator", "sampling" .= object ["batch_size" .= (1 :: Int), "prefill_step" .= (2 :: Int)], "cache_origin" .= String "fresh native caches; no reference cache input", "unused_native_lookahead_draws" .= (1 :: Int)]
                 , "implementation" .= object ["sources_sha256" .= object ["unit-fixture" .= Text.replicate 64 "a"], "packages" .= object ["fixture" .= String "v1"]]
                 ]
         result = object ["stage" .= String "score_result", "binding" .= bound, "observation" .= observed]
@@ -89,14 +92,33 @@ sourceInputs = do
     original <- Source.fixture
     planned <- evalEither (Infer.prepare request)
     source <- evalEither (Source.admitted planned Source.bound (wire original))
-    other <- evalEither (Infer.prepare request {Infer.tokenizer = replicate 64 'e'})
-    case Score.prepare (Inference.source source) (Score.targetOf other) of
-        Left (Score.Incompatible "tokenizer") -> success
-        unexpected -> annotateShow (fmap (Infer.requested . Score.target) unexpected) >> failure
     forM_ [request {Infer.prompt = "different"}, request {Infer.tokens = 9}, request {Infer.temperature = 1.1}, request {Infer.seed = 999}] $ \input -> do
         target <- evalEither (Infer.prepare input)
         scored <- evalEither (Score.prepare (Inference.source source) (Score.targetOf target))
         Infer.requested (Score.target scored) === request
+    let templated = Tokens.describedAs (replicate 64 '5') [(100000, "<eos>")]
+        extended = Tokens.describedAs (replicate 64 '3') [(100000, "<eos>"), (100001, "<audio>")]
+        missing = Tokens.describedAs (replicate 64 '3') []
+        identityOf = either error Tokenizer.identity . Tokenizer.describe
+        loadedWith description = alter 0 (change "tokenizer_description" description)
+    forM_ [(templated, True), (extended, True), (missing, False)] $ \(description, accepted) -> do
+        (call, events) <- fixtureFor original request {Infer.tokenizer = identityOf description}
+        case Score.admit call 0 (wire (loadedWith description events)) of
+            Right report | accepted -> field "target_tokenizer" (field "consumption" (Score.describe report)) === String (Text.pack (identityOf description))
+            Left (Score.Incompatible _) | not accepted -> success
+            unexpected -> annotateShow (fmap Score.describe unexpected) >> failure
+    (call, events) <- fixture
+    reject call (loadedWith templated events)
+    forM_ [object ["input" .= (2 :: Int), "output" .= (100352 :: Int)], object ["input" .= (100352 :: Int), "output" .= (3 :: Int)], object ["input" .= (0 :: Int), "output" .= (100352 :: Int)]] $ \coordinates ->
+        reject call (alter 0 (change "coordinates" coordinates) events)
+
+lookahead :: PropertyT IO ()
+lookahead = do
+    (call, events) <- fixture
+    let narrow = alter 0 (change "coordinates" (object ["input" .= (3 :: Int), "output" .= (100352 :: Int)])) events
+    reject call narrow
+    forM_ [transformersExecutionValue, nativeExecutionValue] $ \execution ->
+        evalEither (Score.admit call 0 (wire (changeObservation (change "execution" execution) narrow))) >> success
 
 admitted :: PropertyT IO ()
 admitted = do
@@ -140,7 +162,7 @@ correspondence :: PropertyT IO ()
 correspondence = do
     (call, events) <- fixture
     forM_ ["source_inspection_sha256", "source", "target", "request", "prefix_tokens", "response_tokens"] $ \key -> reject call (changeObservation (change key Null) events)
-    forM_ [("role", String "unscaled"), ("temperature", Number 2), ("top_k", String "8")] $ \(key, value) ->
+    forM_ [("role", String "unscaled"), ("temperature", Number 2), ("top_k", String "8"), ("normalization", object ["over" .= String "every target output coordinate", "width" .= (100351 :: Int)]), ("normalization", String "student vocabulary")] $ \(key, value) ->
         reject call (changeObservation (\body -> change "probability" (change key value (field "probability" body)) body) events)
     forM_ [("cache_origin", String "reference cache"), ("unused_native_lookahead_draws", Number 0), ("truncated", Bool False)] $ \(key, value) ->
         reject call (changeObservation (\body -> change "execution" (change key value (field "execution" body)) body) events)
@@ -184,7 +206,7 @@ nativeExecution = do
         _ -> failure
 
 nativeExecutionValue :: Value
-nativeExecutionValue = object ["engine" .= String "vllm.v1.worker.gpu_model_runner.GPUModelRunner", "cache_origin" .= String "target-owned native request caches; no source cache input", "path_control" .= String "replace sampled ids after native probability calculation", "native_sample_rows" .= (5 :: Int), "ignored_prefill_rows" .= (3 :: Int), "truncated" .= True]
+nativeExecutionValue = object ["engine" .= String "vllm.v1.worker.gpu_model_runner.GPUModelRunner", "cache_origin" .= String "target-owned native request caches; no source cache input", "path_control" .= String "replace sampled ids after native probability calculation", "native_sample_rows" .= (5 :: Int), "ignored_prefill_rows" .= (3 :: Int)]
 
 transformersExecution :: PropertyT IO ()
 transformersExecution = do
@@ -196,7 +218,7 @@ transformersExecution = do
     forM_ [("engine", String "transformers.generate"), ("cache_origin", String "source cache"), ("truncated", Bool False), ("path_control", String "replace sampled ids after native probability calculation")] $ \(key, value) -> reject call (changed key value)
 
 transformersExecutionValue :: Value
-transformersExecutionValue = object ["engine" .= String "transformers.forced_path", "cache_origin" .= String "fresh model cache per path; no source cache input", "truncated" .= True]
+transformersExecutionValue = object ["engine" .= String "transformers.forced_path", "cache_origin" .= String "fresh model cache per path; no source cache input"]
 
 alter :: Int -> (a -> a) -> [a] -> [a]
 alter selected modify = zipWith (\index value -> if index == selected then modify value else value) [0 ..]

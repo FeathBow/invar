@@ -24,6 +24,7 @@ import Store (workspace)
 import System.Directory (doesFileExist)
 import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
+import TokenizerFixture qualified as Tokens
 
 calls :: Group
 calls = Group "Bound inference protocol" [("completed reports retain the producing invocation", once completed), ("each phase binds call attempt and instance", once bindings), ("consumption matches exact program and semantic arguments", once consumed), ("missing repeated and reordered consumption cannot complete", once protocol), ("approval requires matching load and consumption before completion", once approval), ("worker transport withholds permission for mismatched consumption", once handshake), ("load facts and reviewed prefixes remain distinct from permission", once loadOwnership)]
@@ -40,7 +41,7 @@ identity :: String
 identity = replicate 64 'a'
 
 request :: I.Request
-request = I.Request identity (replicate 64 'c') (replicate 64 'e') (replicate 64 'f') "Compute the answer." 2 0.8 17
+request = I.Request identity Tokens.identity (replicate 64 'e') (replicate 64 'f') "Compute the answer." 2 0.8 17
 
 requestValue :: Value
 requestValue = object ["prompt" .= String "Compute the answer.", "tokens" .= Number 2, "temperature" .= Number 0.8, "seed" .= Number 17]
@@ -57,9 +58,9 @@ setupWith chosen = do
         loading = field "load" envelope
         image = I.image chosen
         served = I.artifact chosen
-        loaded = object ["stage" .= String "loaded_adapter", "binding" .= binding, "load" .= loading, "image" .= object ["artifact" .= Bytes.unpack (L.artifact image), "profile" .= Bytes.unpack (L.profile image)], "requested" .= served, "consumed" .= served, "tokenizer" .= replicate 64 'c', "base" .= replicate 64 'e', "assembly" .= replicate 64 'f', "model" .= String "test-model", "revision" .= String "test-revision"]
-        consumption = object ["stage" .= String "consumed", "binding" .= binding, "program" .= program, "load" .= loading, "adapter" .= served, "tokenizer" .= replicate 64 'c', "base" .= replicate 64 'e', "assembly" .= replicate 64 'f', "request" .= requestValue]
-        result = object ["stage" .= String "result", "binding" .= binding, "adapter" .= served, "tokenizer" .= replicate 64 'c', "base" .= replicate 64 'e', "assembly" .= replicate 64 'f', "request" .= requestValue, "tokens" .= [1, 2, 3 :: Int], "prompt_length" .= Number 1, "behavior" .= [-0.5, -0.25 :: Double], "behavior_bits" .= [0xbf000000, 0xbe800000 :: Word32], "text" .= String "#### 12", "truncated" .= True]
+        loaded = object ["stage" .= String "loaded_adapter", "binding" .= binding, "load" .= loading, "image" .= object ["artifact" .= Bytes.unpack (L.artifact image), "profile" .= Bytes.unpack (L.profile image)], "requested" .= served, "consumed" .= served, "tokenizer" .= Tokens.identity, "tokenizer_description" .= Tokens.description, "base" .= replicate 64 'e', "assembly" .= replicate 64 'f', "model" .= String "test-model", "revision" .= String "test-revision"]
+        consumption = object ["stage" .= String "consumed", "binding" .= binding, "program" .= program, "load" .= loading, "adapter" .= served, "tokenizer" .= Tokens.identity, "base" .= replicate 64 'e', "assembly" .= replicate 64 'f', "request" .= requestValue]
+        result = object ["stage" .= String "result", "binding" .= binding, "adapter" .= served, "tokenizer" .= Tokens.identity, "base" .= replicate 64 'e', "assembly" .= replicate 64 'f', "request" .= requestValue, "tokens" .= [1, 2, 3 :: Int], "prompt_length" .= Number 1, "behavior" .= [-0.5, -0.25 :: Double], "behavior_bits" .= [0xbf000000, 0xbe800000 :: Word32], "text" .= String "#### 12", "truncated" .= True]
     field "binding" envelope === binding
     pure (call, [loaded, consumption, result])
 

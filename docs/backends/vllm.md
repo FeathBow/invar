@@ -43,7 +43,7 @@ Every request names four identities, and the worker reports the values it observ
 | Identity | Computed by | Covers |
 | --- | --- | --- |
 | `adapter` | `worker/vllm/lora.py` | The FP32 policy tensors |
-| `tokenizer` | `worker/hf/operation.py` | The effective text operation: template, special tokens, EOS, prompt and decode settings |
+| `tokenizer` | `worker/hf/operation.py` | The layered description of the loaded tokenizer: token space, text processing (template, special tokens, EOS, prompt and decode settings) and execution |
 | `base` | `worker/vllm/identity.py` | Every parameter, `state_dict` entry and buffer, plus NF4 quantization states and shard offsets |
 | `assembly` | `worker/vllm/profile.py` | The engine description together with the policy's configuration, target map and transformation |
 
@@ -71,7 +71,7 @@ Stock vLLM can give the same prompt slightly different numbers depending on whic
 
 ## Native learning composition
 
-`invar train` runs rollout and learning as two processes: `--inference-python` and `--inference` select the vLLM side, `--python` and `--learning` the PEFT learner, which loads the same model as NF4 with FP32 LoRA. Both share the policy and tokenizer identities and report their own base and assembly.
+`invar train` runs rollout and learning as two processes: `--inference-python` and `--inference` select the vLLM side, `--python` and `--learning` the PEFT learner, which loads the same model as NF4 with FP32 LoRA. Both share the policy and tokenizer identities and report their own base and assembly. The tokenizer identity includes the versions of `tokenizers`, `transformers` and `jinja2`, so the two Python environments need the same versions of those packages.
 
 The vLLM process reads each cohort's policy from the loop's current `adapter.safetensors` in checkpoint mode. The sampled behavior probabilities travel to the learner as exact FP32 words, the request's `behavior_model` field records which base and assembly produced them, and each sample records the policy version and behavior policy that generated it. The objective uses them as the behavior probabilities, and uses as reference the words the engine scored under the reference slot in the same rollout, or the behavior words when the reference is the policy that generated the sample. The learner computes the proximal and current probabilities at the rollout temperature and applies the cotangents the core returns for them. Each update publishes a checkpoint, the next cohort consumes that published adapter, and after the last cycle an independent `entries/vllminfer.py` process loads the final checkpoint.
 

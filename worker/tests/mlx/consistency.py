@@ -18,7 +18,7 @@ from worker.mlx import backward as mlx_backward
 from worker.mlx import learning as mlx_learning
 from worker.mlx import numerics as mlx_numerics
 from worker.mlx import inference as mlx_inference
-from worker.mlx.crossscore import score
+from worker.mlx.crossscore import coordinates, score
 from worker.mlx import tensors as mlx_tensors
 from worker.mlx.probability import words
 from worker.mlx.rollout import generate
@@ -83,8 +83,8 @@ class ConsistencyTests(unittest.TestCase):
         try:
             paths = tuple(TokenPath(prefix=tuple(item.tokens[0, :item.prompt_length].tolist()),
                                     response=tuple(item.tokens[0, item.prompt_length:].tolist())) for item in self.trajectories)
-            expected = score(self.runtime.model, self.runtime.tokenizer, tuple(item.request for item in self.trajectories),
-                             paths=paths, sampling=SAMPLING)
+            expected = score(self.runtime.model, tuple(item.request for item in self.trajectories),
+                             coordinated=coordinates(self.runtime.model), paths=paths, sampling=SAMPLING)
         finally:
             mlx_adapter.install(self.runtime.model, self.policy)
         self.assertEqual(scores, tuple((digest, item.log_probability_bits) for item in expected))

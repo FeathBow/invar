@@ -6,7 +6,7 @@ import BatchCalls qualified as Serial
 import BatchedProtocol qualified as Batched
 import Calls qualified as Fixture
 import Control.Monad (foldM, forM_)
-import Data.Aeson (Value (..), encode, object, (.=))
+import Data.Aeson (Value (..), encode, object, toJSON, (.=))
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as Bytes
 import Data.ByteString.Lazy qualified as Lazy
@@ -28,6 +28,7 @@ import Invar.Transcript qualified as Transcript
 import ResidentFixture qualified as F
 import Store (workspace)
 import System.Exit (ExitCode (..))
+import TokenizerFixture qualified as Tokens
 
 generation :: Group
 generation =
@@ -43,6 +44,7 @@ generation =
         , ("a physical owner refuses reused identities, another model, mixed clocks and a wrong close count", once owned)
         , ("the canonical encoding sorts keys by their bytes and escapes only quotes, backslashes and control characters", once canonical)
         , ("the evidence of a trajectory is fixed byte for byte", once evidenced)
+        , ("a trajectory holding a token its source tokenizer leaves unassigned, or loaded under a description of another identity, is refused", once unassigned)
         ]
   where
     once = withTests 1 . property
@@ -236,6 +238,15 @@ owned = do
     evalEither (Owner.close second (closing 2))
     assert (isLeft (Owner.close second (closing 1)))
 
+unassigned :: PropertyT IO ()
+unassigned = do
+    (call, events) <- Fixture.setup
+    let run supplied = feed (Session.start Session.Single) (Session.Dispatched (Session.Declaration [call] Nothing) : session [(call, supplied)] ++ [finished])
+        changed stage key replacement = [if Fixture.field "stage" event == String stage then Fixture.change key replacement event else event | event <- events]
+    _ <- evalEither (run (changed "result" "tokens" (toJSON [1, 2, 100000 :: Int])))
+    assert (isLeft (run (changed "result" "tokens" (toJSON [1, 2, 100001 :: Int]))))
+    assert (isLeft (run (changed "loaded_adapter" "tokenizer_description" (Tokens.describedAs (replicate 64 '5') [(100000, "<eos>")]))))
+
 evidenced :: PropertyT IO ()
 evidenced = do
     (call, events) <- Fixture.setup
@@ -248,10 +259,10 @@ evidenced = do
         _ -> failure
 
 expectedEvidence :: Text
-expectedEvidence = "{\"call\":{\"binding\":{\"attempt\":11,\"call\":7,\"instance\":13},\"load\":{\"binding\":{\"attempt\":11,\"call\":7,\"instance\":13},\"program\":\"(program 1 (sources ((semantic \\\"policy\\\") (record (\\\"artifact\\\" (sequence token)) (\\\"profile\\\" (sequence token))))) (signatures) (meanings) (sinks (\\\"load\\\" (\\\"policy-load/v1\\\" (record (\\\"artifact\\\" (sequence token)) (\\\"profile\\\" (sequence token))) (allowed (semantic \\\"policy\\\")) (recorded)))) (commands (emit \\\"load\\\" \\\"policy-load/v1\\\" (input (semantic \\\"policy\\\")))))\"},\"program\":\"(program 1 (sources ((semantic \\\"policy\\\") (record (\\\"artifact\\\" (sequence token)) (\\\"profile\\\" (sequence token)))) ((semantic \\\"request\\\") (record (\\\"artifact\\\" (sequence token)) (\\\"assembly\\\" (sequence token)) (\\\"base\\\" (sequence token)) (\\\"prompt\\\" (sequence token)) (\\\"temperature\\\" number) (\\\"tokenizer\\\" (sequence token)) (\\\"tokens\\\" token))) ((random \\\"sample\\\") number)) (signatures) (meanings) (sinks (\\\"infer\\\" (\\\"categorical-inference/v1\\\" (record (\\\"policy\\\" (record (\\\"artifact\\\" (sequence token)) (\\\"profile\\\" (sequence token)))) (\\\"request\\\" (record (\\\"artifact\\\" (sequence token)) (\\\"assembly\\\" (sequence token)) (\\\"base\\\" (sequence token)) (\\\"prompt\\\" (sequence token)) (\\\"temperature\\\" number) (\\\"tokenizer\\\" (sequence token)) (\\\"tokens\\\" token))) (\\\"seed\\\" number)) (allowed (semantic \\\"policy\\\") (semantic \\\"request\\\") (random \\\"sample\\\")) (recorded)))) (commands (emit \\\"infer\\\" \\\"categorical-inference/v1\\\" (fields (\\\"policy\\\" (input (semantic \\\"policy\\\"))) (\\\"request\\\" (input (semantic \\\"request\\\"))) (\\\"seed\\\" (random (random \\\"sample\\\")))))))\"},\"declared\":{\"adapter\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"assembly\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"base\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"kind\":\"materialization\",\"tokenizer\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"},\"format\":\"invar-trajectory-evidence-v1\",\"observed\":{\"assembly\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"base\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"behavior_bits\":[3204448256,3196059648],\"consumed\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"image\":{\"artifact\":\"3de2adea185acf25cea62e43447a9bbeb40ca178a3fdf5e92b979352fa5800d2\",\"profile\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\"},\"model\":\"test-model\",\"prompt_tokens\":[1],\"reference\":null,\"requested\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_tokens\":[2,3],\"revision\":\"test-revision\",\"text\":\"#### 12\",\"tokenizer\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"truncated\":true},\"request\":{\"prompt\":\"Compute the answer.\",\"seed\":17,\"temperature\":4605380978949069210,\"tokens\":2}}"
+expectedEvidence = "{\"call\":{\"binding\":{\"attempt\":11,\"call\":7,\"instance\":13},\"load\":{\"binding\":{\"attempt\":11,\"call\":7,\"instance\":13},\"program\":\"(program 1 (sources ((semantic \\\"policy\\\") (record (\\\"artifact\\\" (sequence token)) (\\\"profile\\\" (sequence token))))) (signatures) (meanings) (sinks (\\\"load\\\" (\\\"policy-load/v1\\\" (record (\\\"artifact\\\" (sequence token)) (\\\"profile\\\" (sequence token))) (allowed (semantic \\\"policy\\\")) (recorded)))) (commands (emit \\\"load\\\" \\\"policy-load/v1\\\" (input (semantic \\\"policy\\\")))))\"},\"program\":\"(program 1 (sources ((semantic \\\"policy\\\") (record (\\\"artifact\\\" (sequence token)) (\\\"profile\\\" (sequence token)))) ((semantic \\\"request\\\") (record (\\\"artifact\\\" (sequence token)) (\\\"assembly\\\" (sequence token)) (\\\"base\\\" (sequence token)) (\\\"prompt\\\" (sequence token)) (\\\"temperature\\\" number) (\\\"tokenizer\\\" (sequence token)) (\\\"tokens\\\" token))) ((random \\\"sample\\\") number)) (signatures) (meanings) (sinks (\\\"infer\\\" (\\\"categorical-inference/v1\\\" (record (\\\"policy\\\" (record (\\\"artifact\\\" (sequence token)) (\\\"profile\\\" (sequence token)))) (\\\"request\\\" (record (\\\"artifact\\\" (sequence token)) (\\\"assembly\\\" (sequence token)) (\\\"base\\\" (sequence token)) (\\\"prompt\\\" (sequence token)) (\\\"temperature\\\" number) (\\\"tokenizer\\\" (sequence token)) (\\\"tokens\\\" token))) (\\\"seed\\\" number)) (allowed (semantic \\\"policy\\\") (semantic \\\"request\\\") (random \\\"sample\\\")) (recorded)))) (commands (emit \\\"infer\\\" \\\"categorical-inference/v1\\\" (fields (\\\"policy\\\" (input (semantic \\\"policy\\\"))) (\\\"request\\\" (input (semantic \\\"request\\\"))) (\\\"seed\\\" (random (random \\\"sample\\\")))))))\"},\"declared\":{\"adapter\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"assembly\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"base\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"kind\":\"materialization\",\"tokenizer\":\"f07ad0ced821432b13ebd9fe806ce182e90f51803b77611be19a27431cce90ac\"},\"format\":\"invar-trajectory-evidence-v1\",\"observed\":{\"assembly\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"base\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"behavior_bits\":[3204448256,3196059648],\"consumed\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"image\":{\"artifact\":\"e60c6ba908339bd601354e4c2449618fa20b74c7664dafe1254f98d5f822ffba\",\"profile\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\"},\"model\":\"test-model\",\"prompt_tokens\":[1],\"reference\":null,\"requested\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_tokens\":[2,3],\"revision\":\"test-revision\",\"text\":\"#### 12\",\"tokenizer\":\"f07ad0ced821432b13ebd9fe806ce182e90f51803b77611be19a27431cce90ac\",\"truncated\":true},\"request\":{\"prompt\":\"Compute the answer.\",\"seed\":17,\"temperature\":4605380978949069210,\"tokens\":2}}"
 
 expectedDigest :: String
-expectedDigest = "5de7dcba97c81d2c6dafd05090a69492df548f3920f1f9cd875424a29f41bacc"
+expectedDigest = "8513d05ba4c5317770ee8941504eaa074dc2d1fd6f891dadf9d80fd4807a8dad"
 
 canonical :: PropertyT IO ()
 canonical = do

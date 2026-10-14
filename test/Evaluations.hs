@@ -20,12 +20,13 @@ import Invar.Spec.Invocation qualified as Invocation
 import Invar.Spec.Load qualified as Load
 import Invar.Workload qualified as Workload
 import Numeric.Natural (Natural)
+import TokenizerFixture qualified as Tokens
 import Updates (alter)
 
 data Outcome = Outcome {text :: String, truncated :: Bool}
 
 identities :: (String, String, String)
-identities = (replicate 64 'c', replicate 64 'e', replicate 64 'f')
+identities = (Tokens.identity, replicate 64 'e', replicate 64 'f')
 
 records :: (String, (String, String, String)) -> Workload.Document -> Natural -> [[Outcome]] -> PropertyT IO [Value]
 records (policy, (tokenizer, base, assembly)) expected sessions outcomes = do
@@ -58,7 +59,7 @@ records (policy, (tokenizer, base, assembly)) expected sessions outcomes = do
         loading = field "load" envelope
         image = Infer.image requested
         materialization = ["tokenizer" .= tokenizer, "base" .= base, "assembly" .= assembly]
-        loaded = object (materialization ++ ["stage" .= String "loaded_adapter", "binding" .= bound, "load" .= loading, "image" .= object ["artifact" .= Bytes.unpack (Load.artifact image), "profile" .= Bytes.unpack (Load.profile image)], "requested" .= policy, "consumed" .= policy, "model" .= String "test-model", "revision" .= String "test-revision"])
+        loaded = object (materialization ++ ["stage" .= String "loaded_adapter", "tokenizer_description" .= Tokens.description, "binding" .= bound, "load" .= loading, "image" .= object ["artifact" .= Bytes.unpack (Load.artifact image), "profile" .= Bytes.unpack (Load.profile image)], "requested" .= policy, "consumed" .= policy, "model" .= String "test-model", "revision" .= String "test-revision"])
         consumed = object (materialization ++ ["stage" .= String "consumed", "binding" .= bound, "program" .= field "program" envelope, "load" .= loading, "adapter" .= policy, "request" .= semantic])
         result = object (materialization ++ ["stage" .= String "result", "binding" .= bound, "adapter" .= policy, "request" .= semantic, "tokens" .= [1, 2, 3, 4, 5 :: Int], "prompt_length" .= Number 1, "behavior" .= [-0.5, -0.25, -0.5, -0.25 :: Double], "behavior_bits" .= [0xbf000000, 0xbe800000, 0xbf000000, 0xbe800000 :: Word32], "text" .= text outcome, "truncated" .= truncated outcome])
     sample offset (position, task, outcome) = do

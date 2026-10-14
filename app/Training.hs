@@ -129,7 +129,7 @@ algorithm :: O.Fields -> Either String Learn.Algorithm
 algorithm fields = case O.optional fields "algorithm" of
     Just "opd" -> do
         when (isJust (O.optional fields "delta")) (Left "--delta applies to grpo")
-        Learn.Opd <$> (Algorithm.Teacher <$> string "teacher-model" <*> string "teacher-revision" <*> string "teacher-digest" <*> string "tokenizer-digest" <*> string "teacher-base-digest" <*> string "teacher-assembly-digest" <*> O.numeric fields "teacher-temperature" <*> pure "none" <*> pure "processed" <*> pure "forced")
+        Learn.Opd <$> (Algorithm.Teacher <$> string "teacher-model" <*> string "teacher-revision" <*> string "teacher-digest" <*> string "teacher-tokenizer-digest" <*> string "teacher-base-digest" <*> string "teacher-assembly-digest" <*> O.numeric fields "teacher-temperature" <*> pure "none" <*> pure "processed" <*> pure "forced")
     selected
         | selected `notElem` [Nothing, Just "grpo"] -> Left "Invalid algorithm: expected grpo or opd"
         | any (isJust . O.optional fields) teacherNames -> Left "The teacher options apply to opd"
@@ -195,6 +195,7 @@ teacherOptions =
     , ("teacher-model", "Teacher model name")
     , ("teacher-revision", "Teacher model revision")
     , ("teacher-digest", "Teacher canonical adapter tensor SHA-256")
+    , ("teacher-tokenizer-digest", "Teacher tokenizer SHA-256; its token space must embed the student's")
     , ("teacher-base-digest", "Teacher frozen model tensor SHA-256")
     , ("teacher-assembly-digest", "Teacher model assembly SHA-256")
     , ("teacher-temperature", "Temperature the teacher scores at; every task must be sampled at it")

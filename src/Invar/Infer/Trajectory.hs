@@ -9,6 +9,7 @@ module Invar.Infer.Trajectory (
     model,
     revision,
     loaded,
+    tokenSpace,
     promptTokens,
     responseTokens,
     tokens,
@@ -42,6 +43,7 @@ import Invar.Infer.Trajectory.Internal qualified as Internal
 import Invar.Policy qualified as Policy
 import Invar.Spec.Invocation qualified as V
 import Invar.Spec.Load qualified as L
+import Invar.Tokenizer qualified as Tokenizer
 import Numeric.Natural (Natural)
 
 binding :: Trajectory -> V.Binding
@@ -61,6 +63,9 @@ revision = Internal.revision . Internal.observed
 
 loaded :: Trajectory -> L.Fact
 loaded = Internal.fact . Internal.observed
+
+tokenSpace :: Trajectory -> Tokenizer.Space
+tokenSpace = Tokenizer.space . Internal.tokenizer . Internal.observed
 
 result :: Trajectory -> R.Result
 result = Internal.result
@@ -111,7 +116,7 @@ evidence selected =
         object
             [ ("requested", string (Internal.requested seen))
             , ("consumed", string (Internal.consumed seen))
-            , ("tokenizer", string (Internal.tokenizer seen))
+            , ("tokenizer", string (Tokenizer.identity (Internal.tokenizer seen)))
             , ("base", string (Internal.base seen))
             , ("assembly", string (Internal.assembly seen))
             , ("model", string (Internal.model seen))

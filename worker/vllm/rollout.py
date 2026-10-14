@@ -11,22 +11,22 @@ LORA_FIELDS = ("lora_name", "lora_int_id", "lora_path", "base_model_name",
                "tensorizer_config_dict", "load_inplace", "is_3d_lora_weight")
 
 
-def parameters(request, *, eos):
+def parameters(request, *, tokens, stop):
     from vllm.sampling_params import RequestOutputKind, SamplingParams
 
-    if type(request.limit) is not int or request.limit <= 0:
-        raise ValueError("Generation requires a positive integer token limit")
+    if type(request.limit) is not int or request.limit <= 0 or type(tokens) is not int or not 0 < tokens <= request.limit:
+        raise ValueError("Generation requires a positive integer token limit within the request horizon")
     if not math.isfinite(request.temperature) or request.temperature <= 0:
         raise ValueError("Generation requires a finite positive temperature")
-    if type(request.seed) is not int or type(eos) is not int or eos < 0:
-        raise ValueError("Generation requires an integer seed and tokenizer EOS")
+    if type(request.seed) is not int or any(type(token) is not int or token < 0 for token in stop):
+        raise ValueError("Generation requires an integer seed and token stop identifiers")
     result = SamplingParams(
         n=1, temperature=request.temperature, seed=request.seed,
         top_k=0, top_p=1.0, min_p=0.0,
         presence_penalty=0.0, frequency_penalty=0.0, repetition_penalty=1.0,
-        max_tokens=request.limit, min_tokens=0,
-        # Own the exact EOS set instead of inheriting extra model stop tokens.
-        ignore_eos=True, stop_token_ids=[eos], stop=[],
+        max_tokens=tokens, min_tokens=0,
+        # Own the exact stop set instead of inheriting extra model stop tokens.
+        ignore_eos=True, stop_token_ids=list(stop), stop=[],
         logprobs=0, prompt_logprobs=None, detokenize=False,
         output_kind=RequestOutputKind.FINAL_ONLY,
     )
@@ -113,7 +113,7 @@ def generate(engine, tokenizer, requests, *, loras):
     if engine.llm_engine.model_config.logprobs_mode != LOGPROBS_MODE:
         raise ValueError("Native generation requires processed behavior log probabilities")
     prefixes = tuple(tuple(prompt(tokenizer, request.prompt)[0].tolist()) for request in requests)
-    sampling = [parameters(request, eos=tokenizer.eos_token_id) for request in requests]
+    sampling = [parameters(request, tokens=request.limit, stop=(tokenizer.eos_token_id,)) for request in requests]
     outputs = native_outputs(engine, prefixes=prefixes, sampling=sampling, loras=loras)
     vocabulary = len(tokenizer)
     return tuple(trajectory(output, tokenizer, request, prefix=prefix, lora=lora, vocabulary=vocabulary)

@@ -9,23 +9,26 @@ import Data.Aeson.Types (Parser)
 import Invar.Json qualified as Json
 import Invar.Score.Probe (Relation (..))
 
-data Expected = Expected {truncated :: Bool, responseTokens :: Int, fullVocabulary :: Bool}
+data Expected = Expected {responseTokens :: Int, fullVocabulary :: Bool}
 
-observe :: Expected -> Object -> Parser Relation
+-- Returns the probability relation and how many trailing response tokens the executor fed through the input embedding
+-- beyond those scoring needs.
+observe :: Expected -> Object -> Parser (Relation, Int)
 observe expected fields = do
     engine <- fields .: "engine"
     case engine :: String of
-        "mlx_lm.generate.BatchGenerator" -> LogOfMass <$ mlx expected fields
-        "vllm.v1.worker.gpu_model_runner.GPUModelRunner" -> SeparateLogSoftmax <$ vllm expected fields
-        "transformers.forced_path" -> LogOfMass <$ transformers expected fields
+        "mlx_lm.generate.BatchGenerator" -> (,) LogOfMass <$> mlx fields
+        "vllm.v1.worker.gpu_model_runner.GPUModelRunner" -> (SeparateLogSoftmax, 0) <$ vllm expected fields
+        "transformers.forced_path" -> (LogOfMass, 0) <$ transformers expected fields
         _ -> fail "Unsupported cached score execution engine"
 
-mlx :: Expected -> Object -> Parser ()
-mlx expected fields = do
-    Json.fields ["engine", "sampling", "cache_origin", "unused_native_lookahead_draws", "truncated"] fields
+-- The engine loop feeds each token it yields, so the last response token reaches one more step whose draw is discarded.
+mlx :: Object -> Parser Int
+mlx fields = do
+    Json.fields ["engine", "sampling", "cache_origin", "unused_native_lookahead_draws"] fields
     equals fields "cache_origin" ("fresh native caches; no reference cache input" :: String)
-    equals fields "unused_native_lookahead_draws" (1 :: Int)
-    equals fields "truncated" (truncated expected)
+    lookahead <- fields .: "unused_native_lookahead_draws"
+    unless (lookahead == 1) (fail "Native scoring must draw exactly one unused lookahead")
     fields .: "sampling"
         >>= withObject
             "native sampling"
@@ -35,14 +38,14 @@ mlx expected fields = do
                 step <- settings .: "prefill_step"
                 unless (batch > (0 :: Integer) && step > (0 :: Integer)) (fail "Invalid native batch/prefill sizes")
             )
+    pure lookahead
 
 vllm :: Expected -> Object -> Parser ()
 vllm expected fields = do
     let additional = ["distribution" | fullVocabulary expected]
-    Json.fields (["engine", "cache_origin", "path_control", "native_sample_rows", "ignored_prefill_rows", "truncated"] ++ additional) fields
+    Json.fields (["engine", "cache_origin", "path_control", "native_sample_rows", "ignored_prefill_rows"] ++ additional) fields
     equals fields "cache_origin" ("target-owned native request caches; no source cache input" :: String)
     equals fields "path_control" ("replace sampled ids after native probability calculation" :: String)
-    equals fields "truncated" (truncated expected)
     rows <- fields .: "native_sample_rows"
     ignored <- fields .: "ignored_prefill_rows"
     unless (ignored >= (0 :: Integer) && rows - ignored == fromIntegral (responseTokens expected)) (fail "Native scoring rows do not cover the prescribed response")
@@ -51,9 +54,8 @@ vllm expected fields = do
 transformers :: Expected -> Object -> Parser ()
 transformers expected fields = do
     when (fullVocabulary expected) (fail "Hugging Face scoring records no full-vocabulary probe")
-    Json.fields ["engine", "cache_origin", "truncated"] fields
+    Json.fields ["engine", "cache_origin"] fields
     equals fields "cache_origin" ("fresh model cache per path; no source cache input" :: String)
-    equals fields "truncated" (truncated expected)
 
 distribution :: Object -> Parser ()
 distribution fields = do

@@ -6,7 +6,7 @@ import mlx.core as mx
 from worker.tests import scalar
 from worker.distribution import Observed, Probe, Snapshot
 from worker.mlx import model, tensors
-from worker.mlx.crossscore import PathSampler, TokenPath, score
+from worker.mlx.crossscore import PathSampler, TokenPath, coordinates, score
 from worker.mlx.distribution import Capture
 from worker.mlx.probability import tensor, words
 from worker.mlx.rollout import Sampling, generate
@@ -29,8 +29,8 @@ class DistributionTests(unittest.TestCase):
         identity = model.identities(self.reference, INFERENCE)
         collected = []
         for sampling in (SAMPLING, Sampling(batch_size=1, prefill_step=3)):
-            measured = score(self.reference.model, self.reference.tokenizer, self.requests,
-                             paths=self.paths, probes=self.probes, sampling=sampling)
+            measured = score(self.reference.model, self.requests,
+                             coordinated=coordinates(self.reference.model), paths=self.paths, probes=self.probes, sampling=sampling)
             for actual, original, planned in zip(measured, self.generated, self.probes, strict=True):
                 self.assertEqual(actual.log_probability_bits, words(original.behavior))
                 self.assertEqual(actual.probe.probe, planned)
@@ -51,7 +51,7 @@ class DistributionTests(unittest.TestCase):
         observations = []
         for runtime in (self.reference, self.candidate):
             identity = model.identities(runtime, INFERENCE)
-            actual = score(runtime.model, runtime.tokenizer, self.requests, paths=self.paths,
+            actual = score(runtime.model, self.requests, coordinated=coordinates(runtime.model), paths=self.paths,
                            probes=self.probes, sampling=SAMPLING)
             self.assertEqual(tuple(value.path for value in actual), self.paths)
             observations.append(tuple(value.probe for value in actual))
@@ -60,7 +60,7 @@ class DistributionTests(unittest.TestCase):
         self.assertNotEqual(model.identities(self.reference, INFERENCE)["base"], model.identities(self.candidate, INFERENCE)["base"])
 
     def test_zero_support_is_retained_and_unused_lookahead_is_excluded(self):
-        sampler = PathSampler(self.requests[0], TokenPath(prefix=(2,), response=(0,)), probe=Probe(steps=(0,)))
+        sampler = PathSampler(self.requests[0], TokenPath(prefix=(2,), response=(0,)), width=2, probe=Probe(steps=(0,)))
         logprobs = mx.array([[-1000.0, 0.0]], dtype=mx.float32)
         self.assertEqual(sampler(logprobs).item(), 0)
         self.assertEqual(words(sampler.consume(0).reshape(1)), (0xff800000,))
@@ -75,7 +75,7 @@ class DistributionTests(unittest.TestCase):
                 Probe(steps=steps)
         for probes in ((), ("wrong",), (Probe(steps=(len(self.paths[0].response),)),)):
             with self.subTest(probes=probes), self.assertRaises(ValueError):
-                score(self.reference.model, self.reference.tokenizer, self.requests[:1], paths=self.paths[:1],
+                score(self.reference.model, self.requests[:1], coordinated=coordinates(self.reference.model), paths=self.paths[:1],
                       probes=probes, sampling=SAMPLING)
         selected = Probe(steps=(0, 2))
         vector = Snapshot(step=0, probability_bits=(scalar.word(0.25), scalar.word(0.75)))

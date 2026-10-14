@@ -14,13 +14,14 @@ import Invar.Infer.Wire qualified as Wire
 import Invar.Json qualified as Json
 import Invar.Spec.Invocation qualified as V
 import Invar.Spec.Load qualified as Load
+import Invar.Tokenizer qualified as Tokenizer
 
-data Identities = Identities {requested :: String, adapter :: String, tokenizer :: String, base :: String, assembly :: String, model :: String, revision :: String}
+data Identities = Identities {requested :: String, adapter :: String, tokenizer :: Tokenizer.Description, base :: String, assembly :: String, model :: String, revision :: String}
     deriving (Eq, Show)
 
 loaded :: (Infer.Plan, V.Binding, Object) -> Object -> Either String Identities
 loaded (planned, bound, expected) = parseEither $ \fields -> do
-    let required = ["stage", "binding", "load", "image", "requested", "consumed", "tokenizer", "base", "assembly", "model", "revision"]
+    let required = ["stage", "binding", "load", "image", "requested", "consumed", "tokenizer", "tokenizer_description", "base", "assembly", "model", "revision"]
         selected = Infer.requested planned
         image = Infer.image selected
         imageValue = object ["artifact" .= Bytes.unpack (Load.artifact image), "profile" .= Bytes.unpack (Load.profile image)]
@@ -30,8 +31,11 @@ loaded (planned, bound, expected) = parseEither $ \fields -> do
     unless (Just loading == Fields.lookup "load" expected) (fail "Inference load invocation differs from consumption")
     actual <- fields .: "image"
     unless (actual == imageValue) (fail "Inference load image differs from the declared materialization")
-    found <- Identities <$> identity fields "requested" <*> identity fields "consumed" <*> identity fields "tokenizer" <*> identity fields "base" <*> identity fields "assembly" <*> fields .: "model" <*> fields .: "revision"
-    unless ((requested found, adapter found, tokenizer found, base found, assembly found) == (Infer.artifact selected, Infer.artifact selected, Infer.tokenizer selected, Infer.base selected, Infer.assembly selected)) (fail "Inference load materialization differs from the declared request")
+    reported <- identity fields "tokenizer"
+    described <- fields .: "tokenizer_description" >>= either fail pure . Tokenizer.describe
+    unless (Tokenizer.identity described == reported) (fail "Inference tokenizer description differs from its reported identity")
+    found <- Identities <$> identity fields "requested" <*> identity fields "consumed" <*> pure described <*> identity fields "base" <*> identity fields "assembly" <*> fields .: "model" <*> fields .: "revision"
+    unless ((requested found, adapter found, reported, base found, assembly found) == (Infer.artifact selected, Infer.artifact selected, Infer.tokenizer selected, Infer.base selected, Infer.assembly selected)) (fail "Inference load materialization differs from the declared request")
     mapM_ (nonempty fields) (["model", "revision"] ++ ["scope" | Fields.member "scope" fields])
     pure found
 
