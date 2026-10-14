@@ -99,8 +99,9 @@ def outputs(values, queued):
 def delivered(output, tokenizer, bound, *, vocabulary):
     from vllm.lora.request import LoRARequest
 
-    expected_lora = LoRARequest(**json.loads(bound.selection.description))
-    if lora_selection(output.lora_request) != bound.selection.description:
+    description = bound.selection.description
+    expected_lora = None if description is None else LoRARequest(**json.loads(description))
+    if lora_selection(output.lora_request) != description:
         raise ValueError("Native completed output changed the approved LoRA selection")
     return trajectory(output, tokenizer, bound.request, prefix=bound.prompt, lora=expected_lora, vocabulary=vocabulary)
 

@@ -14,8 +14,11 @@ from safetensors.torch import save_file
 from worker.hf import operation
 from worker.hf.tensors import digest
 from worker.tests.hf.tokenization import make_tokenizer
+from worker.trajectory import Request
 from worker.vllm.configuration import BASE_FORMAT, configuration
-from worker.vllm.mapping import UNADAPTED
+from worker.vllm.execution import delivered
+from worker.vllm.mapping import UNADAPTED, selection
+from worker.vllm.rollout import LORA_FIELDS
 from worker.vllm.profile import Loaded
 from worker.vllm.runtime import observed, unadapted
 
@@ -63,6 +66,23 @@ class UnadaptedTests(unittest.TestCase):
                          SimpleNamespace(resident=((),), models=((adapted,),))):
             with self.subTest(prepared=prepared), self.assertRaisesRegex(ValueError, "adapter selection"):
                 observed(prepared, runtime, tokenizer="t" * 64)
+
+
+    def test_a_base_generation_delivers_only_an_output_without_an_adapter(self):
+        tokenizer = make_tokenizer()
+        eos = tokenizer.eos_token_id
+        request = Request(sample="s0", group="g", prompt="p", seed=17, limit=2, temperature=0.8)
+        completion = SimpleNamespace(index=0, token_ids=[3, eos], finish_reason="stop", stop_reason=eos,
+                                     logprobs=[{token: SimpleNamespace(logprob=-0.5)} for token in (3, eos)])
+        bound = SimpleNamespace(selection=selection(None), request=request, prompt=(2,))
+
+        def output(lora):
+            return SimpleNamespace(finished=True, outputs=[completion], prompt_token_ids=[2], lora_request=lora)
+
+        actual = delivered(output(None), tokenizer, bound, vocabulary=len(tokenizer))
+        self.assertEqual(actual.tokens.tolist(), [[2, 3, eos]])
+        with self.assertRaisesRegex(ValueError, "LoRA selection"):
+            delivered(output(SimpleNamespace(**{name: 1 for name in LORA_FIELDS})), tokenizer, bound, vocabulary=len(tokenizer))
 
 
 if __name__ == "__main__":
