@@ -38,7 +38,7 @@ HIDDEN_SIZE = 16
 INTERMEDIATE_SIZE = 32
 TEST_THREADS = 2
 TOKEN_LIMIT = 4
-IDENTITY = ("local-test/Llama-tiny", "deterministic-cpu-fixture")
+IDENTITY = ("local-test/Llama-tiny", "1" * 40)
 
 
 def model(*, seed=MODEL_SEED, adapted=True):
@@ -200,7 +200,7 @@ class InferenceTests(unittest.TestCase):
         self.assertEqual(len(records(output, "result")), 2)
         tensors.assert_equal(before, adapter_state(runtime.model))
         with self.assertRaisesRegex(ValueError, "contents do not match"):
-            inference.load(runtime.adapter.parent, runtime.adapter, expected=identities)
+            inference.load(runtime.adapter.parent, runtime.adapter, expected=identities, declared=IDENTITY)
 
     def test_changed_resident_adapter_is_rejected_without_restoring_it(self):
         runtime, identities = fixture()
@@ -225,7 +225,7 @@ class InferenceTests(unittest.TestCase):
         runtime, identities = fixture()
         with self.assertRaisesRegex(ValueError, "contents do not match"):
             inference.load(runtime.adapter.parent, runtime.adapter,
-                           expected={**identities, "adapter": "0" * 64})
+                           expected={**identities, "adapter": "0" * 64}, declared=IDENTITY)
 
     def test_malformed_request_fails_before_loader(self):
         runtime, identities = fixture()

@@ -5,11 +5,13 @@ try:
 except ImportError as missing:
     raise unittest.SkipTest(f"{missing.name} is not installed") from missing
 
+import json
 import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 import torch
 from safetensors.torch import save_file
@@ -17,7 +19,9 @@ from safetensors.torch import save_file
 from worker.cohort import decode
 from worker.hf.learning import update
 from worker.tests.hf.learning import batch, make_learner
-from worker.hf.model import adapter_state
+from worker.hf import resident
+from worker.hf.model import FORMAT, adapter_state
+from worker.inputs import Paths
 from worker.hf.tensors import assert_equal, digest
 from worker.hf.checkpoint import checkpoint
 from worker.hf.step import file_digest, restore_inputs
@@ -107,6 +111,26 @@ class InputTests(unittest.TestCase):
         assert_equal(before, adapter_state(consumer.model))
         assert_equal(rng, torch.get_rng_state())
 
+
+    def test_the_resident_learner_loads_the_model_its_process_declares(self):
+        directory = Path(tempfile.mkdtemp(prefix="invar-resident-model-"))
+        declaration = directory / "model.json"
+        declaration.write_text(json.dumps({"format": FORMAT, "model": "local-test/student", "revision": "3" * 40}))
+        options = SimpleNamespace(cache=directory, reference=directory / "reference.safetensors", session=0, config=declaration)
+        with mock.patch("worker.learner.serve") as serve, \
+                mock.patch("worker.hf.metrics.measure", side_effect=lambda stage, action, emit: action()):
+            resident.run(options)
+        loader = serve.call_args.kwargs["loader"]
+        paths = Paths(cache=directory, reference=options.reference, checkpoint=directory / "checkpoint", output=directory / "output")
+        tokenizer = make_tokenizer()
+        with (torch.random.fork_rng(), mock.patch("torch.set_num_threads"), mock.patch("torch.set_float32_matmul_precision"),
+              torch.backends.cudnn.flags(allow_tf32=False), mock.patch("torch.cuda.manual_seed_all"),
+              mock.patch("worker.hf.model.snapshot", return_value=directory) as located,
+              mock.patch("worker.hf.operation.load", return_value=tokenizer), mock.patch("worker.hf.operation.verify"),
+              mock.patch("worker.hf.model.load_model", return_value="model") as loaded):
+            self.assertEqual(loader(paths, SimpleNamespace(tokenizer="t" * 64)), ("model", tokenizer, ("local-test/student", "3" * 40)))
+        self.assertEqual(located.call_args.args, (directory, ("local-test/student", "3" * 40)))
+        self.assertEqual(loaded.call_args.kwargs["identity"], ("local-test/student", "3" * 40))
 
 if __name__ == "__main__":
     torch.set_num_threads(2)

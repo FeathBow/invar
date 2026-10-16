@@ -28,7 +28,7 @@ run worker transcript call = bracket (newIORef Registry.empty) (`modifyIORef'` R
 execute :: Worker -> Transcript.Transcript -> CallOf scope grade -> IORef Registry.Registry -> IO (Either Failure (ExecutionOf scope grade))
 execute worker transcript call@(Call planned binding runtime _ hooks) registry = do
     slot <- newIORef Nothing
-    let arguments = [script worker, "--cache=" ++ cache worker, "--checkpoint=" ++ checkpoint worker, "--reference=" ++ reference worker, "--output=" ++ output worker]
+    let arguments = [script worker, "--cache=" ++ cache worker, "--checkpoint=" ++ checkpoint worker, "--reference=" ++ reference worker, "--output=" ++ output worker] ++ maybe [] (\path -> ["--config=" ++ path]) (configuration worker)
         command = Process.Command (executable worker) arguments [] (encodeUtf8 (Text.pack (input call))) transcript
         approve observed = do
             authorized <- authorize (registry, slot) (binding, runtime) observed

@@ -50,11 +50,14 @@ def run(options, *, load, measure):
 def main():
     from worker.hf.inference import load
     from worker.hf.metrics import measure
+    from worker.hf.model import declared
 
     parser = argparse.ArgumentParser(description="Core-owned resident Hugging Face inference")
     parser.add_argument("--cache", type=Path, required=True)
+    parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--session", type=int, required=True)
-    run(parser.parse_args(), load=load, measure=measure)
+    options = parser.parse_args()
+    run(options, load=partial(load, declared=declared(options.config)), measure=measure)
 
 
 if __name__ == "__main__":

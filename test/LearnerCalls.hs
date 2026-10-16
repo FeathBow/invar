@@ -210,9 +210,9 @@ processed = do
     (returned, replies, digests) <- F.withPlan root $ \planned -> do
         exchange <- F.prepare root (0, binding 7) planned
         let directory = Resident.output (F.paths exchange)
-            worker = W.Worker "/bin/sh" (root </> "process.sh") root "process checkpoint" "process reference" directory
+            worker = W.Worker "/bin/sh" (root </> "process.sh") root "process checkpoint" "process reference" directory (Just "process configuration")
             applied = [value | value <- F.steps exchange, F.stage value == Just "applied"]
-        writeFile (W.script worker) (F.process (root </> "replies") exchange)
+        writeFile (W.script worker) ("test \"$5\" = '--config=process configuration' || exit 20\n" ++ F.process (root </> "replies") exchange)
         outcome <- W.run worker Transcript.standard (F.call exchange)
         received <- Bytes.readFile (root </> "replies")
         pure (void outcome, received, concat [digests | value <- applied, Just digests <- [parseMaybe (withObject "applied" (.: "consumed")) value]])
@@ -250,7 +250,7 @@ hooked = do
         exchange <- F.prepare root (0, binding 7) planned
         let attempt name refuse = do
                 let directory = Resident.output (F.paths exchange)
-                    worker = W.Worker "/bin/sh" (root </> name ++ ".sh") root "hooked checkpoint" "hooked reference" directory
+                    worker = W.Worker "/bin/sh" (root </> name ++ ".sh") root "hooked checkpoint" "hooked reference" directory Nothing
                     replies = root </> name ++ ".replies"
                 events <- newIORef []
                 let record event = modifyIORef' events (++ [event])

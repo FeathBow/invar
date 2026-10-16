@@ -4,7 +4,7 @@ import torch
 
 from worker.report import ready, result
 from worker.hf.policy import activate, read_adapter, verify as verify_adapter
-from worker.hf.model import CPU_THREADS, DEFAULT_SEED, MODEL, REVISION, load_model
+from worker.hf.model import CPU_THREADS, DEFAULT_SEED, load_model, snapshot
 from worker.hf.metrics import measure, report
 from worker.hf.score import referenced
 from worker.hf.rollout import generate
@@ -21,17 +21,14 @@ class Runtime:
     identity: tuple[str, str]
 
 
-def load(cache, adapter, *, expected, emit=report, declared=(MODEL, REVISION), role=INFERENCE):
-    from huggingface_hub import snapshot_download
-
+def load(cache, adapter, *, expected, declared, emit=report, role=INFERENCE):
     state = read_adapter(adapter, expected["adapter"])
     torch.set_num_threads(CPU_THREADS)
     torch.set_float32_matmul_precision("highest")
     torch.backends.cudnn.allow_tf32 = False
     torch.manual_seed(DEFAULT_SEED)
     torch.cuda.manual_seed_all(DEFAULT_SEED)
-    model_name, revision = declared
-    path = snapshot_download(model_name, revision=revision, cache_dir=cache, local_files_only=True)
+    path = snapshot(cache, declared)
     tokenizer = load_tokenizer(path)
     verify(tokenizer, expected["tokenizer"])
     model = measure("load", lambda: load_model(path, role=role, emit=emit, adapted=bool(state), identity=declared), emit=emit)

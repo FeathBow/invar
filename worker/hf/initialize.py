@@ -7,6 +7,7 @@ from worker.cohort import identity
 def arguments():
     parser = argparse.ArgumentParser(description="Materialize a fresh bound initial LoRA learner without updating it")
     parser.add_argument("--cache", type=Path, required=True)
+    parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--tokenizer-digest", required=True)
     parser.add_argument("--seed", type=int, required=True)
@@ -20,11 +21,10 @@ def arguments():
 def main():
     options = arguments()
     import torch
-    from huggingface_hub import snapshot_download
 
     from worker.hf.learning import parameters
     from worker.hf.checkpoint import ADAM_BETAS, ADAM_EPSILON, LEARNING_RATE, checkpoint
-    from worker.hf.model import CPU_THREADS, MODEL, REVISION, load_model
+    from worker.hf.model import CPU_THREADS, declared, load_model, snapshot
     from worker.implementation import LEARNING
     from worker.hf.tensors import digest
     from worker.hf.metrics import measure, report
@@ -36,10 +36,11 @@ def main():
     torch.backends.cudnn.allow_tf32 = False
     torch.manual_seed(options.seed)
     torch.cuda.manual_seed_all(options.seed)
-    path = snapshot_download(MODEL, revision=REVISION, cache_dir=options.cache, local_files_only=True)
+    identity = declared(options.config)
+    path = snapshot(options.cache, identity)
     tokenizer = load(path)
     observed = verify(tokenizer, options.tokenizer_digest)
-    model = measure("load", lambda: load_model(path, role=LEARNING))
+    model = measure("load", lambda: load_model(path, role=LEARNING, identity=identity))
     optimizer = torch.optim.AdamW(parameters(model), lr=LEARNING_RATE, betas=ADAM_BETAS,
                                   eps=ADAM_EPSILON, weight_decay=0.0, foreach=False, fused=False)
     options.output.mkdir(exist_ok=False)

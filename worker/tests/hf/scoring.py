@@ -19,7 +19,7 @@ from safetensors.torch import save_file
 from worker import float32
 from worker.hf import assembly, frozen, operation, tensors
 from worker.hf.inference import Runtime, installed
-from worker.hf.model import adapter_state
+from worker.hf.model import FORMAT, adapter_state
 from worker.hf.policy import read_adapter
 from worker.hf.score import scored
 from worker.implementation import INFERENCE
@@ -31,7 +31,7 @@ CORE = os.environ.get("INVAR_CORE", "invar")
 SOURCE_ENTRY = Path(__file__).with_name("fixture.py").resolve()
 SCORE_ENTRY = Path(__file__).with_name("scorefixture.py").resolve()
 CHILD_SECONDS = 180
-TEACHER = ("local-test/Llama-teacher", "deterministic-cpu-teacher")
+TEACHER = ("local-test/Llama-teacher", "2" * 40)
 TEACHER_SEED = 43
 MODELS = {IDENTITY: model, TEACHER: partial(model, seed=TEACHER_SEED, adapted=False)}
 
@@ -66,7 +66,7 @@ class TeacherScoringTests(unittest.TestCase):
             checkpoint = cls.root / (name + ".safetensors")
             save_file(adapter_state(loaded), checkpoint)
             config = cls.root / (name + ".json")
-            config.write_text(json.dumps({"model": declared[0], "revision": declared[1]}))
+            config.write_text(json.dumps({"format": FORMAT, "model": declared[0], "revision": declared[1]}))
             cls.targets[name] = (loaded, checkpoint, config, identities(loaded))
         _, checkpoint, _, student = cls.targets["student"]
         cls.source = {"digest": student["adapter"], **{key + "-digest": student[key] for key in ("tokenizer", "base", "assembly")},

@@ -41,7 +41,7 @@ data Resident scope = Resident (Transport.Resident scope) (IORef Load.Registry) 
 withResident :: Options -> (forall scope. Resident scope -> IO (Either W.Failure value)) -> IO (Either W.Failure value)
 withResident options action = bracket (newIORef Load.empty) retireOwner $ \state -> do
     let selected = worker options
-        arguments = [W.script selected, "--cache=" ++ W.cache selected, "--reference=" ++ W.reference selected, "--session=" ++ show (owner options)]
+        arguments = [W.script selected, "--cache=" ++ W.cache selected, "--reference=" ++ W.reference selected, "--session=" ++ show (owner options)] ++ maybe [] (\path -> ["--config=" ++ path]) (W.configuration selected)
         launch = Process.Launch (W.executable selected) arguments [] (transcript options)
         identity = Boundary.Owner Boundary.Learning (owner options)
         ready _ = do

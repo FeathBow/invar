@@ -1,18 +1,39 @@
+from pathlib import Path
+import re
+
 import torch
 from peft import LoraConfig, PeftModel, get_peft_model, get_peft_model_state_dict
 from transformers import BitsAndBytesConfig, Qwen3_5ForConditionalGeneration
 
+from worker import core
+from worker.cohort import fields
 from worker.hf import backend
 from worker.hf import decoding
 from worker import implementation
 from worker.hf.metrics import report
 
-REVISION = "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0"
-MODEL = "Qwen/Qwen3.8-27B"
+FORMAT = "invar-hf-model-v1"
 LORA_RANK = 8
 LORA_ALPHA = 16
 DEFAULT_SEED = 17
 CPU_THREADS = 4
+
+
+def declared(path):
+    value = fields(core.decode(Path(path).read_text()), "format model revision")
+    if value["format"] != FORMAT:
+        raise ValueError("Expected a Hugging Face model declaration")
+    if not isinstance(value["model"], str) or not value["model"]:
+        raise ValueError("A model declaration requires a repository name")
+    if not isinstance(value["revision"], str) or re.fullmatch(r"[0-9a-f]{40}", value["revision"]) is None:
+        raise ValueError("A model declaration requires a pinned commit")
+    return value["model"], value["revision"]
+
+
+def snapshot(cache, identity):
+    from huggingface_hub import snapshot_download
+
+    return snapshot_download(identity[0], revision=identity[1], cache_dir=cache, local_files_only=True)
 
 
 def check_loading(loading, *, emit=report):
@@ -24,7 +45,7 @@ def check_loading(loading, *, emit=report):
         raise RuntimeError("Checkpoint loading did not match the selected architecture")
 
 
-def load_model(path, *, role, emit=report, adapted=True, identity=(MODEL, REVISION)):
+def load_model(path, *, role, identity, emit=report, adapted=True):
     quantization = BitsAndBytesConfig(
         load_in_4bit=True, bnb_4bit_quant_type="nf4",
         bnb_4bit_use_double_quant=True, bnb_4bit_compute_dtype=torch.bfloat16,

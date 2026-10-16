@@ -15,6 +15,7 @@ import torch
 from safetensors.torch import save_file
 
 from worker import float32
+from worker.hf.model import FORMAT
 from worker.hf.score import scored
 from worker.tests.hf.overlap import CHILD_SECONDS, CORE, PROMPT, SEEDS, execute, flags, inspected, journaled, prepared, transcribed
 from worker.tests.hf.scoring import MODELS, SCORE_ENTRY, TEACHER, identities
@@ -131,7 +132,7 @@ class DistillationTests(unittest.TestCase):
         adapter = cls.root / "teacher.safetensors"
         save_file({}, adapter)
         config = cls.root / "teacher.json"
-        config.write_text(json.dumps({"model": TEACHER[0], "revision": TEACHER[1]}))
+        config.write_text(json.dumps({"format": FORMAT, "model": TEACHER[0], "revision": TEACHER[1]}))
         cls.settings = {**{key: value for key, value in settings.items() if key != "delta"},
                         "algorithm": "opd", "teacher": SCORE_ENTRY, "teacher-adapter": adapter, "teacher-config": config,
                         "teacher-model": TEACHER[0], "teacher-revision": TEACHER[1], "teacher-digest": identity["adapter"],

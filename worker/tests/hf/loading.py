@@ -55,7 +55,7 @@ class LoadingTests(unittest.TestCase):
     def test_the_production_loader_writes_the_model_records_to_the_transcript_it_is_given(self):
         runtime, expected = fixture()
         with mock.patch.object(inference, "activate"):
-            _, emitted, _, _ = self.load(runtime, expected)
+            _, emitted, _, _ = self.load(runtime, expected, declared=IDENTITY)
         self.assertEqual(emitted, ["loading", "profile", "load"])
 
     def test_an_empty_adapter_loads_the_declared_model_without_lora(self):

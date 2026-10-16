@@ -29,10 +29,11 @@ from worker.hf.handoff import CONFIG, WEIGHTS, export
 from worker.implementation import file_digest
 from worker.hf.learning import update
 from worker.hf.checkpoint import CheckpointIdentity
-from worker.hf.model import adapter_state
+from worker.hf.model import FORMAT, adapter_state
 from worker.hf.tensors import assert_equal, digest
 from worker.tests.hf.learning import batch, make_learner
 from worker.tests.hf.decoding import hybrid
+from worker.tests.hf.inference import IDENTITY
 from worker.tests.hf.tokenization import make_tokenizer
 from worker.implementation import INFERENCE, LEARNING
 
@@ -67,8 +68,10 @@ class HandoffTests(unittest.TestCase):
     def cli(self, expected, destination):
         adapter = self.directory / "adapter.safetensors"
         save_file(adapter_state(self.learner.model), adapter)
-        arguments = ["handoff", "--cache", str(self.directory), "--adapter", str(adapter),
-                     "--output", str(destination)]
+        declaration = self.directory / "model.json"
+        declaration.write_text(json.dumps({"format": FORMAT, "model": IDENTITY[0], "revision": IDENTITY[1]}))
+        arguments = ["handoff", "--cache", str(self.directory), "--config", str(declaration),
+                     "--adapter", str(adapter), "--output", str(destination)]
         for name, value in asdict(expected).items():
             arguments.extend([f"--{name}-digest", value])
         output = io.StringIO()
@@ -103,7 +106,7 @@ class HandoffTests(unittest.TestCase):
         save_file(adapter_state(self.learner.model), adapter)
         with self.cpu_loading() as loaded:
             expected = replace(self.identity(), assembly=assembly.digest(self.learner.model, INFERENCE))
-            runtime = inference.load(self.directory, adapter, expected=asdict(expected))
+            runtime = inference.load(self.directory, adapter, expected=asdict(expected), declared=IDENTITY)
             loaded.assert_called_once()
             self.assertEqual(loaded.call_args.kwargs["role"], INFERENCE)
         self.assertIs(runtime.model, self.learner.model)

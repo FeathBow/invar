@@ -91,15 +91,15 @@ def checkpoint_update(learner, request, output, *, tokenizer, summary):
 
 def load(options, request):
     from worker.hf.metrics import measure, report
+    from worker.hf.model import declared
 
-    return load_with(options, request, measure=measure, emit=report)
+    return load_with(options, request, declared=declared(options.config), measure=measure, emit=report)
 
 
-def load_with(options, request, *, measure, emit):
+def load_with(options, request, *, declared, measure, emit):
     import torch
-    from huggingface_hub import snapshot_download
     from worker.hf.operation import load as load_tokenizer, verify
-    from worker.hf.model import CPU_THREADS, DEFAULT_SEED, MODEL, REVISION, load_model
+    from worker.hf.model import CPU_THREADS, DEFAULT_SEED, load_model, snapshot
     from worker.implementation import LEARNING
 
     torch.set_num_threads(CPU_THREADS)
@@ -107,11 +107,11 @@ def load_with(options, request, *, measure, emit):
     torch.backends.cudnn.allow_tf32 = False
     torch.manual_seed(DEFAULT_SEED)
     torch.cuda.manual_seed_all(DEFAULT_SEED)
-    path = snapshot_download(MODEL, revision=REVISION, cache_dir=options.cache, local_files_only=True)
+    path = snapshot(options.cache, declared)
     tokenizer = load_tokenizer(path)
     verify(tokenizer, request.tokenizer)
-    model = measure("load", lambda: load_model(path, role=LEARNING, emit=emit))
-    return model, tokenizer, (MODEL, REVISION)
+    model = measure("load", lambda: load_model(path, role=LEARNING, emit=emit, identity=declared))
+    return model, tokenizer, declared
 
 
 def run(call, options, *, loader, measure, permission, evaluate, receive):
@@ -170,6 +170,7 @@ def execute(learner, call, output, *, plan, actual, tokenizer, measure):
 def arguments():
     parser = argparse.ArgumentParser(description="Execute one declared GRPO update and stage its checkpoint")
     parser.add_argument("--cache", type=Path, required=True)
+    parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--reference", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
