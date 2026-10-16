@@ -8,13 +8,14 @@ from worker.hf.tensors import assert_equal
 from worker.vllm.prescribed import Prescribed
 
 
-def binding(limit):
-    return SimpleNamespace(request=SimpleNamespace(limit=limit), eos=3)
+def binding(limit, *, stop=()):
+    return SimpleNamespace(request=SimpleNamespace(limit=limit), tokens=limit, stop=stop)
 
 
-def observation(*requests, active, history):
+def observation(*requests, active, history, width=4):
+    runner = SimpleNamespace(model_config=SimpleNamespace(get_vocab_size=lambda: width))
     return SimpleNamespace(pending=SimpleNamespace(rows=tuple(SimpleNamespace(request=key) for key in requests)),
-                           sampling_requests=active, tokens=history)
+                           sampling_requests=active, tokens=history, runner=runner)
 
 
 class PrescribedTests(unittest.TestCase):
@@ -61,14 +62,18 @@ class PrescribedTests(unittest.TestCase):
                     control.observe(output, probabilities[:, 2:3])
 
     def test_invalid_scope_boundaries_and_stale_history_are_rejected(self):
-        for paths in ({}, {"a": []}, {"a": [True]}, {"a": [-1]}, {"a": [0]}, {"a": [3, 0]}, {"a": [0, 1, 2]}):
+        for paths in ({}, {"a": []}, {"a": [True]}, {"a": [-1]}, {"a": [0]}, {"a": [0, 1, 2]}):
             with self.subTest(paths=paths), self.assertRaises(ValueError):
                 Prescribed({"a": binding(2)}, paths)
+        with self.assertRaises(ValueError):
+            Prescribed({"a": binding(2, stop=(3,))}, {"a": [2, 0]})
         control = Prescribed({"a": binding(2)}, {"a": [2, 0]})
         probabilities = torch.log_softmax(torch.tensor([[1., 2., 3., 4.]]), dim=-1)
         for history in ({"a": [1]}, {"a": [2, 0]}):
             with self.subTest(history=history), self.assertRaisesRegex(ValueError, "cache history"):
                 control.select(torch.tensor([0]), probabilities, monitor=observation("a", active=("a",), history=history))
+        with self.assertRaisesRegex(ValueError, "distribution width"):
+            control.select(torch.tensor([0]), probabilities, monitor=observation("a", active=("a",), history={"a": []}, width=5))
         invalid = Prescribed({"a": binding(1)}, {"a": [4]})
         with self.assertRaisesRegex(ValueError, "output vocabulary"):
             invalid.select(torch.tensor([0]), probabilities, monitor=observation("a", active=("a",), history={"a": []}))

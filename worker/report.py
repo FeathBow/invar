@@ -3,12 +3,12 @@ from worker import float32
 from worker.invocation import request as reported_request
 from worker import registry
 
-def ready(call, identities, *, model, previous, emit):
+def ready(call, identities, *, model, description, previous, emit):
     if previous is not None:
         emit("unloaded_adapter", registry.invocation(previous))
     materialization = {name: identities[name] for name in ("tokenizer", "base", "assembly")}
     emit("loaded_adapter", {"binding": call.invocation.binding(), "requested": call.identities["adapter"],
-                            "consumed": identities["adapter"], **materialization,
+                            "consumed": identities["adapter"], **materialization, "tokenizer_description": description,
                             "load": registry.invocation(call.load), "image": registry.image(identities),
                             "model": model[0], "revision": model[1],
                             "scope": "tensor binding; not publication or numerical certification"})

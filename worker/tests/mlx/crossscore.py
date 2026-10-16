@@ -20,10 +20,11 @@ from worker.mlx import model as mlx_model
 from worker.mlx import adapter as mlx_adapter
 from worker.mlx import numerics, tensors
 from worker.mlx import score as artifact
-from worker.mlx.crossscore import PathSampler, TokenPath, score, validate
+from worker.mlx.crossscore import PathSampler, TokenPath, coordinates, score
 from worker.mlx.metrics import measure
 from worker.mlx.probability import words
 from worker.mlx.rollout import Sampler, Sampling, generate
+from worker.scoring import bounded
 from worker.trajectory import Request
 from worker.implementation import INFERENCE
 
@@ -76,7 +77,8 @@ class ArtifactTests(unittest.TestCase):
         records = []
         measured = partial(measure, emit=lambda stage, values: records.append({"stage": stage, **values}))
         selected = artifact.source(self.encoded)
-        result = artifact.observe(self.runtime, selected, expected=self.expected, sampling=SAMPLING, measured=measured)
+        coordinated = coordinates(self.runtime.model)
+        result = artifact.observe(self.runtime, selected, expected=self.expected, coordinated=coordinated, sampling=SAMPLING, measured=measured)
         self.assertEqual(json.loads(json.dumps(result, allow_nan=False)), result)
         self.assertEqual(result["source_inspection_sha256"], hashlib.sha256(self.encoded).hexdigest())
         self.assertEqual(result["source"], json.loads(self.encoded))
@@ -88,20 +90,18 @@ class ArtifactTests(unittest.TestCase):
         self.assertNotIn("stage", result)
         self.assertEqual(result["execution"]["unused_native_lookahead_draws"], 1)
         self.assertEqual(result["probability"]["zero_support_word"], ZERO_SUPPORT)
+        self.assertEqual(result["probability"]["normalization"], {"over": "every target output coordinate", "width": coordinated["output"]})
         self.assertEqual(set(result["implementation"]["sources_sha256"]), set(artifact.IMPLEMENTATIONS))
         self.assertEqual([item["stage"] for item in records], ["verify_before", "cross_score", "verify_after"])
         self.assertTrue(all(item["peak_active"] > 0 and item["seconds"] >= 0 for item in records))
 
-    def test_target_identity_and_termination_mismatches_fail(self):
+    def test_target_identity_mismatches_fail(self):
         selected = artifact.source(self.encoded)
         measured = partial(measure, emit=lambda _stage, _values: None)
         for field in ("adapter", "tokenizer", "base", "assembly"):
             with self.subTest(field=field), self.assertRaises(ValueError):
                 artifact.observe(self.runtime, selected, expected={**self.expected, field: "0" * 64},
-                                 sampling=SAMPLING, measured=measured)
-        with self.assertRaisesRegex(ValueError, "stopping report"):
-            artifact.observe(self.runtime, replace(selected, truncated=not selected.truncated),
-                             expected=self.expected, sampling=SAMPLING, measured=measured)
+                                 coordinated=coordinates(self.runtime.model), sampling=SAMPLING, measured=measured)
 
     def test_offline_entry_loads_actual_checkpoint_and_emits_one_score(self):
         root = Path(tempfile.mkdtemp(prefix="invar-cached-score-"))
@@ -165,13 +165,12 @@ class CachedPathTests(unittest.TestCase):
         identity = mlx_model.identities(self.reference, INFERENCE)
         for sampling in (SAMPLING, Sampling(batch_size=1, prefill_step=3)):
             with self.subTest(sampling=sampling):
-                observed = score(self.reference.model, self.reference.tokenizer, self.requests,
-                                 paths=self.paths, sampling=sampling)
+                observed = score(self.reference.model, self.requests,
+                                 coordinated=coordinates(self.reference.model), paths=self.paths, sampling=sampling)
                 self.assertEqual(tuple(value.request for value in observed), self.requests)
                 self.assertEqual(tuple(value.path for value in observed), self.paths)
                 for actual, original in zip(observed, self.generated, strict=True):
                     self.assertEqual(actual.log_probability_bits, words(original.behavior))
-                    self.assertEqual(actual.truncated, original.truncated)
                     self.assertEqual(actual.lookahead_draws, 1)
         self.assertTrue(tensors.equal(before, {str(index): value for index, value in enumerate(mx.random.state)}))
         self.assertEqual(mlx_model.identities(self.reference, INFERENCE), identity)
@@ -181,36 +180,47 @@ class CachedPathTests(unittest.TestCase):
         self.assertNotEqual(tuple(path(value) for value in freely), self.paths)
         identity = mlx_model.identities(self.candidate, INFERENCE)
         self.assertNotEqual(identity["base"], mlx_model.identities(self.reference, INFERENCE)["base"])
-        scored = score(self.candidate.model, self.candidate.tokenizer, self.requests,
-                       paths=self.paths, sampling=SAMPLING)
+        scored = score(self.candidate.model, self.requests,
+                       coordinated=coordinates(self.candidate.model), paths=self.paths, sampling=SAMPLING)
         self.assertEqual(tuple(value.path for value in scored), self.paths)
         self.assertNotEqual(tuple(value.log_probability_bits for value in scored),
                             tuple(words(value.behavior) for value in self.generated))
         self.assertEqual(mlx_model.identities(self.candidate, INFERENCE), identity)
 
-    def test_paths_reject_wrong_prefix_vocabulary_termination_and_inventory(self):
+    def test_paths_are_consumed_as_given_within_the_target_coordinates(self):
         request = self.requests[0]
         valid = self.paths[0]
+        coordinated = coordinates(self.reference.model)
         invalid = [
-            replace(valid, prefix=(0,)),
-            replace(valid, response=(len(self.reference.tokenizer),) * request.limit),
-            replace(valid, response=(self.reference.tokenizer.eos_token_id, 2)),
-            replace(valid, response=(2,)),
+            replace(valid, prefix=(coordinated["input"],)),
+            replace(valid, response=(2,) * (request.limit - 1) + (coordinated["output"],)),
             replace(valid, response=(2,) * (request.limit + 1)),
         ]
         for value in invalid:
             with self.subTest(path=value), self.assertRaises(ValueError):
-                validate(request, value, self.reference.tokenizer)
+                bounded(request, value, coordinated)
+        last = replace(valid, prefix=(0,), response=(2,) * (request.limit - 1) + (coordinated["input"] - 1,))
+        narrowed = {**coordinated, "input": coordinated["input"] - 1}
+        bounded(request, last, narrowed)
+        with self.assertRaises(ValueError):
+            bounded(request, last, {**coordinated, "output": coordinated["output"] - 1})
+        with self.assertRaisesRegex(ValueError, "lookahead"):
+            score(self.reference.model, (request,), coordinated=narrowed, paths=(last,), sampling=SAMPLING)
+        eos = self.reference.tokenizer.eos_token_id
+        for value in (replace(valid, prefix=(0,)), replace(valid, response=(eos, 2)), replace(valid, response=(2,))):
+            with self.subTest(path=value):
+                scored, = score(self.reference.model, (request,), coordinated=coordinated, paths=(value,), sampling=SAMPLING)
+                self.assertEqual(len(scored.log_probability_bits), len(value.response))
         for supplied, paths in (((), ()), ((request,), ()), ((request,), (valid, valid))):
             with self.subTest(requests=supplied, paths=paths), self.assertRaises(ValueError):
-                score(self.reference.model, self.reference.tokenizer, supplied, paths=paths, sampling=SAMPLING)
+                score(self.reference.model, supplied, coordinated=coordinates(self.reference.model), paths=paths, sampling=SAMPLING)
         for response in ([], (), (True,), (-1,), (1.0,)):
             with self.subTest(response=response), self.assertRaises(ValueError):
                 TokenPath(prefix=valid.prefix, response=response)
 
     def test_forced_zero_support_is_preserved_and_lookahead_is_not_scored(self):
         request = replace(self.requests[0], limit=1, temperature=1.0)
-        sampler = PathSampler(request, TokenPath(prefix=(2,), response=(0,)))
+        sampler = PathSampler(request, TokenPath(prefix=(2,), response=(0,)), width=2)
         distribution = mx.array([[-1000.0, 0.0]], dtype=mx.float32)
         self.assertEqual(sampler(distribution).item(), 0)
         observed = sampler.consume(0)
@@ -227,7 +237,7 @@ class CachedPathTests(unittest.TestCase):
         self.assertEqual(words(freely.consume(1).reshape(1)), (scalar.word(0.0),))
 
     def test_nonfinite_distribution_and_wrong_consumption_fail(self):
-        sampler = PathSampler(self.requests[0], TokenPath(prefix=(2,), response=(0,)))
+        sampler = PathSampler(self.requests[0], TokenPath(prefix=(2,), response=(0,)), width=2)
         sampler(mx.array([[math.nan, 0.0]], dtype=mx.float32))
         with self.assertRaisesRegex(RuntimeError, "actual sampling distribution"):
             sampler.consume(0)

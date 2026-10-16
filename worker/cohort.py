@@ -172,18 +172,17 @@ def binding(value):
     return Binding(**value)
 
 
-def teacher(value, tokenizer):
+def teacher(value):
     value = fields(value, "model revision adapter tokenizer base assembly temperature truncation logprobs path")
     if any(not isinstance(value[name], str) or not value[name] for name in ("model", "revision")):
         raise ValueError("The teacher's model and revision must be nonempty")
-    if identity(value["tokenizer"]) != tokenizer:
-        raise ValueError("The teacher's tokenizer must be the student's")
     temperature = number(value["temperature"])
     if temperature <= 0:
         raise ValueError("The teacher's temperature must be positive")
     if (value["truncation"], value["logprobs"], value["path"]) != ("none", "processed", "forced"):
         raise ValueError("The teacher must score the forced path with processed log probabilities and no truncation")
-    return Teacher(**{**value, "adapter": identity(value["adapter"]), "base": identity(value["base"]), "assembly": identity(value["assembly"]),
+    return Teacher(**{**value, "adapter": identity(value["adapter"]), "tokenizer": identity(value["tokenizer"]),
+                      "base": identity(value["base"]), "assembly": identity(value["assembly"]),
                       "temperature": temperature})
 
 
@@ -336,7 +335,7 @@ def decode(value):
     if distilled:
         if not 0 < epsilon < 1 or penalty < 0:
             raise ValueError("Invalid distillation coefficient configuration")
-        return Distillation(**shared, teacher=teacher(value["teacher"], shared["tokenizer"]))
+        return Distillation(**shared, teacher=teacher(value["teacher"]))
     advantage_groups(samples)
     delta = number(value["delta"])
     if not 0 < epsilon < 1 or penalty < 0 or delta <= 0:

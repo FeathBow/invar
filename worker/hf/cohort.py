@@ -11,12 +11,15 @@ from worker.report import ready, result
 
 def execute_batch(runtime, calls, *, approve, measure, emit, reference=None):
     from worker.hf.inference import materialized, sampled
+    from worker.hf.operation import described
 
     expected = calls[0].identities
     if any(call.identities != expected for call in calls):
         raise ValueError("Resident group members require the same materialization")
     identities = materialized(runtime, expected)
-    readiness = [capture(partial(ready, call, identities, model=runtime.identity, previous=None)) for call in calls]
+    description = described(runtime.tokenizer, identities["tokenizer"])
+    readiness = [capture(partial(ready, call, identities, model=runtime.identity, description=description, previous=None))
+                 for call in calls]
     emit("consumed", {"format": FORMAT, "calls": readiness})
     approve(tuple(call.invocation for call in calls))
     trajectories, scores = measure("inference", lambda: sampled(runtime, tuple(call.request for call in calls), reference,

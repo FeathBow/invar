@@ -83,43 +83,49 @@ def generate(model, tokenizer, requests, *, sampling):
 
 
 def execute(model, tokenizer, requests, *, sampling, samplers):
-    if not requests:
-        raise ValueError("Native generation requires a nonempty request group")
-    if len(samplers) != len(requests):
-        raise ValueError("Native decoding requires one sampler per request")
-    model.eval()
     prefixes = [prompt(tokenizer, request.prompt)[0].tolist() for request in requests]
+    eos = tokenizer.eos_token_id
+    produced = run(model, prefixes, limits=[request.limit for request in requests], stop=(eos,), sampling=sampling, samplers=samplers)
+    result = []
+    for request, prefix, (tokens, behavior, reason) in zip(requests, prefixes, produced, strict=True):
+        stopped = tokens[-1] == eos
+        if reason != ("stop" if stopped else "length") or (not stopped and len(tokens) != request.limit):
+            raise RuntimeError("Native completion differs from the admitted EOS or token boundary")
+        result.append(Trajectory(request=request, tokens=mx.array([prefix + tokens], dtype=mx.int32), prompt_length=len(prefix),
+                                 behavior=mx.stack(behavior), text=decode(tokenizer, tokens), truncated=not stopped))
+    return tuple(result)
+
+
+def run(model, prefixes, *, limits, stop, sampling, samplers):
+    if not prefixes:
+        raise ValueError("Native generation requires a nonempty request group")
+    if len(samplers) != len(prefixes) or len(limits) != len(prefixes):
+        raise ValueError("Native decoding requires one sampler and token limit per request")
+    model.eval()
     engine = BatchGenerator(model, completion_batch_size=sampling.batch_size,
                             prefill_batch_size=prefill_batch_size(model, sampling), prefill_step_size=sampling.prefill_step,
-                            stop_tokens=[[tokenizer.eos_token_id]])
+                            stop_tokens=[[token] for token in stop])
     try:
-        uids = engine.insert(prefixes, max_tokens=[request.limit for request in requests], samplers=samplers,
+        uids = engine.insert([list(prefix) for prefix in prefixes], max_tokens=list(limits), samplers=samplers,
                              logits_processors=[[sampler.process_logits] for sampler in samplers])
-        return collect(engine, uids, (requests, prefixes, samplers), tokenizer=tokenizer)
+        return collect(engine, uids, samplers)
     finally:
         engine.close()
 
 
-def collect(engine, uids, inputs, *, tokenizer):
-    requests, prefixes, samplers = inputs
-    pending = {uid: (request, prefix, sampler, [], [])
-               for uid, request, prefix, sampler in zip(uids, requests, prefixes, samplers, strict=True)}
+def collect(engine, uids, samplers):
+    pending = {uid: (sampler, [], []) for uid, sampler in zip(uids, samplers, strict=True)}
     completed = {}
     while pending:
         responses = engine.next_generated()
         if not responses:
             raise RuntimeError("Native generation stopped before every requested trajectory completed")
         for response in responses:
-            request, prefix, sampler, tokens, behavior = pending[response.uid]
+            sampler, tokens, behavior = pending[response.uid]
             tokens.append(response.token)
             behavior.append(sampler.consume(response.token))
             if response.finish_reason is not None:
-                stopped = response.token == tokenizer.eos_token_id
-                if response.finish_reason != ("stop" if stopped else "length") or (not stopped and len(tokens) != request.limit):
-                    raise RuntimeError("Native completion differs from the admitted EOS or token boundary")
-                completed[response.uid] = Trajectory(request=request, tokens=mx.array([prefix + tokens], dtype=mx.int32),
-                                                     prompt_length=len(prefix), behavior=mx.stack(behavior),
-                                                     text=decode(tokenizer, tokens), truncated=not stopped)
+                completed[response.uid] = (tokens, behavior, response.finish_reason)
                 del pending[response.uid]
     return tuple(completed[uid] for uid in uids)
 

@@ -44,11 +44,10 @@ optimizer chosen = nonnegative (learningRate chosen) && positive (epsilon chosen
   where
     moment value = value >= 0 && value < 1
 
-teacher :: String -> Teacher -> Either String ()
-teacher tokenizer chosen
+teacher :: Teacher -> Either String ()
+teacher chosen
     | null (teacherModel chosen) || null (teacherRevision chosen) = Left "The teacher's model and revision must be nonempty"
     | not (all Digest.sha256 [teacherAdapter chosen, teacherTokenizer chosen, teacherBase chosen, teacherAssembly chosen]) = Left "Expected lowercase SHA-256 teacher identities"
-    | teacherTokenizer chosen /= tokenizer = Left "The teacher's tokenizer must be the student's"
     | not (positive (teacherTemperature chosen)) = Left "The teacher's temperature must be positive"
     | (teacherTruncation chosen, teacherLogprobs chosen, teacherPath chosen) /= ("none", "processed", "forced") = Left "The teacher must score the forced path with processed log probabilities and no truncation"
     | otherwise = Right ()

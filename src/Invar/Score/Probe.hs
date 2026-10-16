@@ -20,13 +20,13 @@ selection horizon steps = do
     unless (and (zipWith (<) steps (drop 1 steps))) (Left "Probe steps must be strictly increasing")
     unless (all (< horizon) steps) (Left "Probe steps must lie within the actual source response")
 
-observe :: Relation -> ([Natural], [(Natural, Word32)]) -> Value -> Parser S.Distribution
-observe relation (steps, path) = withObject "full-vocabulary snapshots" $ \fields -> do
+observe :: Relation -> Natural -> ([Natural], [(Natural, Word32)]) -> Value -> Parser S.Distribution
+observe relation output (steps, path) = withObject "full-vocabulary snapshots" $ \fields -> do
     Json.fields ["steps", "vocabulary", "coordinates", "representation", "snapshots", "raw_payload_bytes"] fields
     actual <- fields .: "steps"
     unless (actual == steps) (fail "Full-vocabulary steps differ from the score plan")
     width <- fields .: "vocabulary"
-    unless (width > 0) (fail "The full vocabulary must be nonempty")
+    unless (width == output) (fail "The full vocabulary differs from the target's admitted output coordinates")
     coordinates <- fields .: "coordinates"
     representation <- fields .: "representation"
     unless (coordinates == ("output token ids 0..vocabulary-1" :: String) && representation == ("F32 probability words" :: String)) (fail "Unexpected distribution coordinates or representation")

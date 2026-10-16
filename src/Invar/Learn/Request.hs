@@ -72,8 +72,7 @@ grouped fields = do
 distilled :: Object -> Parser Request
 distilled fields = do
     Json.fields (common ++ ["teacher"]) fields
-    tokenizer <- fields .: "tokenizer" >>= Json.identity
-    teacher <- fields .: "teacher" >>= teacherIdentity tokenizer
+    teacher <- fields .: "teacher" >>= teacherIdentity
     epsilon <- fields .: "epsilon" >>= Json.finite
     penalty <- fields .: "penalty" >>= Json.finite
     unless (Algorithm.clipping epsilon && Algorithm.penalty penalty) (fail "Invalid distillation coefficient configuration")
@@ -113,14 +112,14 @@ shared fields (kind, profile) extension = do
         image = Materialization.learning (policy, checkpoint, tokenizer, base, assembly, reference)
     pure (Request (Object fields) (Object (Fields.insert "samples" (toJSON ordered) fields)) planned sequence' image (update, lag, behavior))
 
-teacherIdentity :: String -> Value -> Parser Algorithm.Teacher
-teacherIdentity tokenizer = withObject "teacher identity" $ \fields -> do
+teacherIdentity :: Value -> Parser Algorithm.Teacher
+teacherIdentity = withObject "teacher identity" $ \fields -> do
     Json.fields ["model", "revision", "adapter", "tokenizer", "base", "assembly", "temperature", "truncation", "logprobs", "path"] fields
     [model', revision, adapter, declared, base, assembly] <- traverse (fields .:) ["model", "revision", "adapter", "tokenizer", "base", "assembly"]
     temperature <- fields .: "temperature" >>= Json.finite
     [truncation, logprobs, path] <- traverse (fields .:) ["truncation", "logprobs", "path"]
     let chosen = Algorithm.Teacher model' revision adapter declared base assembly temperature truncation logprobs path
-    either fail (const (pure chosen)) (Algorithm.teacher tokenizer chosen)
+    either fail (const (pure chosen)) (Algorithm.teacher chosen)
 
 call :: Value -> Parser ()
 call = withObject "teacher scoring call" $ \fields -> do

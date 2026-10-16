@@ -58,14 +58,15 @@ import Invar.Score.Program qualified as Program
 import Invar.Spec.Invocation qualified as V
 import Invar.Spec.Load qualified as L
 import Invar.Spec.Score qualified as S
+import Invar.Tokenizer qualified as Tokenizer
 import Numeric.Natural (Natural)
 
 data Plan = Plan Inference.Source Infer.Plan ByteString [Natural]
 
 data Target = Target {targetIdentity :: (String, String, String, String), targetPolicy :: Maybe Policy.Description}
 data Call = Call Plan V.Binding ByteString V.Runtime Load.Plan
-data Permit = Permit Call ByteString [(ByteString, Object)] V.Runtime L.Fact Policy.Description
-data Report = Report V.Completion L.Fact Output.Body S.Fact
+data Permit = Permit Call ByteString [(ByteString, Object)] V.Runtime L.Fact Policy.Description Tokenizer.Consumption
+data Report = Report V.Completion L.Fact Output.Body S.Fact Tokenizer.Consumption
     deriving (Eq, Show)
 
 data Error = Incompatible String | Construction String | Protocol String | Lifecycle V.Error | Loading Load.Error | Registry L.Error | ProcessFailed Int
@@ -79,7 +80,6 @@ targetOf chosen = Target (Infer.artifact requested, Infer.tokenizer requested, I
 prepare :: Inference.Source -> Target -> Either Error Plan
 prepare source (Target (artifact, tokenizer, base, assembly) policy) = do
     let before = Trajectory.request (Inference.sourceTrajectory source)
-    unless (tokenizer == Infer.tokenizer before) (Left (Incompatible "tokenizer"))
     unbound <- first (Construction . show) (Infer.prepare before {Infer.artifact = artifact, Infer.tokenizer = tokenizer, Infer.base = base, Infer.assembly = assembly})
     planned <- maybe (Right unbound) (\description -> first (Construction . show) (Infer.bindPolicy description unbound)) policy
     pure (Plan source planned (Lazy.toStrict (encode (Inference.describeSource source)) <> "\n") [])
@@ -135,17 +135,17 @@ authorizeRecords registry call@(Call planned bound program ready loading) encode
     stage "loaded_adapter" loaded
     stage "consumed" consumed
     unless (Object (Fields.delete "stage" consumed) == inputValue call) (Left (Protocol "Score consumption differs from the complete declared call"))
-    description <- checkedLoad planned bound loaded
+    (description, consumption) <- checkedLoad planned bound loaded
     registered <- first Loading (Load.register loading loaded registry)
     live <- first Registry (L.acquire registered (V.boundInstance bound))
     issued <- first Registry (L.dispatch (L.Dispatch live bound) registered ready)
     intended <- first Lifecycle (V.intent issued (V.boundCall bound))
     current <- first Lifecycle (V.consume (V.Consumption bound program intended) issued)
     loadedFact <- first Registry (L.historical registered (V.boundInstance bound))
-    pure (registered, Permit call encoded values current loadedFact description)
+    pure (registered, Permit call encoded values current loadedFact description consumption)
 
 permission :: Permit -> ByteString
-permission (Permit (Call _ bound program _ _) _ _ _ _ _) = Lazy.toStrict (encode (Wire.invocationValue bound program))
+permission (Permit (Call _ bound program _ _) _ _ _ _ _ _) = Lazy.toStrict (encode (Wire.invocationValue bound program))
 
 observe :: Permit -> ByteString -> Either Error Report
 observe permit encoded = do
@@ -153,12 +153,12 @@ observe permit encoded = do
     observeRecords permit encoded suffix
 
 suffixBytes :: Permit -> ByteString -> Either Error ByteString
-suffixBytes (Permit _ prefix _ _ _ _) encoded = do
+suffixBytes (Permit _ prefix _ _ _ _ _) encoded = do
     unless (prefix `Bytes.isPrefixOf` encoded) (Left (Protocol "Score completion differs from its authorized prefix"))
     pure (Bytes.drop (Bytes.length prefix) encoded)
 
 observeRecords :: Permit -> ByteString -> [(ByteString, Object)] -> Either Error Report
-observeRecords (Permit call@(Call (Plan source selected inspection probes) bound _ _ _) _ preceding current loadedFact description) encoded suffix = do
+observeRecords (Permit call@(Call (Plan source selected inspection probes) bound _ _ _) _ preceding current loadedFact description consumption) encoded suffix = do
     (raw, result) <- case suffix of
         [(_, before), (_, scoring), (_, after), final] -> do
             mapM_ (uncurry stage) [("verify_before", before), ("cross_score", scoring), ("verify_after", after)]
@@ -170,7 +170,7 @@ observeRecords (Permit call@(Call (Plan source selected inspection probes) bound
     value <- parse (.: "observation") result
     let diagnostics = takeWhile ((/= Just (String "loaded_adapter")) . Fields.lookup "stage" . snd) preceding
         measurements = map snd (diagnostics ++ take 3 suffix)
-    body <- first Protocol (Output.observe (Output.Input source (Infer.requested selected) inspection description probes measurements) value)
+    body <- first Protocol (Output.observe (Output.Input source (Infer.requested selected) inspection description (Tokenizer.consumedCoordinates consumption) probes measurements) value)
     finished <- first Lifecycle (V.finish (binding call) raw current)
     completed <- first Lifecycle (V.completion finished (V.boundAttempt bound))
     case completed of
@@ -181,7 +181,7 @@ observeRecords (Permit call@(Call (Plan source selected inspection probes) bound
                 original = S.Source (Trajectory.request admitted) (Trajectory.binding admitted) sourceDescription (Inference.sourceLog source)
                 scored = S.Source (Infer.requested selected) bound description digest
                 measured = S.Fact original scored (Output.probabilityWords body) (Output.logRatio body) (Lazy.toStrict (encode (Output.observation body)))
-            pure (Report resultCompletion loadedFact body measured)
+            pure (Report resultCompletion loadedFact body measured consumption)
         Nothing -> Left (Protocol "Score invocation did not complete")
 
 admit :: Call -> Int -> ByteString -> Either Error Report
@@ -198,25 +198,25 @@ admit call status encoded = do
     observeRecords permit encoded suffix
 
 completion :: Report -> V.Completion
-completion (Report value _ _ _) = value
+completion (Report value _ _ _ _) = value
 
 probabilityWords :: Report -> [Word32]
-probabilityWords (Report _ _ body _) = Output.probabilityWords body
+probabilityWords (Report _ _ body _ _) = Output.probabilityWords body
 
 logRatio :: Report -> LogRatio
-logRatio (Report _ _ body _) = Output.logRatio body
+logRatio (Report _ _ body _ _) = Output.logRatio body
 
 fullVocabulary :: Report -> Maybe S.Distribution
-fullVocabulary (Report _ _ body _) = Output.fullVocabulary body
+fullVocabulary (Report _ _ body _ _) = Output.fullVocabulary body
 
 loadFact :: Report -> L.Fact
-loadFact (Report _ value _ _) = value
+loadFact (Report _ value _ _ _) = value
 
 fact :: Report -> S.Fact
-fact (Report _ _ _ value) = value
+fact (Report _ _ _ value _) = value
 
 describe :: Report -> Value
-describe (Report completed _ body measured) =
+describe (Report completed _ body measured consumption) =
     object
         [ "format" .= (case Output.fullVocabulary body of Nothing -> "invar-bound-path-score-observation-v1"; Just _ -> "invar-bound-distribution-probe-observation-v1" :: String)
         , "log_sha256" .= S.sourceLog (S.target measured)
@@ -225,12 +225,13 @@ describe (Report completed _ body measured) =
         , "source_minus_target_log_ratio" .= Output.ratioValue (Output.logRatio body)
         , "strength" .= (case Output.fullVocabulary body of Nothing -> "finite_path_observation"; Just _ -> "finite_full_vocabulary_observation" :: String)
         , "use_admission" .= ("not_evaluated" :: String)
+        , "consumption" .= Tokenizer.consumptionValue consumption
         , "unestablished" .= (["execution-report authenticity", "source behavior measurement", "target behavior measurement", "own-cache execution and lineage", "sampler coupling", "full-vocabulary KL", "population guarantee", "use admission"] :: [String])
         ]
 
-checkedLoad :: Plan -> V.Binding -> Object -> Either Error Policy.Description
-checkedLoad planned bound fields = do
-    parse (Json.fields ["stage", "binding", "load", "image", "requested", "consumed", "tokenizer", "base", "assembly", "model", "revision"]) fields
+checkedLoad :: Plan -> V.Binding -> Object -> Either Error (Policy.Description, Tokenizer.Consumption)
+checkedLoad planned@(Plan origin _ _ _) bound fields = do
+    parse (Json.fields ["stage", "binding", "load", "image", "requested", "consumed", "tokenizer", "tokenizer_description", "coordinates", "base", "assembly", "model", "revision"]) fields
     matching bound fields
     let requested = Infer.requested (target planned)
     mapM_
@@ -248,7 +249,12 @@ checkedLoad planned bound fields = do
     case Infer.boundPolicy (target planned) of
         Just expected -> unless (description == expected) (Left (Protocol "Score model description differs from its bound policy"))
         Nothing -> pure ()
-    pure description
+    described <- parse (\value -> value .: "tokenizer_description" >>= either fail pure . Tokenizer.describe) fields
+    unless (Tokenizer.identity described == Infer.tokenizer requested) (Left (Protocol "Score tokenizer description differs from the requested target tokenizer"))
+    bounds <- parse (\value -> value .: "coordinates" >>= either fail pure . Tokenizer.coordinates) fields
+    let admitted = Inference.sourceTrajectory origin
+    consumption <- first Incompatible (Tokenizer.consume (Trajectory.digest admitted) (Trajectory.tokenSpace admitted) described bounds (Trajectory.promptTokens admitted, Trajectory.responseTokens admitted))
+    pure (description, consumption)
 
 records :: ByteString -> Either Error [(ByteString, Object)]
 records encoded = do

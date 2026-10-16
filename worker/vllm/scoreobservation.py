@@ -13,7 +13,6 @@ from worker.scoring import TokenPath
 class Scored:
     path: TokenPath
     log_probability_bits: tuple[int, ...]
-    truncated: bool
     native_sample_rows: int
     ignored_prefill_rows: int
     probe: Observed | Packed | None = None
@@ -53,14 +52,13 @@ def trace_probe(trace, expected):
     return result
 
 
-def trace_score(trace, path, delivered, *, probe=None):
-    probabilities, capped = delivered
+def trace_score(trace, path, probabilities, *, probe=None):
     if tuple(trace["tokens"]) != path.response or words(trace["behavior"]) != probabilities:
         raise ValueError("Native output differs from observed prescribed tokens or probability words")
     total, ignored = trace["native_sample_rows"], trace["ignored_prefill_rows"]
     if type(total) is not int or type(ignored) is not int or ignored < 0 or total - ignored != len(path.response):
         raise ValueError("Native scoring has inconsistent sampled-row accounting")
-    return Scored(path=path, log_probability_bits=probabilities, truncated=capped,
+    return Scored(path=path, log_probability_bits=probabilities,
                   native_sample_rows=total, ignored_prefill_rows=ignored, probe=trace_probe(trace, probe))
 
 

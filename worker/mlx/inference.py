@@ -5,17 +5,19 @@ import mlx.core as mx
 from worker.batch import FORMAT, capture
 from worker.report import ready, result
 from worker.mlx import adapter as mlx_adapter
-from worker.mlx.crossscore import score
+from worker.mlx.crossscore import coordinates, score
 from worker.mlx import model as mlx_model
 from worker.mlx.rollout import generate
 from worker.mlx import tensors as mlx_tensors
+from worker.mlx import tokenization as mlx_tokenization
 from worker.scoring import TokenPath
 from worker.implementation import INFERENCE
 
 
 def execute(runtime, call, *, approve, measure, emit, sampling, previous=None):
     identities = mlx_model.verify(runtime, call.identities, INFERENCE)
-    ready(call, identities, model=runtime.identity, previous=previous, emit=emit)
+    ready(call, identities, model=runtime.identity, description=mlx_tokenization.described(runtime.tokenizer, identities["tokenizer"]),
+          previous=previous, emit=emit)
     approve(call.invocation)
     trajectory, = measure("inference", lambda: sample(runtime, (call.request,), sampling=sampling))
     result(call, trajectory, identities=identities, emit=emit)
@@ -26,7 +28,9 @@ def execute_batch(runtime, calls, *, approve, measure, emit, sampling, reference
     if any(call.identities != expected for call in calls):
         raise ValueError("Native batch members require the same model materialization")
     identities = mlx_model.verify(runtime, expected, INFERENCE)
-    readiness = [capture(partial(ready, call, identities, model=runtime.identity, previous=None)) for call in calls]
+    description = mlx_tokenization.described(runtime.tokenizer, identities["tokenizer"])
+    readiness = [capture(partial(ready, call, identities, model=runtime.identity, description=description, previous=None))
+                 for call in calls]
     emit("consumed", {"format": FORMAT, "calls": readiness})
     approve(tuple(call.invocation for call in calls))
     requests = tuple(call.request for call in calls)
@@ -45,8 +49,8 @@ def scored(runtime, trajectories, *, reference, sampling):
     try:
         paths = tuple(TokenPath(prefix=tuple(item.tokens[0, :item.prompt_length].tolist()),
                                 response=tuple(item.tokens[0, item.prompt_length:].tolist())) for item in trajectories)
-        observed = score(runtime.model, runtime.tokenizer, tuple(item.request for item in trajectories),
-                         paths=paths, sampling=sampling)
+        observed = score(runtime.model, tuple(item.request for item in trajectories),
+                         paths=paths, coordinated=coordinates(runtime.model), sampling=sampling)
     finally:
         mlx_adapter.install(runtime.model, current)
     if not mlx_tensors.equal(current, mlx_adapter.state(runtime.model)):

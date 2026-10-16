@@ -23,6 +23,10 @@ def scored(model, tokens, prompt_length, temperature, *, device):
     return torch.stack(observations)
 
 
+def coordinates(model):
+    return {"input": model.get_input_embeddings().num_embeddings, "output": model.get_output_embeddings().weight.shape[0]}
+
+
 def forced(model, selected, *, device):
     path = selected.path
     tokens = torch.tensor([list(path.prefix) + list(path.response)])

@@ -179,7 +179,8 @@ class CohortTests(unittest.TestCase):
             value = distilled()
             return {**value, "samples": [{**value["samples"][0], **changes}, value["samples"][1]]}
 
-        cases = [(teacher(tokenizer="e" * 64), "tokenizer must be the student's"), (teacher(model=""), "model and revision"),
+        decode(teacher(tokenizer="e" * 64))
+        cases = [(teacher(tokenizer="E" * 64), "SHA-256"), (teacher(model=""), "model and revision"),
                  (teacher(temperature=0), "temperature must be positive"), (teacher(truncation="top-k"), "forced path"),
                  (scored(teacher_bits=[0x3F000000]), "nonpositive"), (scored(teacher_bits=[0xBF400000, 0xBF400000]), "cover every response token"),
                  (scored(teacher_call={"call": 5, "attempt": 5, "instance": -1}), "nonnegative integers"),

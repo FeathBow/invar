@@ -9,6 +9,8 @@ from worker import core, probeoutput, registry, resident
 from worker.invocation import approve, request as request_value
 from worker.mlx import model as mlx_model
 from worker.mlx import score as diagnostic
+from worker.mlx import tokenization as mlx_tokenization
+from worker.mlx.crossscore import coordinates
 from worker.mlx.metrics import measure
 from worker.resident import Owner, Transcript
 from worker.probestore import Store
@@ -68,16 +70,18 @@ def execute(loaded, envelope, configuration, *, source, transcript, measurements
     call, selected, probe = decode(envelope)
     measured = partial(measure, emit=emit)
     actual = mlx_model.verify(loaded, call.identities, INFERENCE)
+    coordinated = coordinates(loaded.model)
     transcript.emit("loaded_adapter", {"binding": call.invocation.binding(),
                     "load": registry.invocation(call.load), "image": registry.image(actual),
                     "requested": call.identities["adapter"], "consumed": actual["adapter"],
                     **{key: actual[key] for key in ("tokenizer", "base", "assembly")},
-                    "model": loaded.identity[0], "revision": loaded.identity[1]})
+                    "tokenizer_description": mlx_tokenization.described(loaded.tokenizer, actual["tokenizer"]),
+                    "coordinates": coordinated, "model": loaded.identity[0], "revision": loaded.identity[1]})
     transcript.emit("consumed", {**envelope, **actual, "request": request_value(call.request)})
     approve(call.invocation, source=source)
     with ExitStack() as scope:
         store = None if probe is None else Store(scope.enter_context(tempfile.TemporaryFile()), probe=probe)
-        result = diagnostic.observe(loaded, selected, expected=actual,
+        result = diagnostic.observe(loaded, selected, expected=actual, coordinated=coordinated,
                                     sampling=configuration.sampling(), measured=measured, probe=probe, store=store)
         if probe is not None:
             result = {**result, "measurements": measurements}

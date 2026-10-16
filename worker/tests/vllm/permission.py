@@ -20,7 +20,7 @@ class Routing:
 
 def bound():
     request = Request(sample="s0", group="test/0", prompt="p", seed=17, limit=8, temperature=0.8)
-    return Binding(internal="r0", external="e0", request=request, prompt=(1, 2, 3), eos=4,
+    return Binding(internal="r0", external="e0", request=request, prompt=(1, 2, 3), tokens=request.limit, stop=(4,),
                    selection=Selection(adapter=1, description="d"), receipt="package")
 
 

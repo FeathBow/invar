@@ -23,6 +23,8 @@ An optional runtime configuration with format `invar-mlx-runtime-v1` sets `batch
 
 The initializer reports identities for two roles. Its final `initial` record gives the adapter identity as `policy`, the `learner` file identity, the `tokenizer`, and the learning role's `base` and `assembly`, which `invar train` declares for the learner. Its `profile` record gives the inference role's `base` and `assembly` under `inference`; `invar infer`, `invar policy` and `policy.json` use those, and the learning `assembly` is refused there.
 
+The scorer forces the path through the same engine loop as generation. After the last response token that loop runs one more step, whose draw is discarded, so it feeds the last token through the input embedding too. The scorer therefore refuses a path whose last response token lies outside the input embedding before any forward. The score's execution record reports the step, and the core requires the same token inside the input embedding when it admits an MLX score.
+
 ## Why rows must be independent
 
 A cohort's behavior probabilities must not depend on how its requests were grouped. The same prompt has to produce the same token and the same FP32 probability word whether it runs alone or with other requests, in any order. On Apple Silicon the library's quantized matrix product and attention choose different kernels as the number of rows or queries in a call changes, and different kernels round differently. The changed last bits then change sampled tokens further along the response.

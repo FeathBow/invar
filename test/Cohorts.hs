@@ -12,6 +12,7 @@ import Invar.Infer.Trajectory qualified as Trajectory
 import Invar.Reward qualified as Reward
 import Invar.Spec.Invocation qualified as V
 import Logs qualified
+import TokenizerFixture qualified as Tokens
 
 cohorts :: Group
 cohorts =
@@ -38,7 +39,7 @@ identity :: String
 identity = replicate 64 'a'
 
 plan :: Integer -> PropertyT IO I.Plan
-plan seed = evalEither (I.prepare I.Request {I.artifact = identity, I.tokenizer = replicate 64 'c', I.base = replicate 64 'e', I.assembly = replicate 64 'f', I.prompt = "Compute the answer.", I.tokens = 2, I.temperature = 0.8, I.seed = seed})
+plan seed = evalEither (I.prepare I.Request {I.artifact = identity, I.tokenizer = Tokens.identity, I.base = replicate 64 'e', I.assembly = replicate 64 'f', I.prompt = "Compute the answer.", I.tokens = 2, I.temperature = 0.8, I.seed = seed})
 
 report :: I.Plan -> String -> Bool -> PropertyT IO Trajectory
 report planned text limited = Logs.admitted planned (V.ordinal 0) (text, limited)

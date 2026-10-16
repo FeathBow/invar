@@ -10,6 +10,7 @@ import Invar.Evaluation qualified as Evaluation
 import Invar.Quality qualified as Quality
 import Invar.Workload qualified as Workload
 import Reports qualified
+import TokenizerFixture qualified as Tokens
 import Updates (change, field)
 import Workloads (array, declared, encoded)
 
@@ -88,7 +89,7 @@ bindings = do
     otherTrained <- Reports.records trainedPolicy changed trainedOutcomes
     other <- admit changed trainedPolicy otherTrained
     rejected (Quality.compare before other)
-    let materialization = (replicate 64 'c', replicate 64 'd', replicate 64 'f')
+    let materialization = (Tokens.identity, replicate 64 'd', replicate 64 'f')
     after <- Evaluations.records (trainedPolicy, materialization) expected 1 trainedOutcomes >>= admit expected trainedPolicy
     rejected (Quality.compare before after)
     matching <- Evaluations.records (Reports.policy, materialization) expected 1 Reports.outcomes >>= admit expected Reports.policy

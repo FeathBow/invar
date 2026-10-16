@@ -24,10 +24,8 @@ def sampled(inner, logits, sampling_metadata, *, control, monitor, **kwargs):
 
 
 def response(path, bound):
-    if not path or len(path) > bound.request.limit or any(type(token) is not int or token < 0 for token in path):
-        raise ValueError("Prescribed response requires valid token IDs within the request horizon")
-    if bound.eos in path[:-1] or (path[-1] != bound.eos and len(path) != bound.request.limit):
-        raise ValueError("Prescribed response does not end at the approved EOS or horizon")
+    if not path or len(path) != bound.tokens or bound.stop or any(type(token) is not int or token < 0 for token in path):
+        raise ValueError("Prescribed response requires valid token IDs filling its approved length without a stop token")
 
 
 def native_distribution(tokens, probabilities, count):
@@ -65,6 +63,8 @@ class Prescribed:
     def select(self, tokens, probabilities, *, monitor):
         requests = tuple(row.request for row in monitor.pending.rows)
         native_distribution(tokens, probabilities, len(requests))
+        if probabilities.shape[1] != monitor.runner.model_config.get_vocab_size():
+            raise ValueError("Native distribution width differs from the model's declared output coordinates")
         selected = tokens.clone()
         for index, key in enumerate(requests):
             self.rows[key] += 1

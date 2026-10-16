@@ -26,7 +26,7 @@ target chosen = do
 
 prepare :: Algorithm.Teacher -> Inference.Source -> Either String Score.Plan
 prepare chosen source = do
-    Algorithm.teacher (Infer.tokenizer requested) chosen
+    Algorithm.teacher chosen
     unless (Algorithm.teacherTemperature chosen == Infer.temperature requested) (Left "The teacher scores at the temperature the student sampled at")
     selected <- target chosen
     either (Left . show) Right (Score.prepare source selected)

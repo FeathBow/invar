@@ -19,6 +19,7 @@ import System.Directory (doesPathExist, makeAbsolute)
 import System.Exit (ExitCode (ExitFailure))
 import System.FilePath ((</>))
 import System.IO.Error (isDoesNotExistError, tryIOError)
+import TokenizerFixture qualified as Tokens
 
 rollouts :: Group
 rollouts = Group "Actual rollout failure boundaries" [("invalid cohorts and schedules never launch a process", once validation), ("failed cohorts stop and never reuse reserved identities", once reserved), ("launch exceptions do not roll back identity reservation", once interrupted)]
@@ -28,7 +29,7 @@ rollouts = Group "Actual rollout failure boundaries" [("invalid cohorts and sche
 options :: FilePath -> PropertyT IO R.Options
 options root = do
     let identity = replicate 64 'a'
-    planned <- evalEither (I.prepare (I.Request identity (replicate 64 'c') (replicate 64 'e') (replicate 64 'f') "Same request, distinct members." 2 0.8 17))
+    planned <- evalEither (I.prepare (I.Request identity Tokens.identity (replicate 64 'e') (replicate 64 'f') "Same request, distinct members." 2 0.8 17))
     expected <- evalEither (Reward.decimal "#### 12")
     script <- evalIO (makeAbsolute "test/fail.sh")
     let worker = W.Worker "/bin/sh" script root "unused" [] Nothing

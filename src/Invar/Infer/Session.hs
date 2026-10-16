@@ -25,6 +25,7 @@ import Invar.Resident qualified as Boundary
 import Invar.Resident.Owner qualified as Owner
 import Invar.Spec.Invocation qualified as V
 import Invar.Spec.Load qualified as L
+import Invar.Tokenizer qualified as Tokenizer
 import Invar.Transcript qualified as Transcript
 import System.Exit (ExitCode (..))
 
@@ -215,6 +216,7 @@ admitted session (selected, found, fact) (finished, observed) = do
         (Nothing, Nothing) -> pure ()
         (Just expected, Just actual) | Output.adapter actual == expected -> pure ()
         _ -> Left (Protocol "Reference scores differ from the declared reference")
+    unless (all (Tokenizer.member (Tokenizer.space (Records.tokenizer found))) (R.tokens observed)) (Left (Protocol "A trajectory token has no meaning in the source tokenizer"))
     let planned = Call.plan selected
         constraint = maybe Internal.Materialization Internal.Described (I.boundPolicy planned)
         seen = Internal.Observed (Records.requested found) (Records.adapter found) (Records.tokenizer found) (Records.base found) (Records.assembly found) (Records.model found) (Records.revision found) fact

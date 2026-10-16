@@ -142,7 +142,7 @@ correspondence = do
                     [("vocabulary", Number 5), ("raw_payload_bytes", Number 20), ("snapshots", toJSON [object ["step" .= (0 :: Int), "probability_bits" .= map castFloatToWord32 [0.25, 0.25, 0.25, 0.25, 0]]])]
                 )
                 value
-    wide <- evalEither (Score.admit wideCall 0 (wire (Scores.changeObservation wider wideEvents)))
+    wide <- evalEither (Score.admit wideCall 0 (wire (ScoreProbes.outputs 5 (Scores.changeObservation wider wideEvents))))
     N.observe (N.ProbedRun left right [] (take 1 probes ++ [N.Probe N.Reference N.Candidate wide])) === Left (N.InvalidProbe N.Reference "different vocabulary widths")
     (plainCall, plainEvents) <- Scores.fixtureFor original request
     plain <- evalEither (Score.admit plainCall 0 (wire plainEvents))

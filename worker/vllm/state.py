@@ -26,7 +26,8 @@ class Binding:
     external: str
     request: Request
     prompt: tuple[int, ...]
-    eos: int
+    tokens: int
+    stop: tuple[int, ...]
     selection: Selection
     receipt: str
 
@@ -40,11 +41,11 @@ class Step:
 
 def binding(value):
     return Binding(**{**value, "request": Request(**value["request"]),
-                       "selection": Selection(**value["selection"]), "prompt": tuple(value["prompt"])})
+                       "selection": Selection(**value["selection"]), "prompt": tuple(value["prompt"]), "stop": tuple(value["stop"])})
 
 
 def sampling(state, bound, *, response, asynchronous):
-    expected = parameters(bound.request, eos=bound.eos)
+    expected = parameters(bound.request, tokens=bound.tokens, stop=bound.stop)
     if any(getattr(state.sampling_params, name) != getattr(expected, name) for name in SAMPLING_FIELDS):
         raise ValueError("Native cached sampling parameters differ from the approved request")
     if tuple(state.prompt_token_ids or ()) != bound.prompt:

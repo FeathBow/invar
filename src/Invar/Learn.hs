@@ -156,7 +156,7 @@ validate settings = do
         Grpo chosenDelta -> unless (Algorithm.coefficients (clip settings) (penalty settings) chosenDelta) (Left (InvalidSettings "Invalid GRPO coefficients"))
         Opd teacher -> do
             unless (Algorithm.clipping (clip settings) && Algorithm.penalty (penalty settings)) (Left (InvalidSettings "Invalid distillation coefficients"))
-            either (Left . InvalidSettings) Right (Algorithm.teacher (tokenizer settings) teacher)
+            either (Left . InvalidSettings) Right (Algorithm.teacher teacher)
     unless (steps settings > 0) (Left (InvalidSettings "An update needs at least one optimizer step"))
     unless (identity (behaviorPolicy chosenSchedule)) (Left (InvalidSettings "Expected a lowercase SHA-256 behavior policy identity"))
     unless (version chosenSchedule == (if update chosenSchedule > staleness chosenSchedule then update chosenSchedule - staleness chosenSchedule else 0)) (Left (InvalidSettings "Samples must come from version max(0, update - staleness)"))

@@ -14,7 +14,7 @@ algorithms =
         [ ("each GRPO coefficient rule accepts its range and refuses every value outside it, and the three hold only together", once grpo)
         , ("the AdamW rule accepts zero rate, decay and moments and refuses each scalar outside its range", once adamw)
         , ("the settings check refuses GRPO and AdamW coefficients through these rules", once settings)
-        , ("the teacher rule accepts a complete declaration with the student's tokenizer and refuses each field outside it", once teaching)
+        , ("the teacher rule accepts a complete declaration with any tokenizer identity and refuses each field outside it", once teaching)
         , ("the settings check refuses a distillation teacher and coefficients through these rules", once taughtSettings)
         ]
   where
@@ -59,14 +59,15 @@ teacher = Algorithm.Teacher "teacher-model" "teacher-revision" (replicate 64 '6'
 
 teaching :: PropertyT IO ()
 teaching = do
-    Algorithm.teacher (replicate 64 'c') teacher === Right ()
+    Algorithm.teacher teacher === Right ()
+    Algorithm.teacher teacher {Algorithm.teacherTokenizer = replicate 64 'd'} === Right ()
     let refused =
             [ (teacher {Algorithm.teacherModel = ""}, "The teacher's model and revision must be nonempty")
             , (teacher {Algorithm.teacherRevision = ""}, "The teacher's model and revision must be nonempty")
             , (teacher {Algorithm.teacherAssembly = "assembly"}, "Expected lowercase SHA-256 teacher identities")
             , (teacher {Algorithm.teacherAdapter = "adapter"}, "Expected lowercase SHA-256 teacher identities")
             , (teacher {Algorithm.teacherBase = replicate 64 'A'}, "Expected lowercase SHA-256 teacher identities")
-            , (teacher {Algorithm.teacherTokenizer = replicate 64 'd'}, "The teacher's tokenizer must be the student's")
+            , (teacher {Algorithm.teacherTokenizer = "tokenizer"}, "Expected lowercase SHA-256 teacher identities")
             , (teacher {Algorithm.teacherTemperature = 0}, "The teacher's temperature must be positive")
             , (teacher {Algorithm.teacherTemperature = nan}, "The teacher's temperature must be positive")
             , (teacher {Algorithm.teacherTemperature = infinity}, "The teacher's temperature must be positive")
@@ -74,11 +75,11 @@ teaching = do
             , (teacher {Algorithm.teacherLogprobs = "raw"}, "The teacher must score the forced path with processed log probabilities and no truncation")
             , (teacher {Algorithm.teacherPath = "prompt"}, "The teacher must score the forced path with processed log probabilities and no truncation")
             ]
-    [Algorithm.teacher (replicate 64 'c') chosen | (chosen, _) <- refused] === [Left message | (_, message) <- refused]
+    [Algorithm.teacher chosen | (chosen, _) <- refused] === [Left message | (_, message) <- refused]
 
 taughtSettings :: PropertyT IO ()
 taughtSettings = do
     let taught = F.configured {L.algorithm = L.Opd teacher {Algorithm.teacherTokenizer = L.tokenizer F.configured}}
     L.validate taught === Right ()
-    L.validate taught {L.algorithm = L.Opd teacher {Algorithm.teacherTokenizer = replicate 64 'd'}} === Left (L.InvalidSettings "The teacher's tokenizer must be the student's")
+    L.validate taught {L.algorithm = L.Opd teacher {Algorithm.teacherTokenizer = replicate 64 'd'}} === Right ()
     L.validate taught {L.clip = 0} === Left (L.InvalidSettings "Invalid distillation coefficients")

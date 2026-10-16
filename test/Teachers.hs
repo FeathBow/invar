@@ -69,7 +69,7 @@ ruled :: PropertyT IO ()
 ruled = do
     path <- source
     let declared = teacher {Algorithm.teacherLogprobs = "raw"}
-    expected <- either pure (const failure) (Algorithm.teacher (Infer.tokenizer request) declared)
+    expected <- either pure (const failure) (Algorithm.teacher declared)
     void (Teacher.prepare declared path) === Left expected
 
 supported :: PropertyT IO ()

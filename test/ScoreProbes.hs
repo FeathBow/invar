@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module ScoreProbes (scoreProbes, fixtureFor) where
+module ScoreProbes (scoreProbes, fixtureFor, outputs) where
 
 import Calls (change, field, request, wire)
 import Control.Monad (forM_)
@@ -24,7 +24,7 @@ scoreProbes =
         [ ("probe selection is checked against the actual response", once selection)
         , ("probe source and steps are frozen before consumption", once binding)
         , ("complete vectors become an opaque observation without a KL claim", once admitted)
-        , ("complete vocabulary and selected-step inventory are required", once inventory)
+        , ("the vectors cover exactly the target's output coordinates at every selected step", once inventory)
         , ("nonfinite negative and out-of-range masses are rejected", once masses)
         , ("zero support agrees with the selected-token path score", once support)
         , ("cost records must match actual execution diagnostics", once costs)
@@ -65,7 +65,13 @@ fixtureFor steps original target = do
                         ]
                     )
                 ]
-    pure (call, Scores.changeObservation body events)
+    pure (call, outputs 4 (Scores.changeObservation body events))
+
+-- The target's loaded model reports the width of the retained vectors as its output coordinates.
+outputs :: Natural -> [Value] -> [Value]
+outputs width =
+    alter 0 (change "coordinates" (object ["input" .= (100352 :: Natural), "output" .= width]))
+        . Scores.changeObservation (\value -> change "probability" (change "normalization" (object ["over" .= String "every target output coordinate", "width" .= width]) (field "probability" value)) value)
 
 metric :: String -> Value
 metric name = object ["stage" .= name, "seconds" .= (0.1 :: Double), "allocator" .= String "mlx", "peak_active" .= (64 :: Int), "cache_end" .= (0 :: Int)]
@@ -122,6 +128,7 @@ inventory = do
         reject call (vectors (change key value) events)
     reject call (Scores.changeObservation (omit "full_vocabulary") events)
     reject call (Scores.changeObservation (change "format" (String "invar-cached-path-score-v1")) events)
+    forM_ [100352, 5] $ \width -> reject call (outputs width events)
 
 masses :: PropertyT IO ()
 masses = do

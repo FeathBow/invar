@@ -125,12 +125,12 @@ class ProbeDeliveryTests(unittest.TestCase):
         self.vector = Observed(probe=self.probe, snapshots=(Snapshot(step=0, probability_bits=(0, 0x3f800000)),))
         self.trace = {"tokens": [0], "behavior": [-120.], "native_sample_rows": 2, "ignored_prefill_rows": 1,
                       "probe": self.vector}
-        self.delivered = (words(torch.tensor([-120.])), True)
+        self.delivered = words(torch.tensor([-120.]))
 
     def test_finite_reported_log_and_zero_mass_remain_distinct_observations(self):
         result = trace_score(self.trace, self.path, self.delivered, probe=self.probe)
         self.assertEqual(result.probe, self.vector)
-        self.assertEqual(result.log_probability_bits, self.delivered[0])
+        self.assertEqual(result.log_probability_bits, self.delivered)
 
     def test_undeclared_missing_or_mismatched_observation_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "undeclared"):

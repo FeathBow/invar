@@ -12,6 +12,7 @@ import Evaluations qualified
 import Hedgehog
 import Invar.Evaluation qualified as Evaluation
 import Invar.Workload qualified as Workload
+import TokenizerFixture qualified as Tokens
 import Updates (alter, change, field)
 import Workloads (array, declared, encoded, replace)
 
@@ -135,9 +136,9 @@ materialization = do
     forM_ ["tokenizer", "base", "assembly"] $ \axis -> do
         reject expected (Evaluations.completion (change axis (String (Text.replicate 64 "d"))) values)
         reject expected (Evaluations.completion (omit axis) values)
-    other <- Evaluations.records (policy, (replicate 64 'c', replicate 64 'd', replicate 64 'f')) expected 1 outcomes
+    other <- Evaluations.records (policy, (Tokens.identity, replicate 64 'd', replicate 64 'f')) expected 1 outcomes
     result <- accepted (expected, other)
-    Evaluation.model result === Evaluation.Materialized (replicate 64 'c') (replicate 64 'd') (replicate 64 'f')
+    Evaluation.model result === Evaluation.Materialized Tokens.identity (replicate 64 'd') (replicate 64 'f')
 
 sessions :: PropertyT IO ()
 sessions = do

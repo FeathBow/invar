@@ -10,7 +10,7 @@ from worker.hf.score import referenced
 from worker.hf.rollout import generate
 from worker.implementation import INFERENCE
 from worker.hf.operation import load as load_tokenizer
-from worker.hf.operation import verify
+from worker.hf.operation import described, verify
 
 @dataclass(frozen=True, kw_only=True)
 class Runtime:
@@ -54,7 +54,8 @@ def sampled(runtime, requests, reference, *, identities):
 
 def execute(runtime, call, *, approve, measure, previous=None, emit=report, reference=None):
     identities = materialized(runtime, call.identities)
-    ready(call, identities, model=runtime.identity, previous=previous, emit=emit)
+    ready(call, identities, model=runtime.identity, description=described(runtime.tokenizer, identities["tokenizer"]),
+          previous=previous, emit=emit)
     approve(call.invocation)
     (trajectory,), (scored,) = measure("inference", lambda: sampled(runtime, (call.request,), reference, identities=identities))
     result(call, trajectory, identities=identities, emit=emit, reference=scored)

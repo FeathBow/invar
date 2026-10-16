@@ -27,9 +27,10 @@ import Invar.Score.Probe qualified as Probe
 import Invar.Score.Resources qualified as Resources
 import Invar.Spec.Score (LogRatio (..))
 import Invar.Spec.Score qualified as S
+import Invar.Tokenizer qualified as Tokenizer
 import Numeric.Natural (Natural)
 
-data Input = Input {source :: Inference.Source, target :: Infer.Request, inspection :: ByteString, materialization :: Policy.Description, probeSteps :: [Natural], measurements :: [Object]}
+data Input = Input {source :: Inference.Source, target :: Infer.Request, inspection :: ByteString, materialization :: Policy.Description, coordinates :: Tokenizer.Coordinates, probeSteps :: [Natural], measurements :: [Object]}
 
 data Body = Body {probabilityWords :: [Word32], logRatio :: LogRatio, fullVocabulary :: Maybe S.Distribution, observation :: Value}
     deriving (Eq, Show)
@@ -54,8 +55,9 @@ parse inputs value fields = do
     equals fields "response_tokens" response
     equals fields "request" (object ["prompt" .= Infer.prompt requested, "tokens" .= Infer.tokens requested, "temperature" .= Infer.temperature requested, "seed" .= Infer.seed requested])
     fields .: "target" >>= withObject "score materialization" (targetFields inputs)
-    equals fields "probability" (object ["role" .= ("behavior" :: String), "log_base" .= ("e" :: String), "representation" .= ("F32 words" :: String), "zero_support_word" .= (0xff800000 :: Word32), "temperature" .= Infer.temperature requested, "mask" .= ("none" :: String), "top_k" .= ("disabled" :: String), "top_p" .= ("disabled" :: String)])
-    relation <- fields .: "execution" >>= withObject "score execution" (Execution.observe (Execution.Expected (Result.truncated original) (length response) full))
+    equals fields "probability" (object ["role" .= ("behavior" :: String), "log_base" .= ("e" :: String), "representation" .= ("F32 words" :: String), "zero_support_word" .= (0xff800000 :: Word32), "temperature" .= Infer.temperature requested, "mask" .= ("none" :: String), "top_k" .= ("disabled" :: String), "top_p" .= ("disabled" :: String), "normalization" .= object ["over" .= ("every target output coordinate" :: String), "width" .= Tokenizer.output (coordinates inputs)]])
+    (relation, lookahead) <- fields .: "execution" >>= withObject "score execution" (Execution.observe (Execution.Expected (length response) full))
+    either fail pure (Tokenizer.fed (coordinates inputs) (drop (length response - lookahead) response))
     fields .: "implementation" >>= withObject "score implementation" implementation
     encoded <- fields .: "log_probability_bits"
     unless (length encoded == length response) (fail "Scored probabilities do not cover the complete prescribed response")
@@ -69,7 +71,7 @@ parse inputs value fields = do
                 equals fields "source_inspection" (decodeUtf8 (inspection inputs))
                 equals fields "measurements" (map Object (measurements inputs))
                 Resources.observe relation (measurements inputs)
-                Just <$> (fields .: "full_vocabulary" >>= Probe.observe relation (probeSteps inputs, zip response encoded))
+                Just <$> (fields .: "full_vocabulary" >>= Probe.observe relation (Tokenizer.output (coordinates inputs)) (probeSteps inputs, zip response encoded))
             else pure Nothing
     pure (Body encoded ratio vectors value)
 

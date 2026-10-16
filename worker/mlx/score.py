@@ -17,9 +17,9 @@ from worker.distribution import FP32_BYTES, PROBE_FORMAT, Probe
 from worker.invocation import request as request_value
 from worker.mlx import model as mlx_model
 from worker.mlx import tensors as mlx_tensors
-from worker.mlx.crossscore import score, validate
+from worker.mlx.crossscore import coordinates, score
 from worker.mlx.metrics import measure
-from worker.scoring import Source, provenance, source
+from worker.scoring import Source, normalization, provenance, source
 from worker.probestore import Store
 from worker.implementation import INFERENCE
 
@@ -32,16 +32,11 @@ def implementation(modules=IMPLEMENTATIONS):
     return provenance(modules, packages=("mlx", "mlx-lm", "transformers"))
 
 
-def observe(loaded, selected, *, expected, sampling, measured, probe=None, store=None):
-    if selected.tokenizer != expected["tokenizer"]:
-        raise ValueError("Scoring target tokenizer differs from the source operation")
-    validate(selected.request, selected.path, loaded.tokenizer)
-    if selected.truncated != (selected.path.response[-1] != loaded.tokenizer.eos_token_id):
-        raise ValueError("Source stopping report differs from the actual target EOS")
+def observe(loaded, selected, *, expected, coordinated, sampling, measured, probe=None, store=None):
     actual = measured("verify_before", lambda: mlx_model.verify(loaded, expected, INFERENCE))
     before = {str(index): mx.array(value) for index, value in enumerate(mx.random.state)}
-    observed, = measured("cross_score", lambda: score(loaded.model, loaded.tokenizer, (selected.request,),
-                                                      paths=(selected.path,), sampling=sampling, probes=(probe,), stores=(store,)))
+    observed, = measured("cross_score", lambda: score(loaded.model, (selected.request,), paths=(selected.path,),
+                                                      coordinated=coordinated, sampling=sampling, probes=(probe,), stores=(store,)))
     if not mlx_tensors.equal(before, {str(index): value for index, value in enumerate(mx.random.state)}):
         raise RuntimeError("Cached scoring advanced the learner PRNG state")
     measured("verify_after", lambda: mlx_model.verify(loaded, actual, INFERENCE))
@@ -54,11 +49,10 @@ def observe(loaded, selected, *, expected, sampling, measured, probe=None, store
             "response_tokens": list(observed.path.response), "log_probability_bits": list(observed.log_probability_bits),
             "probability": {"role": "behavior", "log_base": "e", "representation": "F32 words",
                             "zero_support_word": 0xff800000, "temperature": observed.request.temperature,
-                            "mask": "none", "top_k": "disabled", "top_p": "disabled"},
+                            "mask": "none", "top_k": "disabled", "top_p": "disabled", "normalization": normalization(coordinated)},
             "execution": {"engine": "mlx_lm.generate.BatchGenerator", "sampling": asdict(sampling),
                           "cache_origin": "fresh native caches; no reference cache input",
-                          "unused_native_lookahead_draws": observed.lookahead_draws,
-                          "truncated": observed.truncated},
+                          "unused_native_lookahead_draws": observed.lookahead_draws},
             "implementation": implementation()}
     if observed.probe is not None:
         vectors = observed.probe
@@ -78,8 +72,6 @@ def run(options, *, loader=mlx_model.load):
     probe = None if options.probe_steps is None else probe_selection(options.probe_steps, selected)
     expected = {"adapter": identity(options.digest), "tokenizer": identity(options.tokenizer_digest),
                 "base": identity(options.base_digest), "assembly": identity(options.assembly_digest)}
-    if selected.tokenizer != expected["tokenizer"]:
-        raise ValueError("Scoring target tokenizer differs from the source operation")
     configuration = mlx_model.configuration(options.config)
     records = []
 
@@ -92,8 +84,8 @@ def run(options, *, loader=mlx_model.load):
         with redirect_stdout(sys.stderr), ExitStack() as scope:
             loaded = loader(options.cache, scope=scope, configuration=configuration, measure=measured,
                             emit=emit, initial=(options.adapter, expected))
-            result = observe(loaded, selected, expected=expected, sampling=configuration.sampling(),
-                             measured=measured, probe=probe, store=store)
+            result = observe(loaded, selected, expected=expected, coordinated=coordinates(loaded.model),
+                             sampling=configuration.sampling(), measured=measured, probe=probe, store=store)
         value = {**result, "measurements": records}
         if probe is None:
             print(json.dumps(value, allow_nan=False), flush=True)
