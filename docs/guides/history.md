@@ -2,7 +2,7 @@
 
 `invar train` runs rollout and learning through the event runtime: update u learns from rollouts of version max(0, u − d) while later rollouts run, where d is `--staleness` and 0 when the option is omitted. With d = 0 every update learns from rollouts of the policy it starts from. The run keeps its evidence in its output directory and prints only a summary on standard output: a `published` record for each generation and a `resumed` record when it resumes. The full history is read from the directory with `invar inspect history --run`. This guide covers what that directory holds, how to resume a run, how to admit it as a history and compare it with another run, and which files to keep.
 
-The runtime runs with the `serial`, `batch` or `resident` worker modes, and with `shared` execution at `--staleness 0`, where one process carries both roles. Shared execution without `--staleness` runs the lockstep loop, which keeps no journal and writes its training log to standard output. `invar inspect history --log` admits that log, and the logs that earlier runs wrote.
+The runtime runs with the `serial`, `batch` or `resident` worker modes, and with `shared` execution, where one process carries both roles at staleness 0. `invar inspect history --log` admits the training log of a lockstep run, which kept no journal and wrote every worker record to standard output.
 
 ## The output directory
 

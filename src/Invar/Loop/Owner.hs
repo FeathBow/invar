@@ -1,4 +1,4 @@
-module Invar.Loop.Owner (validate, withShared, withRecordedShared) where
+module Invar.Loop.Owner (validate, withRecordedShared) where
 
 import Control.Monad (unless)
 import Data.Bifunctor (first)
@@ -19,9 +19,6 @@ validate :: Configuration -> Either String ()
 validate (inference, learning, overlays) = do
     unless (Infer.executable inference == Learn.executable learning && Infer.script inference == Learn.script learning && Infer.cache inference == Learn.cache learning) (Left "Shared roles require the same executable, script and model cache")
     unless (length overlays == 1) (Left "Shared execution requires exactly one physical session")
-
-withShared :: Configuration -> (Rollout.Pool -> Learner.Runner -> IO value) -> IO (Either Learn.Failure value)
-withShared configuration = withRecordedShared configuration (pure Transcript.standard)
 
 withRecordedShared :: Configuration -> IO Transcript.Transcript -> (Rollout.Pool -> Learner.Runner -> IO value) -> IO (Either Learn.Failure value)
 withRecordedShared configuration@(inference, learning, overlays) opened action = case validate configuration of

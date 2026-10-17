@@ -2,10 +2,8 @@
 
 module Loops (loops) where
 
-import BatchCalls (quote)
-import Control.Monad (forM_, void)
+import Control.Monad (forM_)
 import Data.Aeson (Value (Null))
-import Data.ByteString qualified as Bytes
 import Hedgehog
 import Invar.Cohort qualified as C
 import Invar.Infer qualified as I
@@ -15,21 +13,17 @@ import Invar.Loop qualified as Loop
 import Invar.Policy qualified as Policy
 import Invar.Rollout qualified as R
 import Invar.Runtime qualified as Runtime
-import Invar.Schedule qualified as S
 import Invar.Store qualified as Store
 import Invar.Worker qualified as W
 import LearnerFixture qualified as F
 import Rollouts qualified as Fixture
 import Sessions qualified
 import Store (workspace)
-import System.Directory (createDirectory, doesPathExist, listDirectory)
-import System.Exit (ExitCode (ExitFailure))
+import System.Directory (createDirectory, doesPathExist)
 import System.FilePath ((</>))
-import System.IO.Error (isAlreadyExistsError, isDoesNotExistError, tryIOError)
-import System.Posix.Files (createSymbolicLink)
 
 loops :: Group
-loops = Group "Owning loop preparation" [("invalid learning settings cannot claim an output namespace", once settings), ("invalid cohorts do not advance the committed generation", once declarations), ("a different tokenizer cannot launch a rollout", once tokenizer), ("an undeclared behavior model cannot launch a rollout", once materialization), ("an initial description that differs from the declared materialization is refused before either loop starts", once initial), ("a runtime run that selects shared execution for one role only, or with positive staleness, is refused before it claims its output", once sharing), ("a selected policy description cannot change before a rollout", once description), ("declared behavior and learner models retain separate identities", once representations), ("inference launch retains its executable configuration and checkpoint", once configured), ("failed rollout keeps the checkpoint but reserves fresh identities", once failed), ("launch exceptions release preparation without reusing identities", once interrupted), ("an existing namespace cannot be opened as a fresh loop", once namespace)]
+loops = Group "Training run preparation" [("an initial description that differs from the declared materialization is refused before the run starts", once initial), ("a run that selects shared execution for one role only, with positive staleness, with roles that differ in executable, script or model cache, or with more than one session, is refused before it claims its output", once sharing), ("declared behavior and learner models retain separate identities", once representations)]
   where
     once = withTests 1 . property
 
@@ -45,70 +39,12 @@ setup root = do
         Policy.stageDescription (root </> "input" </> "policy.json") initialDescription
     pure (Loop.Config backend (root </> "run") (root </> "input") (root </> "reference") learning Store.RenameExclusive, Loop.Cycle (C.tasks (R.definition chosen)) (R.order chosen) (R.delivery chosen))
 
-ready :: Loop.Config -> Loop.Status
-ready config = Loop.Ready 0 (Loop.Checkpoint (Loop.checkpoint config) (L.policy (Loop.settings config)) (L.learner (Loop.settings config)))
-
-settings :: PropertyT IO ()
-settings = do
-    root <- workspace
-    (config, _) <- setup root
-    let invalid = config {Loop.settings = (Loop.settings config) {L.clip = 0}}
-    outcome <- evalIO (Loop.withDriver invalid (const (pure ())))
-    case outcome of
-        Left (Loop.Settings (L.InvalidSettings _)) -> success
-        unexpected -> annotateShow unexpected >> failure
-    evalIO (doesPathExist (Loop.root config)) >>= (=== False)
-
-declarations :: PropertyT IO ()
-declarations = do
-    root <- workspace
-    (config, workload) <- setup root
-    outcomes <- evalIO $ Loop.withDriver config $ \driver -> do
-        empty <- void <$> Loop.run driver workload {Loop.tasks = []}
-        invalid <- void <$> Loop.run driver workload {Loop.order = [0, 0]}
-        badDelivery <- void <$> Loop.run driver workload {Loop.delivery = [0, 0]}
-        observed <- Loop.status driver
-        pure (empty, invalid, badDelivery, observed)
-    outcomes === Right (Left (Loop.Rollout (R.Declaration C.EmptyCohort)), Left (Loop.Rollout (R.Scheduling (S.InvalidPermutation S.Execution))), Left (Loop.Rollout (R.Scheduling (S.InvalidPermutation S.Delivery))), ready config)
-    evalIO (doesPathExist (root </> "calls")) >>= (=== False)
-    evalIO (listDirectory (Loop.root config)) >>= (=== [])
-
-tokenizer :: PropertyT IO ()
-tokenizer = do
-    root <- workspace
-    (config, workload) <- setup root
-    changed <- changeTasks (\request -> request {I.tokenizer = replicate 64 'd'}) workload
-    outcomes <- evalIO $ Loop.withDriver config $ \driver -> do
-        outcome <- void <$> Loop.run driver changed
-        position <- Loop.status driver
-        pure (outcome, position)
-    outcomes === Right (Left (Loop.Plan L.TokenizerMismatch), ready config)
-    evalIO (doesPathExist (root </> "calls")) >>= (=== False)
-    evalIO (listDirectory (Loop.root config)) >>= (=== [])
-
-materialization :: PropertyT IO ()
-materialization = forM_ [\request -> request {I.base = replicate 64 '0'}, \request -> request {I.assembly = replicate 64 '0'}] $ \change -> do
-    root <- workspace
-    (config, workload) <- setup root
-    changed <- changeTasks change workload
-    outcomes <- evalIO $ Loop.withDriver config $ \driver -> do
-        outcome <- void <$> Loop.run driver changed
-        position <- Loop.status driver
-        pure (outcome, position)
-    outcomes === Right (Left (Loop.Plan L.MaterializationMismatch), ready config)
-    evalIO (doesPathExist (root </> "calls")) >>= (=== False)
-    evalIO (listDirectory (Loop.root config)) >>= (=== [])
-
 initial :: PropertyT IO ()
 initial = do
     root <- workspace
     (config, _) <- setup root
     let changed = config {Loop.settings = (Loop.settings config) {L.behaviorBase = replicate 64 'd'}}
         problem = "Initial policy description differs from the declared inference materialization"
-    synchronous <- evalIO (Loop.withDriver changed (const (pure ())))
-    case synchronous of
-        Left (Loop.Policy refused) -> refused === problem
-        unexpected -> annotateShow unexpected >> failure
     document <- evalEither Sessions.workload
     concurrent <- evalIO (Runtime.run (Runtime.Run changed 0 document) Null)
     case concurrent of
@@ -122,35 +58,15 @@ sharing = do
     (config, _) <- setup root
     document <- evalEither Sessions.workload
     let modes inference learning = config {Loop.backend = (Loop.backend config) {Loop.inferenceMode = inference, Loop.learningMode = learning}}
-    forM_ [(modes R.Shared Learner.Resident, 0, "Both numerical roles must explicitly select shared execution"), (modes R.Resident Learner.Shared, 0, "Both numerical roles must explicitly select shared execution"), (modes R.Shared Learner.Shared, 1, "Shared execution requires staleness zero")] $ \(chosen, lag, problem) -> do
+        joint = modes R.Shared Learner.Shared
+        engine = Loop.backend joint
+        aligned count = joint {Loop.backend = engine {Loop.python = Loop.inferencePython engine, Loop.learning = Loop.inference engine, Loop.sessions = replicate count []}}
+    forM_ [(modes R.Shared Learner.Resident, 0, "Both numerical roles must explicitly select shared execution"), (modes R.Resident Learner.Shared, 0, "Both numerical roles must explicitly select shared execution"), (joint, 1, "Shared execution requires staleness zero"), (joint, 0, "Shared roles require the same executable, script and model cache"), (aligned 2, 0, "Shared execution requires exactly one physical session")] $ \(chosen, lag, problem) -> do
         refused <- evalIO (Runtime.run (Runtime.Run chosen lag document) Null)
         case refused of
             Left (Runtime.Declaration found) -> found === problem
             unexpected -> annotateShow unexpected >> failure
     evalIO (doesPathExist (Loop.root config)) >>= (=== False)
-
-changeTasks :: (I.Request -> I.Request) -> Loop.Cycle -> PropertyT IO Loop.Cycle
-changeTasks change workload = do
-    changed <- traverse bind (Loop.tasks workload)
-    pure workload {Loop.tasks = changed}
-  where
-    bind task = do
-        planned <- evalEither (I.prepare (change (I.requested (C.plan task))))
-        pure task {C.plan = planned}
-
-description :: PropertyT IO ()
-description = do
-    root <- workspace
-    (config, workload) <- setup root
-    let chosen = Loop.settings config
-    changed <- evalEither (Policy.describe ("changed-model", "fixture-revision") (L.policy chosen, L.tokenizer chosen, L.behaviorBase chosen, L.behaviorAssembly chosen))
-    outcomes <- evalIO $ Loop.withDriver config $ \driver -> do
-        Bytes.writeFile (Loop.checkpoint config </> "policy.json") (Policy.encodeDescription changed)
-        outcome <- void <$> Loop.run driver workload
-        position <- Loop.status driver
-        pure (outcome, position)
-    outcomes === Right (Left (Loop.Policy "Selected policy description changed after publication or initial selection"), ready config)
-    evalIO (doesPathExist (root </> "calls")) >>= (=== False)
 
 representations :: PropertyT IO ()
 representations = do
@@ -163,72 +79,3 @@ representations = do
         assert (L.base chosen /= I.base request && L.assembly chosen /= I.assembly request)
         L.materialization chosen request {I.base = L.base chosen} === Left L.MaterializationMismatch
         L.materialization chosen request {I.assembly = L.assembly chosen} === Left L.MaterializationMismatch
-
-configured :: PropertyT IO ()
-configured = do
-    root <- workspace
-    (config, workload) <- setup root
-    let script = root </> "inference.sh"
-        marker = root </> "arguments"
-        launch = root </> "native configuration.json"
-        engine = (Loop.backend config) {Loop.inference = script, Loop.inferenceConfiguration = Just launch}
-        selected = config {Loop.backend = engine}
-    evalIO (writeFile script ("printf '%s\\n' \"$@\" > " ++ quote marker ++ "\nexit 7\n"))
-    outcomes <- evalIO $ Loop.withDriver selected $ \driver -> do
-        outcome <- void <$> Loop.run driver workload
-        position <- Loop.status driver
-        pure (outcome, position)
-    outcomes === Right (Left (Loop.Rollout (R.Execution (W.WorkerExit (ExitFailure 7)))), ready selected)
-    actual <- evalIO (readFile marker)
-    lines actual === ["--cache=" ++ Loop.cache engine, "--adapter=" ++ (Loop.checkpoint config </> "adapter.safetensors"), "--config=" ++ launch]
-    evalIO (listDirectory (Loop.root config)) >>= (=== [])
-
-failed :: PropertyT IO ()
-failed = do
-    root <- workspace
-    (config, workload) <- setup root
-    outcomes <- evalIO $ Loop.withDriver config $ \driver ->
-        traverse (run driver workload) [[1, 0], [0, 1]]
-    observed <- evalEither outcomes
-    forM_ observed $ \(outcome, position) -> do
-        outcome === Left (Loop.Rollout (R.Execution (W.WorkerExit (ExitFailure 7))))
-        position === ready config
-    Fixture.reports root >>= (=== [(1, 1, 1), (2, 2, 2)])
-    evalIO (listDirectory (Loop.root config)) >>= (=== [])
-  where
-    run driver workload order = do
-        outcome <- void <$> Loop.run driver workload {Loop.order = order}
-        position <- Loop.status driver
-        pure (outcome, position)
-
-interrupted :: PropertyT IO ()
-interrupted = do
-    root <- workspace
-    (config, workload) <- setup root
-    let executable = root </> "python"
-        selected = config {Loop.backend = (Loop.backend config) {Loop.inferencePython = executable}}
-    outcomes <- evalIO $ Loop.withDriver selected $ \driver -> do
-        exception <- tryIOError (void <$> Loop.run driver workload)
-        before <- Loop.status driver
-        createSymbolicLink "/bin/sh" executable
-        outcome <- void <$> Loop.run driver workload
-        after <- Loop.status driver
-        pure (exception, before, outcome, after)
-    (exception, before, outcome, after) <- evalEither outcomes
-    case exception of
-        Left problem -> assert (isDoesNotExistError problem)
-        Right unexpected -> annotateShow unexpected >> failure
-    before === ready config
-    after === ready config
-    outcome === Left (Loop.Rollout (R.Execution (W.WorkerExit (ExitFailure 7))))
-    Fixture.reports root >>= (=== [(2, 2, 2)])
-
-namespace :: PropertyT IO ()
-namespace = do
-    root <- workspace
-    (config, _) <- setup root
-    evalIO (Loop.withDriver config Loop.status) >>= (=== Right (ready config))
-    repeated <- evalIO (tryIOError (Loop.withDriver config (const (pure ()))))
-    case repeated of
-        Left problem -> assert (isAlreadyExistsError problem)
-        Right unexpected -> annotateShow unexpected >> failure

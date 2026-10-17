@@ -441,7 +441,7 @@ collect shared (update, version) = do
     started <- getMonotonicTime
     slots <- newIORef Map.empty
     cycle' <- either (ioError . userError) pure ((cycles shared !! fromIntegral update) (Loop.policy checkpoint))
-    tasks <- either (ioError . userError . show) pure (Loop.bindTasks description (Loop.tasks cycle'))
+    tasks <- either (ioError . userError) pure (Loop.bindTasks description (Loop.tasks cycle'))
     let chosen = config shared
         offset = offsets shared !! fromIntegral update
         options = R.Options {R.worker = Loop.inferenceWorker chosen checkpoint, R.mode = Loop.inferenceMode (Loop.backend chosen), R.sessions = Loop.sessions (Loop.backend chosen), R.definition = C.Definition (Loop.policy checkpoint) tasks, R.order = Loop.order cycle', R.delivery = Loop.delivery cycle', R.reference = Loop.scoring chosen checkpoint}

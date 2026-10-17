@@ -3,7 +3,7 @@
 module Drivers (drivers) where
 
 import BatchCalls (quote)
-import Control.Monad (forM, forM_, when)
+import Control.Monad (forM, forM_)
 import Data.Aeson (Value (..), withObject, (.:))
 import Data.Aeson.Types (Parser, parseEither)
 import Data.Bifunctor (first)
@@ -15,7 +15,6 @@ import Invar.History.Cohort qualified as Cohort
 import Invar.History.Generation qualified as Generation
 import Invar.History.Runtime qualified as History
 import Invar.Learn qualified as L
-import Invar.Learn.Protocol qualified as P
 import Invar.Learn.Report qualified as Report
 import Invar.Learn.Worker qualified as Learner
 import Invar.Loop qualified as Loop
@@ -25,18 +24,17 @@ import Invar.Runtime qualified as Runtime
 import Invar.Spec.Invocation qualified as V
 import Invar.Store qualified as Store
 import Invar.Worker qualified as Worker
-import Invar.Workload qualified as Workload
 import LearnerFixture qualified as F
 import Sessions qualified
 import Store (workspace)
-import System.Directory (createDirectory, doesFileExist, removeFile)
+import System.Directory (createDirectory)
 import System.FilePath ((</>))
 
 drivers :: Group
 drivers =
     Group
-        "Lockstep and runtime drivers"
-        [("the lockstep driver and the runtime at staleness zero publish the same generations from the same learner inputs over two cycles in which the policy changes and the second rollout scores the reference", withTests 1 (property agreed))]
+        "Runtime publication"
+        [("the runtime at staleness zero publishes the learner's generations over two cycles in which the policy changes and the second rollout scores the reference", withTests 1 (property agreed))]
 
 agreed :: PropertyT IO ()
 agreed = do
@@ -64,42 +62,28 @@ agreed = do
     secondLearner <- learned preparing (base, 1, V.ordinal (2 * members + 1)) (updated, successor, scoring)
     let copying index = unlines ["output=\"${4#--output=}\"", "mkdir -p \"$output\" || exit 24", unwords (["cp"] ++ [quote (base </> ("update" ++ show (index :: Int)) </> name) | name <- ["adapter.safetensors", "learner.pt", "gradients.safetensors", "probabilities.json"]] ++ ["\"$output\"", "|| exit 25"])]
         dispatching marker (firstScript, laterScript) = unlines ["if test -e " ++ quote marker ++ "; then exec /bin/sh " ++ quote laterScript ++ " \"$@\"; fi", ": > " ++ quote marker, "exec /bin/sh " ++ quote firstScript ++ " \"$@\""]
-        markers = [base </> "learned", base </> "inferred"]
-        reset = forM_ markers $ \marker -> doesFileExist marker >>= (`when` removeFile marker)
     evalIO $ do
         writeFile (base </> "learner0.sh") (copying 0 ++ firstLearner)
         writeFile (base </> "learner1.sh") (copying 1 ++ secondLearner)
         writeFile (base </> "learner.sh") (dispatching (base </> "learned") (base </> "learner0.sh", base </> "learner1.sh"))
         writeFile inferring (dispatching (base </> "inferred") (Worker.script worker, Worker.script (R.worker following)))
     document <- evalEither (Sessions.workloads 2)
-    let instantiate policy = Loop.instantiate (policy, L.tokenizer settings, L.behaviorBase settings, L.behaviorAssembly settings)
-    evalIO reset
-    lockstep <- evalIO $ Loop.withDriver (config (base </> "lockstep")) $ \driver -> do
-        let advance policy workload = either (pure . Left . Loop.Policy) (Loop.run driver) (instantiate policy workload)
-        case Workload.cycles document of
-            [cycle1, cycle2] -> do
-                firstGeneration <- advance (L.policy settings) cycle1
-                case firstGeneration of
-                    Left problem -> pure (Left problem)
-                    Right generated -> fmap (\later -> map observed [generated, later]) <$> advance (Loop.policy (Loop.current generated)) cycle2
-            _ -> pure (Left (Loop.Policy "Expected two cycles"))
-    generations <- evalEither (first show lockstep) >>= evalEither . first show
-    evalIO reset
     outcome <- evalIO (Runtime.run (Runtime.Run (config (base </> "runtime")) 0 document) Null)
     either (\problem -> annotateShow problem >> failure) pure outcome
     checked <- evalIO (History.inspect (base </> "runtime") (const (Right (config (base </> "runtime"), 0)))) >>= evalEither
     let runtimeReports = [Cohort.update (Generation.cohort generation) | generation <- History.generations checked]
-    map fst generations === map Report.checkedRequest runtimeReports
+    length runtimeReports === 2
     L.policy settings /== adapter
-    map snd generations === [adapter, adapter]
     flags <- evalEither (traverse (parseEither scored . Report.request) runtimeReports)
     concat flags === [False, True]
-    forM_ ["generation1", "generation2"] $ \published -> forM_ ["policy.json", "adapter.safetensors", "learner.pt"] $ \name -> do
-        left <- evalIO (Bytes.readFile (base </> "lockstep" </> published </> name))
-        right <- evalIO (Bytes.readFile (base </> "runtime" </> published </> name))
-        left === right
+    later <- evalEither (Policy.successor adapter successor)
+    forM_ (zip3 ["generation1", "generation2"] ["update0", "update1"] [successor, later]) $ \(published, update, described) -> do
+        forM_ ["adapter.safetensors", "learner.pt"] $ \name -> do
+            expected <- evalIO (Bytes.readFile (base </> update </> name))
+            actual <- evalIO (Bytes.readFile (base </> "runtime" </> published </> name))
+            expected === actual
+        evalIO (Policy.readDescription (base </> "runtime" </> published </> "policy.json")) >>= (=== described)
   where
-    observed generated = (P.checkedRequest (Loop.result generated), Loop.policy (Loop.current generated))
     scored :: Value -> Parser [Bool]
     scored = withObject "update request" $ \fields -> do
         samples <- fields .: "samples"

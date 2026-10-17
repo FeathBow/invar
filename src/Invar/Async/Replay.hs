@@ -449,7 +449,7 @@ tasksOf :: (C.Grade grade) => Declaration grade -> Fold grade -> Natural -> Natu
 tasksOf declared fold update selected = do
     Generation chosen _ described <- generationOf fold selected
     cycle' <- (cycles declared !! fromIntegral update) chosen
-    first show (Loop.bindTasks described (Loop.tasks cycle'))
+    Loop.bindTasks described (Loop.tasks cycle')
 
 referenceOf :: Declaration grade -> Fold grade -> Natural -> Either String (Maybe String)
 referenceOf declared fold selected = do
