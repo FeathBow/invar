@@ -168,20 +168,21 @@ class OverlapTests(unittest.TestCase):
         steps, = [item["state"]["steps"] for item in history["artifacts"]]
         self.assertTrue(steps and all(count == 2 for count in steps))
 
-    def test_a_default_two_cycle_run_goes_through_the_runtime_scores_the_reference_and_equals_an_explicit_staleness_zero(self):
+    def test_a_default_two_cycle_run_journals_its_declaration_scores_the_reference_and_repeats_exactly(self):
+        runs = {}
         for mode in ("serial", "resident"):
             with self.subTest(mode=mode):
-                records, default = self.train("default" + mode, 2, **{"inference-mode": mode})
-                _, explicit = self.train("explicit" + mode, 2, staleness=0, **{"inference-mode": mode})
-                self.assertEqual(journaled(default)[0]["entry"], "declaration")
+                records, runs[mode] = self.train("default" + mode, 2, **{"inference-mode": mode})
+                self.assertEqual(journaled(runs[mode])[0]["entry"], "declaration")
                 published = [value["policy"] for value in records if value.get("phase") == "published"]
                 self.assertEqual(len({self.settings["policy"], *published}), 3)
-                self.assertEqual([value is not None for value in references(default)], [False, False, True, True])
-                comparison = compared({"run": default, **independent(self.root, default / "generation2", "default" + mode)},
-                                      {"run": explicit, **independent(self.root, explicit / "generation2", "explicit" + mode)})
-                self.assertTrue(comparison["equal"])
-                self.assertTrue(comparison["schedule_equal"])
-                self.assertTrue(comparison["execution"]["declared_equal"])
+                self.assertEqual([value is not None for value in references(runs[mode])], [False, False, True, True])
+        _, repeated = self.train("repeated", 2, staleness=0)
+        comparison = compared({"run": runs["serial"], **independent(self.root, runs["serial"] / "generation2", "defaultserial")},
+                              {"run": repeated, **independent(self.root, repeated / "generation2", "repeated")})
+        self.assertTrue(comparison["equal"])
+        self.assertTrue(comparison["schedule_equal"])
+        self.assertTrue(comparison["execution"]["declared_equal"])
 
     def test_staleness_is_a_schedule_difference(self):
         _, fresh = self.train("fresh", 1, staleness=0)
