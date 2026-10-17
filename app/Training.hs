@@ -3,27 +3,22 @@
 module Training (run, usage, settings, settingsOptions, declared) where
 
 import Control.Monad (when)
-import Data.Aeson (Value, encode, object, parseJSON, toJSON, (.=))
+import Data.Aeson (Value, parseJSON, toJSON)
 import Data.Aeson.Types (parseEither)
 import Data.Bifunctor (first)
 import Data.ByteString qualified as Bytes
-import Data.ByteString.Lazy.Char8 qualified as Lazy
 import Data.Map.Strict qualified as Map
 import Data.Maybe (isJust)
 import Data.Text qualified as Text
 import Dataset qualified
-import GHC.Clock (getMonotonicTime)
 import InferenceInput qualified
 import Invar.Cohort qualified as Cohort
 import Invar.Learn qualified as Learn
 import Invar.Learn.Algorithm qualified as Algorithm
-import Invar.Learn.Protocol qualified as Protocol
 import Invar.Learn.Stream qualified as Stream
 import Invar.Learn.Worker qualified as Worker
 import Invar.Loop qualified as Loop
-import Invar.Rollout qualified as Rollout
 import Invar.Runtime qualified as Runtime
-import Invar.Spec.Invocation qualified as V
 import Invar.Store qualified as Store
 import Invar.Worker qualified as Infer
 import Invar.Workload qualified as Workload
@@ -41,82 +36,31 @@ run supplied = do
             | Map.size fields == 1 -> Runtime.resume directory declared taught >>= either (die . show) pure
             | otherwise -> die "--resume takes no other option; the run declaration supplies them"
         Nothing -> do
-            (config, chosen) <- either die pure (routed fields)
-            case (chosen, Learn.algorithm (Loop.settings config)) of
-                (Concurrent lag, Learn.Grpo _) -> do
+            (config, lag) <- either die pure (routed fields)
+            case Learn.algorithm (Loop.settings config) of
+                Learn.Grpo _ -> do
                     document <- Bytes.getContents >>= either die pure . Workload.decode
                     Runtime.run (Runtime.Run config lag document) (toJSON supplied) >>= either (die . show) pure
-                (Concurrent lag, Learn.Opd _) -> do
+                Learn.Opd _ -> do
                     teacher <- either die pure (teacherWorker fields)
                     document <- Bytes.getContents >>= either die pure . Workload.decodeOf @Cohort.Ungraded
                     Runtime.distill teacher (Runtime.Run config lag document) (toJSON supplied) >>= either (die . show) pure
-                (Lockstep, Learn.Opd _) -> die "A distillation run goes through the event runtime, which shared execution enters with --staleness"
-                (Lockstep, Learn.Grpo _) -> do
-                    let selected = selection (Loop.settings config)
-                    encoded <- Bytes.getContents
-                    cycles <- either die pure (Dataset.decode selected encoded)
-                    synchronous config selected cycles
 
-data Route = Concurrent Natural | Lockstep
-
-route :: Loop.Config -> Maybe Natural -> Route
-route config declaredLag = case declaredLag of
-    Just lag -> Concurrent lag
-    Nothing
-        | Loop.inferenceMode engine == Rollout.Shared || Loop.learningMode engine == Worker.Shared -> Lockstep
-        | otherwise -> Concurrent 0
-  where
-    engine = Loop.backend config
-
-routed :: O.Fields -> Either String (Loop.Config, Route)
+routed :: O.Fields -> Either String (Loop.Config, Natural)
 routed fields = do
     config <- configure fields
     first show (Learn.validate (Loop.settings config))
-    lag <- traverse (const (O.numeric fields "staleness")) (O.optional fields "staleness")
-    pure (config, route config lag)
+    lag <- maybe (Right 0) (const (O.numeric fields "staleness")) (O.optional fields "staleness")
+    pure (config, lag)
 
 declared :: Value -> Either String (Loop.Config, Natural)
 declared arguments = do
     fields <- parseEither parseJSON arguments >>= O.parse options
     when (isJust (O.optional fields "resume")) (Left "A run declaration cannot itself resume a run")
-    (config, chosen) <- routed fields
-    case chosen of
-        Concurrent lag -> pure (config, lag)
-        Lockstep -> Left "The run declaration declares shared execution without --staleness, which runs the lockstep loop and keeps no journal"
+    routed fields
 
 taught :: Value -> Either String Infer.Worker
 taught arguments = parseEither parseJSON arguments >>= O.parse options >>= teacherWorker
-
-synchronous :: Loop.Config -> Dataset.Identity -> [Dataset.Cycle] -> IO ()
-synchronous config selected cycles = do
-    outcome <- Loop.withDriver config $ \driver -> advance driver (length (Loop.sessions (Loop.backend config))) selected cycles
-    either (die . show) pure outcome
-
-advance :: Loop.Driver scope -> Int -> Dataset.Identity -> [Dataset.Cycle] -> IO ()
-advance driver sessionCount = cycles 0
-  where
-    cycles :: Int -> Dataset.Identity -> [Dataset.Cycle] -> IO ()
-    cycles _ _ [] = pure ()
-    cycles index current (workload : rest) = do
-        planned <- either die pure (Dataset.instantiate current workload)
-        started <- getMonotonicTime
-        generated <- Loop.run driver planned >>= either (die . show) pure
-        finished <- getMonotonicTime
-        let selected = Loop.current generated
-        report generated
-        Lazy.putStrLn (encode (object ["phase" .= ("cycle" :: String), "index" .= index, "seconds" .= (finished - started), "sessions" .= sessionCount]))
-        cycles (index + 1) current {Dataset.policy = Loop.policy selected} rest
-
-selection :: Learn.Settings -> Dataset.Identity
-selection chosen = Dataset.Identity {Dataset.policy = Learn.policy chosen, Dataset.tokenizer = Learn.tokenizer chosen, Dataset.base = Learn.behaviorBase chosen, Dataset.assembly = Learn.behaviorAssembly chosen}
-
-report :: Loop.Generation scope -> IO ()
-report generated = Lazy.putStrLn (encode (object ["phase" .= ("published" :: String), "checkpoint" .= Loop.directory selected, "policy" .= Loop.policy selected, "learner" .= Loop.learner selected, "publication" .= Store.methodName (Store.method (Loop.receipt generated)), "binding" .= binding (V.completedBinding completed), "delivery" .= map binding arrivals]))
-  where
-    selected = Loop.current generated
-    completed = Protocol.completion (Loop.result generated)
-    arrivals = Rollout.delivered (Learn.rollout (Loop.plan generated))
-    binding (V.Binding (V.CallId call) (V.AttemptId attempt) (V.Instance instanceId)) = object ["call" .= call, "attempt" .= attempt, "instance" .= instanceId]
 
 configure :: O.Fields -> Either String Loop.Config
 configure fields = do
@@ -181,10 +125,10 @@ referenceSource fields = case O.optional fields "reference-source" of
     Just named -> maybe (Left "Invalid reference source: expected engine or learner") Right (Stream.readSource (Text.pack named))
 
 usage :: String
-usage = usageInfo "Usage: invar train OPTIONS < tasks.json\nAll options except --devices, --inference-config, --inference-mode, --learning-mode, --steps, --staleness, --reference-source, --algorithm and the teacher options are required; opd takes the teacher options in place of --delta. Input is a nonempty JSON array of declared cycles.\nUsage: invar train --resume DIRECTORY\nResume an interrupted run of the event runtime from the journal in its output directory, which supplies every other option and the workload." options
+usage = usageInfo "Usage: invar train OPTIONS < tasks.json\nAll options except --devices, --inference-config, --inference-mode, --learning-mode, --steps, --staleness, --reference-source, --algorithm and the teacher options are required; opd takes the teacher options in place of --delta. Input is a nonempty JSON array of declared cycles.\nUsage: invar train --resume DIRECTORY\nResume an interrupted run from the journal in its output directory, which supplies every other option and the workload." options
 
 options :: [OptDescr (String, String)]
-options = O.descriptions [("publication", "Checkpoint publication: rename or reference"), ("devices", "Optional comma-separated CUDA devices, one rollout worker process per device"), ("python", "Learning Python executable"), ("inference-python", "Inference Python executable"), ("inference", "Inference worker script"), ("inference-config", "Optional inference worker launch configuration"), ("inference-mode", "Inference execution: serial (default), batch, resident or shared"), ("learning", "Update worker script"), ("learning-config", "Optional update worker configuration"), ("learning-mode", "Learning execution: process (default), resident or shared; shared requires both roles"), ("cache", "Pinned model cache"), ("output", "New output directory"), ("checkpoint", "Initial paired checkpoint directory"), ("reference", "Fixed reference adapter file"), ("staleness", "Optional staleness d, 0 when omitted: update u learns from rollouts of version max(0, u - d) while later rollouts may run. Every run goes through the event runtime except shared inference and learning without this option, which runs the lockstep loop; shared execution runs only with d = 0"), ("resume", "Output directory of an interrupted run of the event runtime; it takes no other option"), ("algorithm", "Learning algorithm: grpo (default), or opd, which reads a workload without answers or groups and needs every teacher option except --teacher-config and --teacher-mode")] ++ O.descriptions teacherOptions ++ settingsOptions
+options = O.descriptions [("publication", "Checkpoint publication: rename or reference"), ("devices", "Optional comma-separated CUDA devices, one rollout worker process per device"), ("python", "Learning Python executable"), ("inference-python", "Inference Python executable"), ("inference", "Inference worker script"), ("inference-config", "Optional inference worker launch configuration"), ("inference-mode", "Inference execution: serial (default), batch, resident or shared"), ("learning", "Update worker script"), ("learning-config", "Optional update worker configuration"), ("learning-mode", "Learning execution: process (default), resident or shared; shared requires both roles"), ("cache", "Pinned model cache"), ("output", "New output directory"), ("checkpoint", "Initial paired checkpoint directory"), ("reference", "Fixed reference adapter file"), ("staleness", "Optional staleness d, 0 when omitted: update u learns from rollouts of version max(0, u - d) while later rollouts may run; shared execution runs only with d = 0"), ("resume", "Output directory of an interrupted run; it takes no other option"), ("algorithm", "Learning algorithm: grpo (default), or opd, which reads a workload without answers or groups and needs every teacher option except --teacher-config and --teacher-mode")] ++ O.descriptions teacherOptions ++ settingsOptions
 
 teacherOptions :: [(String, String)]
 teacherOptions =

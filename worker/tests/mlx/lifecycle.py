@@ -95,7 +95,7 @@ class Training:
 
 
 class LifecycleTests(Training, unittest.TestCase):
-    def test_shared_runtime_at_staleness_zero_publishes_the_lockstep_history_and_resumes(self):
+    def test_the_default_shared_run_equals_an_explicit_staleness_zero_and_resumes(self):
         prepared = self.prepared("invar-mlx-runtime-", entry=LEARNABLE)
         root, log, *_ = prepared
         initial = mx.load(str(root / "initial" / "adapter.safetensors"))
@@ -105,23 +105,23 @@ class LifecycleTests(Training, unittest.TestCase):
         settings = {**prepared[4], "penalty": 0.1, "reference-digest": mlx_tensors.save_policy(reference, shifted)}
         evidence = {"rng-profile": "mlx", "initial-source": "initializer", "initial-log": log, "initial-exit-code": 0,
                     "initial-seed": 17, "profile-mode": "roles"}
-        _, lockstep = self.trained(prepared, "lockstep", entry=LEARNABLE, settings=settings, reference=reference)
-        records, runtime = self.trained(prepared, "runtime", entry=LEARNABLE, settings=settings, reference=reference, staleness=0)
-        output = runtime["output"]
+        records, default = self.trained(prepared, "default", entry=LEARNABLE, settings=settings, reference=reference)
+        _, explicit = self.trained(prepared, "explicit", entry=LEARNABLE, settings=settings, reference=reference, staleness=0)
+        output = default["output"]
         published = [value for value in records if value.get("phase") == "published"]
         self.assertEqual([value["update"] for value in published], [0, 1])
         self.assertNotEqual(published[0]["policy"], settings["policy"])
         self.assertNotEqual(published[1]["policy"], published[0]["policy"])
-        left = {**settings, **lockstep, "tasks": prepared[5], "log": root / "lockstep.jsonl", "sessions": 1, "exit-code": 0,
-                **evidence, **self.final(root, lockstep["output"] / "generation2", "lockstep", entry=LEARNABLE)}
-        comparison = self.compared(left, {"run": output, **evidence, **self.final(root, output / "generation2", "runtime", entry=LEARNABLE)})
+        left = {"run": explicit["output"], **evidence, **self.final(root, explicit["output"] / "generation2", "explicit", entry=LEARNABLE)}
+        comparison = self.compared(left, {"run": output, **evidence, **self.final(root, output / "generation2", "default", entry=LEARNABLE)})
         self.assertTrue(comparison["equal"])
         self.assertTrue(comparison["schedule_equal"])
         self.assertTrue(comparison["execution"]["declared_equal"])
-        self.assertEqual([comparison["execution"][side]["recorded"]["source"] for side in ("left", "right")], ["training log", "run directory"])
+        for directory in (explicit["output"], output):
+            entries = [json.loads(line) for line in (directory / "journal.jsonl").read_text().splitlines()]
+            self.assertEqual([entry["role"] for entry in entries if entry["entry"] == "process"], ["shared"])
         journal = output / "journal.jsonl"
         entries = [json.loads(line) for line in journal.read_text().splitlines()]
-        self.assertEqual([entry["role"] for entry in entries if entry["entry"] == "process"], ["shared"])
         call = [entry["binding"]["call"] for entry in entries if entry["entry"] == "attempt" and entry["update"] == 1][-1]
         receipt = [index for index, entry in enumerate(entries) if entry["entry"] == "interval" and entry["role"] == "learner" and entry["update"] == 1][-1]
         journal.write_text("".join(line + "\n" for line in journal.read_text().splitlines()[:receipt]) + '{"entry":"ev')
@@ -146,13 +146,15 @@ class LifecycleTests(Training, unittest.TestCase):
         initial = root / "initial"
         records, shared = self.trained(prepared, "train")
         output = shared["output"]
-        stages = [value.get("stage") for value in records]
+        transcript = output / "transcripts" / "0.jsonl"
+        reported = [json.loads(line) for line in transcript.read_text().splitlines()]
+        stages = [value.get("stage") for value in reported]
         self.assertEqual(stages.count("load"), 1)
         self.assertEqual(stages.count("activation"), 3)
         self.assertEqual(stages.count("released"), 4)
         self.assertEqual(stages.count("closed"), 1)
-        self.assertEqual(records[-1]["owner"], {"role": "shared", "session": 0})
-        self.assertEqual(records[-1]["groups"], 4)
+        self.assertEqual(reported[-1]["owner"], {"role": "shared", "session": 0})
+        self.assertEqual(reported[-1]["groups"], 4)
         publications = [value for value in records if value.get("phase") == "published"]
         self.assertEqual(len(publications), 2)
         for publication in publications:
@@ -166,8 +168,7 @@ class LifecycleTests(Training, unittest.TestCase):
         final_inputs = {name: final[name] for name in ("prompt", "tokens", "temperature", "seed", "call", "attempt", "instance")}
         self.command([CORE, "infer", *flags({**final_inputs, "python": sys.executable, "worker": ENTRY, "cache": root,
                       "checkpoint": output / "generation2"})], root / "final.jsonl")
-        history = {**settings, **shared, "tasks": workload, "log": root / "train.jsonl", "sessions": 1, "exit-code": 0,
-                   "rng-profile": "mlx", "initial-source": "initializer", "initial-log": log, "initial-exit-code": 0,
+        history = {"run": output, "rng-profile": "mlx", "initial-source": "initializer", "initial-log": log, "initial-exit-code": 0,
                    "initial-seed": 17, "profile-mode": "roles", "final-log": root / "final.jsonl", "final-exit-code": 0,
                    **{"final-" + key: value for key, value in final.items()}}
         complete = core.exchange(["inspect", "history", "--codec-mode", "stdio", *flags(history)],
@@ -175,9 +176,6 @@ class LifecycleTests(Training, unittest.TestCase):
         self.assertEqual(len(complete["artifacts"]), 2)
         self.assertTrue(all(item["gradients"]["nonzero_surrogate_tensors"] == [] for item in complete["artifacts"]))
         self.assertEqual([item["policy"] for item in publications], [observed["policy"]] * 2)
-        trace = {**settings, "checkpoint": initial, "inference-mode": "shared", "learning-mode": "shared", "tasks": workload,
-                 "log": root / "train.jsonl", "sessions": 1, "exit-code": 0, "output": output, "publication": "reference"}
-        admitted = core.invoke(["inspect", "trace", *flags(trace)], executable=CORE)
         initialization = {**settings, "checkpoint": initial, "rng-profile": "mlx", "initial-source": "initializer",
                           "initial-log": log, "initial-exit-code": 0, "initial-seed": 17}
         initialized = core.exchange(["inspect", "initial", "--codec-mode", "stdio", *flags(initialization)],
@@ -186,12 +184,10 @@ class LifecycleTests(Training, unittest.TestCase):
         pids = (root / "loads.txt").read_text().splitlines()
         self.assertEqual(len(pids), 4)
         self.assertEqual(len(set(pids)), 4)
-        self.assertEqual(len(admitted["observation"]["closed"]), 1)
-        changed = [*records[:-1], {**records[-1], "groups": 3}]
-        altered = root / "wrong-close.jsonl"
-        altered.write_text("\n".join(map(json.dumps, changed)) + "\n")
+        transcript.write_text("".join(json.dumps(value) + "\n" for value in [*reported[:-1], {**reported[-1], "groups": 3}]))
         with self.assertRaisesRegex(ValueError, "Resident acknowledgement differs"):
-            core.invoke(["inspect", "trace", *flags({**trace, "log": altered})], executable=CORE)
+            core.exchange(["inspect", "history", "--codec-mode", "stdio", *flags(history)],
+                          executable=CORE, handler=mlx_codec.Session().handle)
         self.evaluate(root, workload, configuration)
 
     def evaluate(self, root, workload, configuration):

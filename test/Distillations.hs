@@ -40,7 +40,7 @@ distillations =
         "Distillation learning input"
         [ ("an ungraded batch with one teacher reading per sample becomes a distillation request carrying those readings", once lowered)
         , ("a distillation input needs distillation settings and exactly one reading per sample, and a GRPO input refuses distillation settings", once refused)
-        , ("the GRPO loop and runtime refuse distillation settings before they create a directory or launch a worker", once guarded)
+        , ("the runtime refuses distillation settings for a GRPO workload before it creates a directory or launches a worker", once guarded)
         , ("a distillation plan runs through the checked learner exchange", once executed)
         , ("a distillation run is declared with distillation settings and tasks sampled at the teacher's temperature, and its journal declares a distillation run", once declared)
         ]
@@ -107,17 +107,14 @@ guarded = do
     evalIO (createDirectory (root </> "input") >> Policy.stageDescription (root </> "input" </> "policy.json") initial)
     let worker = R.worker single
         backend = Loop.Backend "python" (Worker.executable worker) (Worker.script worker) Nothing R.Serial "learning" Nothing W.Process root (R.sessions single) W.Process
-        configured output = Loop.Config backend (root </> output) (root </> "input") (root </> "reference") taught Store.RenameExclusive
-        cycle' = Loop.Cycle (C.tasks (R.definition single)) (R.order single) (R.delivery single)
-    looped <- evalIO (Loop.withDriver (configured "loop") (\driver -> void (Loop.run driver cycle')))
-    looped === Left (Loop.Settings (L.InvalidSettings "A GRPO update needs GRPO settings"))
-    ran <- evalIO (Runtime.run (Runtime.Run (configured "runtime") 0 document) Null)
+        configured = Loop.Config backend (root </> "runtime") (root </> "input") (root </> "reference") taught Store.RenameExclusive
+    ran <- evalIO (Runtime.run (Runtime.Run configured 0 document) Null)
     case ran of
         Left (Runtime.Declaration problem) -> problem === "The run's workload and its learning settings name different algorithms"
         _ -> failure
-    created <- evalIO (traverse (doesDirectoryExist . (root </>)) ["loop", "runtime"])
+    created <- evalIO (doesDirectoryExist (root </> "runtime"))
     launched <- evalIO (doesFileExist (root </> "launched"))
-    (created, launched) === ([False, False], False)
+    (created, launched) === (False, False)
 executed :: PropertyT IO ()
 executed = do
     root <- workspace
