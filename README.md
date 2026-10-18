@@ -81,7 +81,7 @@ Python workers do the heavy computation: vLLM generates and Hugging Face trains 
 | `invar compare numerical`, `invar score` | take the measurements above |
 | `invar use prepare` | build a use contract from the owner's declaration |
 | `invar use plan` | estimate the sample size a contract needs under stated assumptions |
-| `invar use run` | run a contract's finite execution plan on Apple Silicon and keep every record |
+| `invar use run` | run a contract's finite execution plan with the MLX or vLLM backend and keep every record |
 | `invar use admit` | decide admission under a use contract |
 | `invar compare histories` | check that two runs which scheduled their work differently published the same policies |
 
