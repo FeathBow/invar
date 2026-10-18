@@ -29,7 +29,7 @@ decode document =
     top = L.root "execution"
     text fields name = L.field "invalid-value" top fields name `andThen` L.text "invalid-value" (L.child top name)
     formatted fields = text fields "format" `andThen` \found -> if found == "invar-use-execution-v1" then value () else problem "invalid-value" (L.render (L.child top "format")) "Expected invar-use-execution-v1"
-    supported found = if found == "mlx" then value found else problem "unsupported" (L.render (L.child top "backend")) "Only the mlx backend can run a contract"
+    supported found = if found `elem` ["mlx", "vllm"] then value found else problem "unsupported" (L.render (L.child top "backend")) "Only the mlx and vllm backends can run a contract"
     side fields name =
         let sides = L.child top "sides"
             path = L.child sides name

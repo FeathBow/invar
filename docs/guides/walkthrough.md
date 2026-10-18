@@ -75,6 +75,8 @@ EOF
 
 Relative paths in `execution.json` resolve from its own directory.
 
+On a CUDA host the plan names the `vllm` backend, `entries/vllmbatch.py` as each side's worker and the vLLM launch file as its configuration; the remaining steps are the same.
+
 ## Prepare
 
 ```sh
