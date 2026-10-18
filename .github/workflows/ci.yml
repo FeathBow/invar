@@ -48,43 +48,6 @@ jobs:
           echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $RUNNER_TEMP/actionlint.tar.gz" | sha256sum --check
           tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
           "$RUNNER_TEMP/actionlint" -color
-
-  haskell:
-    name: Haskell
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: haskell-actions/setup@cd0d9bdd65b20557f41bea4dbe43d0b5fbbfe553 # v2.11.0
-        with:
-          ghc-version: '9.14.1'
-          cabal-version: '3.18.1.0'
-      - name: Build
-        run: |
-          cabal update
-          cabal build all --enable-tests
-      - name: Test
-        run: cabal test all --test-show-details=direct
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.12'
-      - name: Install the pinned numerical dependencies
-        run: python -m pip install --no-cache-dir --requirement worker/requirements.txt
-      - name: Test the shared worker modules and the hf package with the built core; mlx and vllm packages run on their native hosts
-        shell: bash
-        env:
-          HF_HUB_OFFLINE: '1'
-          TRANSFORMERS_OFFLINE: '1'
-          CUDA_VISIBLE_DEVICES: ''
-          OMP_NUM_THREADS: '2'
-          MKL_NUM_THREADS: '2'
-        run: |
-          core="$(cabal list-bin exe:invar)"
-          core_directory="$(dirname "$core")"
-          export PATH="$core_directory:$PATH"
-          python -B -m unittest worker.tests.invocation worker.tests.probepacked worker.tests.probestore
-          python -B -m unittest discover -s worker/tests/hf -t . -p '*.py'
       - name: Format
         shell: bash
         run: |
@@ -99,6 +62,38 @@ jobs:
           echo "ccabc8802a58154699a3583b8dddc5ea2e6d65753a62c45c0e80088ebb16b42b  $RUNNER_TEMP/hlint.tar.gz" | sha256sum --check
           tar -xzf "$RUNNER_TEMP/hlint.tar.gz" -C "$RUNNER_TEMP"
           "$RUNNER_TEMP/hlint-3.10/hlint" src test app
+
+  haskell:
+    name: Haskell
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: haskell-actions/setup@cd0d9bdd65b20557f41bea4dbe43d0b5fbbfe553 # v2.11.0
+        id: setup
+        with:
+          ghc-version: '9.14.1'
+          cabal-version: '3.18.1.0'
+      - name: Resolve the build plan
+        run: |
+          cabal update
+          cabal build all --enable-tests --dry-run
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: store
+        with:
+          path: ${{ steps.setup.outputs.cabal-store }}
+          key: cabal-store-${{ runner.os }}-ghc-${{ steps.setup.outputs.ghc-version }}-${{ hashFiles('dist-newstyle/cache/plan.json') }}
+          restore-keys: cabal-store-${{ runner.os }}-ghc-${{ steps.setup.outputs.ghc-version }}-
+      - name: Build
+        run: cabal build all --enable-tests
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.store.outputs.cache-hit != 'true'
+        with:
+          path: ${{ steps.setup.outputs.cabal-store }}
+          key: ${{ steps.store.outputs.cache-primary-key }}
+      - name: Test
+        run: cabal test all --test-show-details=direct
       - name: Type fixtures
         run: cabal exec -- sh test/types.sh ghc
       - name: Confidence bounds against decimal arithmetic
@@ -106,3 +101,78 @@ jobs:
           mkdir -p "$RUNNER_TEMP/confidence"
           cabal exec -- ghc -XGHC2021 -Wall -Werror -package invar -outputdir "$RUNNER_TEMP/confidence" -o "$RUNNER_TEMP/confidence/reference" test/confidence/Main.hs
           python3 test/confidence/check.py "$RUNNER_TEMP/confidence/reference"
+
+  workers:
+    name: Workers
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: haskell-actions/setup@cd0d9bdd65b20557f41bea4dbe43d0b5fbbfe553 # v2.11.0
+        id: setup
+        with:
+          ghc-version: '9.14.1'
+          cabal-version: '3.18.1.0'
+      - name: Resolve the build plan
+        run: |
+          cabal update
+          cabal build all --enable-tests --dry-run
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.setup.outputs.cabal-store }}
+          key: cabal-store-${{ runner.os }}-ghc-${{ steps.setup.outputs.ghc-version }}-${{ hashFiles('dist-newstyle/cache/plan.json') }}
+          restore-keys: cabal-store-${{ runner.os }}-ghc-${{ steps.setup.outputs.ghc-version }}-
+      - name: Build the core
+        run: cabal build exe:invar
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: worker/requirements.txt
+      - name: Install the pinned numerical dependencies
+        run: python -m pip install --requirement worker/requirements.txt
+      - name: Test the shared worker modules and the hf package with the built core, in three concurrent groups; mlx and vllm packages run on their native hosts
+        shell: bash
+        env:
+          HF_HUB_OFFLINE: '1'
+          TRANSFORMERS_OFFLINE: '1'
+          CUDA_VISIBLE_DEVICES: ''
+          OMP_NUM_THREADS: '2'
+          MKL_NUM_THREADS: '2'
+        run: |
+          core="$(cabal list-bin exe:invar)"
+          core_directory="$(dirname "$core")"
+          export PATH="$core_directory:$PATH"
+          python -B -m unittest worker.tests.invocation worker.tests.probepacked worker.tests.probestore
+          # The two slowest modules run alone; every other module, including new ones, runs in the third group.
+          slow=(distillation overlap)
+          rest=()
+          for path in worker/tests/hf/*.py; do
+            name="$(basename "$path" .py)"
+            case " __init__ ${slow[*]} " in
+              *" $name "*) ;;
+              *) rest+=("worker.tests.hf.$name") ;;
+            esac
+          done
+          groups=("${slow[@]}" rest)
+          pids=()
+          for group in "${slow[@]}"; do
+            python -B -m unittest "worker.tests.hf.$group" > "$RUNNER_TEMP/$group.log" 2>&1 &
+            pids+=("$!")
+          done
+          python -B -m unittest "${rest[@]}" > "$RUNNER_TEMP/rest.log" 2>&1 &
+          pids+=("$!")
+          failed=()
+          for index in "${!groups[@]}"; do
+            wait "${pids[index]}" || failed+=("${groups[index]}")
+          done
+          for group in "${groups[@]}"; do
+            echo "::group::hf tests: $group"
+            cat "$RUNNER_TEMP/$group.log"
+            echo "::endgroup::"
+          done
+          if [ "${#failed[@]}" -gt 0 ]; then
+            echo "Failed hf test groups: ${failed[*]}"
+            exit 1
+          fi
