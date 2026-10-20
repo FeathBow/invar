@@ -76,7 +76,9 @@ agreed = do
     L.policy settings /== adapter
     flags <- evalEither (traverse (parseEither scored . Report.request) runtimeReports)
     concat flags === [False, True]
-    later <- evalEither (Policy.successor adapter successor)
+    second <- evalIO (Policy.identity (base </> "update1" </> "adapter.safetensors"))
+    adapter /== second
+    later <- evalEither (Policy.successor second successor)
     forM_ (zip3 ["generation1", "generation2"] ["update0", "update1"] [successor, later]) $ \(published, update, described) -> do
         forM_ ["adapter.safetensors", "learner.pt"] $ \name -> do
             expected <- evalIO (Bytes.readFile (base </> update </> name))
