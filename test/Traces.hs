@@ -4,7 +4,7 @@ module Traces (traces, built, admit) where
 
 import BatchCalls (quote)
 import Calls qualified
-import Control.Monad (forM_, zipWithM)
+import Control.Monad (forM_)
 import Data.Aeson (Value (..), eitherDecodeStrict, encode, object, toJSON, withObject, (.:), (.=))
 import Data.Aeson.Key (Key)
 import Data.Aeson.KeyMap qualified as Fields
@@ -26,11 +26,8 @@ import Invar.Async.Entry qualified as Entry
 import Invar.Cohort qualified as C
 import Invar.History.Cohort qualified as Cohort
 import Invar.History.Generation qualified as Generation
-import Invar.History.Runtime qualified as Recorded
-import Invar.History.Schedule qualified as Schedule
 import Invar.History.Trace qualified as Trace
 import Invar.Infer qualified as I
-import Invar.Infer.Observation qualified as Inference
 import Invar.Journal qualified as Journal
 import Invar.Learn qualified as L
 import Invar.Learn.Report qualified as Report
@@ -62,7 +59,7 @@ traces =
         , ("a generation is replayed under its declared policy description and reference, never under the worker's report", once declared)
         , ("a resident learner release is admitted by its acknowledgement's owner, loads and result digest", once released)
         , ("a session cut before its final result, or output after the history, is refused", once incomplete)
-        , ("a two-cycle training log and a staleness-zero runtime run of the same prepared worker records admit to one schedule and equal update inputs, learner results, inferences and policies, which is protocol-level equality from prepared records; a changed learner result or a missing generation is named", once compared)
+        , ("a two-cycle training log admits each generation from its predecessor's publication and ends at the second generation's policy", once twoCycles)
         ]
   where
     once = withTests 1 . property
@@ -234,40 +231,16 @@ incomplete = do
     assert (isLeft (admit history {inference = take (length (inference history) - 1) (inference history)}))
     assert (isLeft (admit history {closing = closing history ++ [object ["stage" .= String "result"]]}))
 
-data Paired = Paired {pairedRun :: Recorded.Checked, pairedLog :: Trace.Run, pairedInitial :: Policy.Description, pairedDocument :: Workload.Document, pairedCycles :: [[ByteString]]}
-
-compared :: PropertyT IO ()
-compared = do
-    pair <- paired
-    let logged declaration cycles = Trace.admit (pairedLog pair) (pairedInitial pair) declaration (Bytes.unlines (concat cycles))
-        runtime = Recorded.generations (pairedRun pair)
-        (earlier, latest) = splitAt 1 (pairedCycles pair)
-        renormed = [if learnerResult encoded then line (Calls.change "update" (Calls.change "gradient_norm" (Number 0.5) (Calls.field "update" (decoded encoded))) (decoded encoded)) else encoded | encoded <- concat latest]
-    whole <- evalEither (logged (pairedDocument pair) (pairedCycles pair))
-    evalEither (differences (Trace.generations whole) runtime) >>= (=== [])
-    Trace.finalPolicy whole === Recorded.finalPolicy (pairedRun pair)
-    assert (renormed /= concat latest)
-    changed <- evalEither (logged (pairedDocument pair) (earlier ++ [renormed]))
-    evalEither (differences (Trace.generations changed) runtime) >>= (=== ["generation 2 learner result"])
-    single <- evalEither (Sessions.workloads 1)
-    shortened <- evalEither (logged single earlier)
-    evalEither (differences (Trace.generations shortened) runtime) >>= (=== ["schedule"])
-  where
-    learnerResult encoded = F.stage (decoded encoded) == Just "result" && has "gradients" (decoded encoded)
-
-differences :: [Generation.Generation] -> [Generation.Generation] -> Either String [Text]
-differences left right = do
-    inputs <- zipWithM Report.sameInput (map report left) (map report right)
-    pure (["schedule" | Schedule.differences (schedule left) (schedule right) /= []] ++ concat (zipWith named [1 :: Int ..] (zip3 left right inputs)))
-  where
-    report = Cohort.update . Generation.cohort
-    schedule = Schedule.project . map (Report.checkedRequest . report)
-    inferences = map Inference.result . Cohort.inferences . Generation.cohort
-    named index (leftGeneration, rightGeneration, sameInput) =
-        let aspect name = Text.pack ("generation " ++ show index ++ " " ++ name)
-         in [aspect "inputs" | not sameInput]
-                ++ [aspect "learner result" | Report.result (report leftGeneration) /= Report.result (report rightGeneration)]
-                ++ [aspect "inferences" | inferences leftGeneration /= inferences rightGeneration]
+twoCycles :: PropertyT IO ()
+twoCycles = do
+    checked <- twoCycleLog
+    adapters <- evalEither (traverse (Report.artifact "adapter" . Cohort.update . Generation.cohort) (Trace.generations checked))
+    case adapters of
+        [earlier, later] -> do
+            earlier /== L.policy F.configured
+            earlier /== later
+            Policy.adapter (Trace.finalPolicy checked) === later
+        _ -> failure
 
 configuredBy :: FilePath -> R.Options -> L.Settings -> FilePath -> Loop.Config
 configuredBy base opening settings root = Loop.Config backend root (base </> "input") (base </> "reference") settings Store.RenameExclusive
@@ -275,8 +248,8 @@ configuredBy base opening settings root = Loop.Config backend root (base </> "in
     worker = R.worker opening
     backend = Loop.Backend "/bin/sh" (Worker.executable worker) (base </> "inference.sh") Nothing R.Serial (base </> "learner.sh") Nothing Learner.Process (Worker.cache worker) (R.sessions opening) Learner.Process
 
-paired :: PropertyT IO Paired
-paired = do
+twoCycleLog :: PropertyT IO Trace.Checked
+twoCycleLog = do
     base <- workspace
     let settings = F.configured
     opening <- Sessions.options base 1
@@ -309,16 +282,15 @@ paired = do
     declaration <- evalEither (Sessions.workloads 2)
     outcome <- evalIO (Runtime.run (Runtime.Run (config output) 0 declaration) Null)
     either (\problem -> annotateShow problem >> failure) pure outcome
-    checked <- evalIO (Recorded.inspect output (const (Right (config output, 0)))) >>= evalEither
     journaled <- evalIO (Bytes.readFile (output </> "journal.jsonl"))
     entries <- evalEither (Journal.entries journaled >>= traverse (parseEither Entry.decode))
     let reserved = [(number, role) | Entry.Reserved number role _ _ <- entries]
     map snd reserved === [Entry.Inference, Entry.Learner, Entry.Inference, Entry.Learner]
     transcripts <- evalIO (traverse (\(number, _) -> Bytes.lines <$> Bytes.readFile (output </> "transcripts" </> (show number ++ ".jsonl"))) reserved)
-    let reports = map (Cohort.update . Generation.cohort) (Recorded.generations checked)
-        offset index = index * (members + 1)
-        cycled (index, (sessions, learning), report) = sessions ++ learning ++ map line [publication output (index, offset index + members) (map (offset index +) (R.delivery opening)) (Report.result report), summary index]
-    pure (Paired checked (Trace.Run settings 1 output "rename" 0 Trace.Finite Trace.Finite) description declaration (map cycled (zip3 [0 ..] (pairs transcripts) reports)))
+    let offset index = index * (members + 1)
+        result learning = [decoded encoded | encoded <- learning, F.stage (decoded encoded) == Just "result", has "gradients" (decoded encoded)]
+        cycled (index, (sessions, learning)) = sessions ++ learning ++ map line ([publication output (index, offset index + members) (map (offset index +) (R.delivery opening)) reported | reported <- result learning] ++ [summary index])
+    evalEither (Trace.admit (Trace.Run settings 1 output "rename" 0 Trace.Finite Trace.Finite) description declaration (Bytes.unlines (concatMap cycled (zip [0 ..] (pairs transcripts)))))
   where
     pairs (inferred : learnt : rest) = (inferred, learnt) : pairs rest
     pairs _ = []

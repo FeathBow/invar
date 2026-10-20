@@ -5,10 +5,12 @@ module LearnerFixture (Exchange (..), Scenario (..), configured, withPlan, withA
 
 import BatchCalls (quote)
 import Calls qualified
-import Control.Monad (void)
-import Data.Aeson (Value (..), eitherDecodeStrict, object, toJSON, (.=))
+import Control.Monad (void, (>=>))
+import Data.Aeson (Value (..), eitherDecodeStrict, object, toJSON, withObject, (.:), (.=))
 import Data.Aeson.KeyMap qualified as Fields
+import Data.Aeson.Types (parseEither)
 import Data.ByteString (ByteString)
+import Data.ByteString.Builder (floatLE, toLazyByteString)
 import Data.ByteString.Char8 qualified as Bytes
 import Data.Foldable (toList)
 import Data.IORef (modifyIORef', newIORef, readIORef)
@@ -113,10 +115,11 @@ prepare root (index, binding) planned = do
 
 artifacts :: FilePath -> Value -> (Value, Value) -> IO Value
 artifacts directory request (loaded, consumed) = do
-    let tensors = Policies.artifact [("fixture", [1], Bytes.pack ['\0', '\0', '\128', '\63'])]
+    scheduled <- require (parseEither (withObject "update request" (.: "schedule") >=> withObject "schedule" (.: "update")) request) :: IO Int
+    let tensors = Policies.artifact [("fixture", [1], Bytes.toStrict (toLazyByteString (floatLE (fromIntegral (scheduled + 1)))))]
     Bytes.writeFile (directory </> "adapter.safetensors") tensors
     Bytes.writeFile (directory </> "gradients.safetensors") tensors
-    Bytes.writeFile (directory </> "learner.pt") "host protocol checkpoint bytes"
+    Bytes.writeFile (directory </> "learner.pt") (Bytes.pack ("host protocol checkpoint bytes of update " ++ show scheduled))
     policy <- Policy.identity (directory </> "adapter.safetensors")
     learner <- Artifact.identity "Learner fixture" (directory </> "learner.pt")
     gradients <- Artifact.identity "Gradient fixture" (directory </> "gradients.safetensors")
