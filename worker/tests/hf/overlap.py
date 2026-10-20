@@ -75,6 +75,27 @@ def independent(root, checkpoint, name):
             "final-log": log, "final-exit-code": 0, **{"final-" + key: value for key, value in final.items()}}
 
 
+def logged(output, records):
+    entries = journaled(output)
+    processes = [(entry["role"], (output / "transcripts" / f"{entry['process']}.jsonl").read_text().splitlines())
+                 for entry in entries if entry["entry"] == "process"]
+    sessions = [lines for role, lines in processes if role == "inference"]
+    learner, = [lines for role, lines in processes if role == "learner"]
+    ends = [index + 1 for index, line in enumerate(learner) if json.loads(line).get("stage") == "released"]
+    groups = [learner[start:end] for start, end in zip([0, *ends], ends)]
+    attempts = [entry["binding"] for entry in entries if entry["entry"] == "attempt"]
+    dispatched = {entry["request"]: entry["binding"] for entry in entries if entry["entry"] == "dispatched"}
+    lines = []
+    for index, (session, group, published, binding) in enumerate(zip(sessions, groups, records, attempts)):
+        delivery = [dispatched[index * len(SEEDS) + position] for position in (1, 0)]
+        lines += [*session, *group, json.dumps({"phase": "published", "checkpoint": str(output / f"generation{index + 1}"), "policy": published["policy"],
+                                                "learner": published["learner"], "publication": "reference", "binding": binding, "delivery": delivery}),
+                  json.dumps({"phase": "cycle", "index": index, "sessions": 1, "seconds": 0.5})]
+    log = output.with_name(output.name + "log.jsonl")
+    log.write_text("\n".join([*lines, *learner[ends[-1]:]]) + "\n")
+    return log
+
+
 def released(result, session):
     if session.tensors or session.views:
         raise AssertionError("History codec scope was not released")
@@ -183,6 +204,35 @@ class OverlapTests(unittest.TestCase):
         self.assertTrue(comparison["equal"])
         self.assertTrue(comparison["schedule_equal"])
         self.assertTrue(comparison["execution"]["declared_equal"])
+
+    def test_a_training_log_of_a_run_compares_equal_to_the_run_and_a_changed_second_cycle_is_named(self):
+        records, output = self.train("logged", 2, staleness=0)
+        self.assertEqual(len({self.settings["policy"], *(value["policy"] for value in records)}), 3)
+        tasks = self.root / "loggedtasks.json"
+        tasks.write_text(workload(2))
+        declared = {key: self.settings[key] for key in ("policy", "learner", "reference-digest", "tokenizer-digest", "base-digest", "assembly-digest",
+                                                         "behavior-base-digest", "behavior-assembly-digest", "clip", "penalty", "delta", "rate", "beta1",
+                                                         "beta2", "optimizer-epsilon", "decay", "checkpoint", "reference", "inference-mode", "learning-mode",
+                                                         "publication")}
+        log = {**declared, "tasks": tasks, "log": logged(output, records), "sessions": 1, "output": output, "exit-code": 0,
+               **independent(self.root, output / "generation2", "logged")}
+        comparison = compared(log, {"run": output, **independent(self.root, output / "generation2", "loggedrun")})
+        self.assertTrue(comparison["equal"])
+        self.assertTrue(comparison["schedule_equal"])
+        self.assertTrue(comparison["final_equal"])
+        self.assertEqual([(generation["equal"], generation["states"]["equal"], generation["gradients"]["equal"], generation["probabilities_equal"])
+                          for generation in comparison["generations"]], [(True, True, True, True)] * 2)
+        cycles = json.loads(workload(2))
+        cycles[1]["tasks"][0]["seed"] += 1
+        changed = self.root / "changed"
+        execute([CORE, "train", *flags({**self.settings, "output": changed, "staleness": 0})], self.root / "changed.jsonl", stdin=json.dumps(cycles))
+        comparison = compared(log, {"run": changed, **independent(self.root, changed / "generation2", "changed")})
+        self.assertFalse(comparison["equal"])
+        first, second = comparison["generations"]
+        self.assertTrue(first["equal"])
+        self.assertFalse(second["equal"])
+        self.assertFalse(second["states"]["equal"])
+        self.assertFalse(second["gradients"]["equal"])
 
     def test_staleness_is_a_schedule_difference(self):
         _, fresh = self.train("fresh", 1, staleness=0)
