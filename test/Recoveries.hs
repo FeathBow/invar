@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Recoveries (recoveries, inspections, ran, finishedRun, retriedRun) where
@@ -5,9 +6,9 @@ module Recoveries (recoveries, inspections, ran, finishedRun, retriedRun) where
 import BatchCalls (quote)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar)
 import Control.Monad (forM_, unless)
-import Data.Aeson (Value (..), encode, object, withObject, (.:), (.=))
+import Data.Aeson (Object, Value (..), encode, object, withObject, (.:), (.=))
 import Data.Aeson.KeyMap qualified as Fields
-import Data.Aeson.Types (parseEither)
+import Data.Aeson.Types (Parser, parseEither)
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as Bytes
@@ -66,7 +67,8 @@ inspections =
         , ("a run interrupted before its first publication and resumed with retry records is admitted with its concluded and its committed attempt", once retriedHistory)
         , ("a run whose publication a restart confirmed is admitted with that attempt committed", once confirmedHistory)
         , ("a process no protocol admitted contributes no load, even when its transcript holds one, and counts once among the processes", once unadmittedLoad)
-        , ("an uncommitted update, a reservation without an end, a removed restart, a missing or extra generation and a declared workload the transcripts do not support are refused", once refusedHistories)
+        , ("an uncommitted update, a reservation without an end, a removed restart, a missing or extra generation, a changed learner file, a record after the learner's result and a declared workload the transcripts do not support are refused", once refusedHistories)
+        , ("a learner failure and the resume after it are admitted with the failed attempt, also when the restart rather than an exit record ends that learner, and refused without the restart", once failedHistory)
         ]
   where
     once = withTests 1 . property
@@ -226,10 +228,6 @@ refusals = do
                 removeFile path
                 createDirectory path
             [] -> ioError (userError "The run reserved no learner process")
-    appendLearner line copy = do
-        entries <- journaled copy
-        forM_ [number | Right (Entry.Reserved number Entry.Learner _ _) <- map decoded entries] $ \number ->
-            Bytes.appendFile (copy </> "transcripts" </> (show number ++ ".jsonl")) line
     older copy = do
         lines' <- journaled copy
         case lines' of
@@ -354,6 +352,12 @@ joint = do
         Left _ -> success
         Right () -> annotateShow outcome >> failure
 
+appendLearner :: ByteString -> FilePath -> IO ()
+appendLearner line copy = do
+    entries <- journaled copy
+    forM_ [number | Right (Entry.Reserved number Entry.Learner _ _) <- map decoded entries] $ \number ->
+        Bytes.appendFile (copy </> "transcripts" </> (show number ++ ".jsonl")) line
+
 learnerInterval :: Entry.Entry -> Bool
 learnerInterval (Entry.Elapsed role _ _ _) = role == "learner"
 learnerInterval _ = False
@@ -470,6 +474,8 @@ refusedHistories = do
     refusedWith (root fixture </> "missinggeneration") (\copy -> removeDirectoryRecursive (copy </> "generation1")) "published generations differ"
     refusedWith (root fixture </> "uncommitted") (\copy -> journaled copy >>= \lines' -> Bytes.writeFile (copy </> "journal.jsonl") (Char.unlines (takeWhile ((/= Right (Entry.Happened (Entry.Committed 0 0))) . decoded) lines'))) "not committed every declared update"
     refusedWith (root fixture </> "extrageneration") (\copy -> copied (copy </> "generation1") (copy </> "generation2")) "published generations differ"
+    refusedWith (root fixture </> "changedlearner") (\copy -> Bytes.appendFile (copy </> "generation1" </> "learner.pt") "\0") "published generations differ"
+    refusedWith (root fixture </> "appendedrecord") (appendLearner "{\"stage\":\"extra\"}\n") "Output follows the learner result"
     refusedWith (root fixture </> "otherworkload") (\copy -> journaled copy >>= \lines' -> Bytes.writeFile (copy </> "journal.jsonl") (Char.unlines (map (Workloads.everywhere "\"seed\":17" "\"seed\":18") (take 1 lines') ++ drop 1 lines'))) "differs from the declared invocation"
     let copy = root fixture </> "unrestarted"
     interruptedBefore fixture copy learnerInterval
@@ -479,7 +485,33 @@ refusedHistories = do
     evalIO $ do
         lines' <- journaled copy
         Bytes.writeFile (copy </> "journal.jsonl") (Char.unlines [line | line <- lines', either (const True) (not . restarting) (decoded line)])
-    refusedHistory fixture copy "(Epoch 1)"
+    refusedHistory fixture copy "A request is dispatched without the core's dispatch command"
   where
     restarting Entry.Restarted {} = True
     restarting _ = False
+
+failedHistory :: PropertyT IO ()
+failedHistory = do
+    fixture <- prepared
+    let output = root fixture </> "run"
+        learner = root fixture </> "learner.sh"
+    evalIO (writeFile learner "exit 3\n")
+    failed <- evalIO (Runtime.run (chosen fixture) Null)
+    case failed of
+        Left (Runtime.Unresolved 0 (Runtime.Learning _)) -> success
+        unexpected -> annotateShow unexpected >> failure
+    evalIO (writeFile learner ("exec /bin/sh " ++ quote (root fixture </> "learner1.sh") ++ " \"$@\"\n"))
+    resumedOutcome <- evalIO (resumed fixture output)
+    either (\problem -> annotateShow problem >> failure) pure resumedOutcome
+    let outcomes checked = map (parseEither (withObject "attempt" (\fields -> (,) <$> fields .: "attempt" <*> (Fields.keys <$> (fields .: "outcome" :: Parser Object))))) <$> attempts checked :: PropertyT IO [Either String (Int, [Fields.Key])]
+    admitted <- inspected fixture output >>= evalEither
+    outcomes admitted >>= (=== [Right (0, ["incomplete"]), Right (1, ["committed"])])
+    complete <- evalIO (journaled output)
+    let failedLearner = [number | Right (Entry.Attempted 0 0 _ number) <- map decoded complete]
+        exitless = root fixture </> "exitless"
+        unrestarted = root fixture </> "unrestartedfailure"
+        kept copy keep = evalIO (copied output copy >> Bytes.writeFile (copy </> "journal.jsonl") (Char.unlines [line | line <- complete, either (const True) keep (decoded line)]))
+    kept exitless (\case Entry.Finished number _ -> number `notElem` failedLearner; _ -> True)
+    inspected fixture exitless >>= evalEither >>= outcomes >>= (=== [Right (0, ["incomplete"]), Right (1, ["committed"])])
+    kept unrestarted (\case Entry.Restarted {} -> False; _ -> True)
+    refusedHistory fixture unrestarted "A request is dispatched without the core's dispatch command"

@@ -49,6 +49,7 @@ import Reports (reports)
 import ResidentCalls (residentCalls)
 import ResidentDrivers (residentDrivers)
 import ResidentObservations (residentObservations)
+import Restarts (restarts)
 import Results (results)
 import Rewards (rewards)
 import Rollouts (rollouts)
@@ -77,5 +78,5 @@ import Workloads (workloads)
 
 main :: IO ()
 main = do
-    outcomes <- traverse checkSequential [fixtures, properties, arguments, values, dependencies, evaluation, artifacts, construction, collections, records, literals, invocations, evidence, loads, store, checkpoints, inference, results, calls, batchCalls, groupedCalls, batchedProtocol, generation, traces, residentCalls, residentDrivers, residentObservations, rewards, cohorts, rollouts, sessions, learning, advantages, objectives, events, journals, replays, recoveries, inspections, comparisons, drivers, steps, tokenizers, algorithms, distillations, teachers, mismatches, updates, learnerCalls, loops, schedules, policies, probabilities, workloads, reports, quality, observations, inferenceObservations, numerical, scores, scoreProbes, numericalScores, numericalProbes, uses, useEvidence, useAdmission, useBernstein, usePlan, usePrepare, useExecution, useGeneric, statistics]
+    outcomes <- traverse checkSequential [fixtures, properties, arguments, values, dependencies, evaluation, artifacts, construction, collections, records, literals, invocations, evidence, loads, store, checkpoints, inference, results, calls, batchCalls, groupedCalls, batchedProtocol, generation, traces, residentCalls, residentDrivers, residentObservations, rewards, cohorts, rollouts, sessions, learning, advantages, objectives, events, journals, replays, recoveries, inspections, restarts, comparisons, drivers, steps, tokenizers, algorithms, distillations, teachers, mismatches, updates, learnerCalls, loops, schedules, policies, probabilities, workloads, reports, quality, observations, inferenceObservations, numerical, scores, scoreProbes, numericalScores, numericalProbes, uses, useEvidence, useAdmission, useBernstein, usePlan, usePrepare, useExecution, useGeneric, statistics]
     unless (and outcomes) exitFailure
