@@ -25,7 +25,9 @@ run ["--help"] = putStrLn usage
 run supplied = do
     fields <- either die pure (O.parse options supplied)
     relation <- either die pure (selectedRelation fields)
-    shared <- either die pure (traverse (`reference` fields) ["reference-", "candidate-"]) >>= batches
+    references <- either die pure (traverse (`reference` fields) ["reference-", "candidate-"])
+    consistent references >>= either die pure
+    shared <- batches references
     (suppliedPair, reports) <- pair shared fields
     observed <- either (die . show) pure (N.observeWith reports suppliedPair)
     let found = N.establish (N.Claim (N.scope observed) relation) observed
@@ -60,7 +62,7 @@ consistent :: [Reference] -> IO (Either String ())
 consistent supplied = N.consistent <$> traverse canonical supplied
 
 -- | Reads each batch log the references name, with its calls, once, keyed by its canonical path. Every run that
--- names the log takes its member from that one batch.
+-- names the log takes its member from that one batch. Callers check the references with 'consistent' first.
 batches :: [Reference] -> IO (Map FilePath N.Batch)
 batches supplied = do
     located <- traverse canonical supplied
@@ -79,8 +81,6 @@ canonical (path, (batch, status)) = do
 
 pair :: Map FilePath N.Batch -> O.Fields -> IO (N.BoundRun, (Inference.Report, Inference.Report))
 pair shared fields = do
-    references <- either die pure (traverse (`reference` fields) ["reference-", "candidate-"])
-    consistent references >>= either die pure
     left <- input shared fields "reference-"
     right <- input shared fields "candidate-"
     leftReport <- either (die . show) pure (N.admit N.Reference left)
