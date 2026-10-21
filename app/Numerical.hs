@@ -1,12 +1,14 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Numerical (run, readPair, readRun, pairReferences, runReferences, consistent) where
+module Numerical (run, readPair, readRun, pairReferences, runReferences, consistent, batches) where
 
 import Control.Monad (unless, when)
 import Data.Aeson (Value (..), eitherDecodeStrict, encode, object, (.=))
 import Data.ByteString qualified as Bytes
 import Data.ByteString.Char8 qualified as TextBytes
 import Data.ByteString.Lazy.Char8 qualified as Lazy
+import Data.Map.Strict (Map)
+import Data.Map.Strict qualified as Map
 import Data.Maybe (isJust, isNothing)
 import InferenceInput qualified
 import Invar.Infer.Observation qualified as Inference
@@ -23,16 +25,17 @@ run ["--help"] = putStrLn usage
 run supplied = do
     fields <- either die pure (O.parse options supplied)
     relation <- either die pure (selectedRelation fields)
-    (suppliedPair, reports) <- pair fields
+    shared <- either die pure (traverse (`reference` fields) ["reference-", "candidate-"]) >>= batches
+    (suppliedPair, reports) <- pair shared fields
     observed <- either (die . show) pure (N.observeWith reports suppliedPair)
     let found = N.establish (N.Claim (N.scope observed) relation) observed
     Lazy.putStrLn (encode (object ["observation" .= N.describe observed, "finding" .= N.describeFinding found]))
 
-readPair :: [String] -> IO N.BoundRun
-readPair supplied = either die pure (O.parse pairOptions supplied) >>= fmap fst . pair
+readPair :: Map FilePath N.Batch -> [String] -> IO N.BoundRun
+readPair shared supplied = either die pure (O.parse pairOptions supplied) >>= fmap fst . pair shared
 
-readRun :: [String] -> IO N.Run
-readRun supplied = either die pure (O.parse runOptions supplied) >>= (`input` "")
+readRun :: Map FilePath N.Batch -> [String] -> IO N.Run
+readRun shared supplied = either die pure (O.parse runOptions supplied) >>= \fields -> input shared fields ""
 
 runOptions :: [OptDescr (String, String)]
 runOptions = inferenceRun ""
@@ -55,18 +58,31 @@ reference prefix fields = do
 
 consistent :: [Reference] -> IO (Either String ())
 consistent supplied = N.consistent <$> traverse canonical supplied
-  where
-    canonical (path, (batch, status)) = do
-        located <- canonicalizePath path
-        declared <- traverse canonicalizePath batch
-        pure (located, (declared, status))
 
-pair :: O.Fields -> IO (N.BoundRun, (Inference.Report, Inference.Report))
-pair fields = do
+-- | Reads each batch log the references name, with its calls, once, keyed by its canonical path. Every run that
+-- names the log takes its member from that one batch.
+batches :: [Reference] -> IO (Map FilePath N.Batch)
+batches supplied = do
+    located <- traverse canonical supplied
+    Map.fromList <$> traverse load (Map.toList (Map.fromList [(path, (calls, status)) | (path, (Just calls, status)) <- located]))
+  where
+    load (path, (calls, status)) = do
+        declared <- InferenceInput.readCalls calls
+        bytes <- Bytes.readFile path
+        pure (path, N.batched declared status bytes)
+
+canonical :: Reference -> IO Reference
+canonical (path, (batch, status)) = do
+    located <- canonicalizePath path
+    declared <- traverse canonicalizePath batch
+    pure (located, (declared, status))
+
+pair :: Map FilePath N.Batch -> O.Fields -> IO (N.BoundRun, (Inference.Report, Inference.Report))
+pair shared fields = do
     references <- either die pure (traverse (`reference` fields) ["reference-", "candidate-"])
     consistent references >>= either die pure
-    left <- input fields "reference-"
-    right <- input fields "candidate-"
+    left <- input shared fields "reference-"
+    right <- input shared fields "candidate-"
     leftReport <- either (die . show) pure (N.admit N.Reference left)
     rightReport <- either (die . show) pure (N.admit N.Candidate right)
     referenceScores <- score fields N.Reference ((left, leftReport), right)
@@ -74,15 +90,16 @@ pair fields = do
     probes <- probeInputs fields ((left, leftReport), (right, rightReport))
     pure (N.ProbedRun left right (referenceScores ++ candidateScores) probes, (leftReport, rightReport))
 
-input :: O.Fields -> String -> IO N.Run
-input fields prefix = do
+input :: Map FilePath N.Batch -> O.Fields -> String -> IO N.Run
+input shared fields prefix = do
     planned <- InferenceInput.declaredWith prefix fields
     binding <- either die pure (InferenceInput.bindingWith prefix fields)
     status <- either die pure (O.numeric fields (prefix ++ "exit-code"))
     path <- either die pure (O.required fields (prefix ++ "log"))
-    bytes <- Bytes.readFile path
-    batch <- traverse InferenceInput.readCalls (O.optional fields (prefix ++ "calls"))
-    pure (N.Run planned binding status bytes batch)
+    recorded <- case O.optional fields (prefix ++ "calls") of
+        Nothing -> N.Standalone status <$> Bytes.readFile path
+        Just _ -> canonicalizePath path >>= \located -> maybe (die ("No batch was read for " ++ path)) (pure . N.Member) (Map.lookup located shared)
+    pure (N.Run planned binding recorded)
 
 score :: O.Fields -> N.Side -> ((N.Run, Inference.Report), N.Run) -> IO [(N.Side, Score.Report)]
 score fields side (source, target) = do
