@@ -13,6 +13,8 @@ The Haskell core owns the training loop. Each cycle it chooses the policy, decla
 
 With `--algorithm opd` the cohort has no rewards: step 2 also scores every rollout under a teacher, and step 3 takes the teacher's words in place of rewards and advantages, as described in [On-policy distillation](#on-policy-distillation).
 
+The core fixes the logical assignment and use of every sample: the policy version that generates it, the update that consumes it, its place in the logical order and the commit point of each update. These are functions of the declaration and the staleness, so two runs with the same declaration assign and use the same samples whatever order their workers finish in. Identical weights additionally require evidence of the workers' numerical invariance, because the workers compute the numbers. A use contract can require that evidence through its invariance requirements, and [`invar compare histories`](#history-and-comparison) shows whether two runs published the same policies.
+
 ## Cohorts and schedules
 
 `invar train` reads a JSON array of cycles from standard input. Each cycle has `tasks`, `order` and `delivery`, and each task has a name, a group, a prompt, a token limit, a temperature, a seed and an answer. `Invar.Cohort` checks the declaration before anything runs: names are distinct, every group has at least two members so normalization is defined, and every task requests the cohort's policy.

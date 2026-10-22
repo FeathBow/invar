@@ -23,7 +23,8 @@ When a new kernel changes your model's numbers, Invar decides whether the eviden
 <a href="docs/backends/vllm.md">CUDA backend</a> |
 <a href="docs/backends/mlx.md">Apple Silicon backend</a> |
 <a href="docs/results/acceptance.md">Acceptance</a> |
-<a href="docs/results/performance.md">Performance</a>
+<a href="docs/results/performance.md">Performance</a> |
+<a href="docs/results/staleness.md">Staleness</a>
 </p>
 
 ## About
@@ -103,6 +104,7 @@ In the historical CUDA and Apple Silicon measurements, running the loop through 
 | [Operating guide](docs/guides/agents.md) | who decides what, and what each command's output means, for people and agents |
 | [Acceptance](docs/results/acceptance.md) | the first acceptance and how its values were set |
 | [Performance](docs/results/performance.md) | cost against the direct and native baselines |
+| [Staleness](docs/results/staleness.md) | a staleness-one GRPO checkpoint against staleness zero: quality, throughput and resources |
 | [Patches](patches/README.md) | the pinned vLLM and plugin patches |
 
 ## Development
