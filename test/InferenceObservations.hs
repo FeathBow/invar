@@ -192,7 +192,7 @@ batchMatching = do
         scoring <- evalEither (Score.prepare (Observation.source observed) (Score.targetOf planned))
         inspection <- evalEither (eitherDecodeStrict (Score.sourceInspection scoring))
         inspection === Observation.describe observed
-    compared <- evalEither (Numerical.observe (Numerical.BoundRun (Numerical.Run planned bound 0 (withLoad original) Nothing) (Numerical.Run planned bound 0 encoded (Just declared))))
+    compared <- evalEither (Numerical.observe (Numerical.BoundRun (Numerical.Run planned bound (Numerical.Standalone 0 (withLoad original))) (Numerical.Run planned bound (Numerical.Member (Numerical.batched declared 0 encoded)))))
     Numerical.tokensEqual (Numerical.path compared) === True
     Numerical.behaviorBitsEqual (Numerical.path compared) === True
 
@@ -220,7 +220,8 @@ batchPeers = do
     let events = batchFrames [original, peer]
         absent = V.Binding (V.CallId 99) (V.AttemptId 99) (V.Instance 99)
         rejected = refuse declared
-        run selected = Numerical.Run planned selected 0 (wire events) (Just declared)
+        shared = Numerical.batched declared 0 (wire events)
+        run selected = Numerical.Run planned selected (Numerical.Member shared)
     reseeded <- evalEither (Infer.prepare request {Infer.seed = 18})
     _ <- evalEither (Numerical.admit Numerical.Reference (run bound))
     case Numerical.admit Numerical.Reference (run bound) {Numerical.planned = reseeded} of

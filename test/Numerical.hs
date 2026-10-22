@@ -40,10 +40,10 @@ inputs :: PropertyT IO (N.Run, [Value])
 inputs = do
     events <- fixture
     planned <- evalEither (Infer.prepare request)
-    pure (N.Run planned bound 0 (wire events) Nothing, events)
+    pure (N.Run planned bound (N.Standalone 0 (wire events)), events)
 
 pair :: N.Run -> [Value] -> Either N.ObservationError N.Observed
-pair before events = N.observe (N.BoundRun before before {N.logBytes = wire events})
+pair before events = N.observe (N.BoundRun before before {N.recorded = N.Standalone 0 (wire events)})
 
 alterResult :: (Value -> Value) -> [Value] -> [Value]
 alterResult = alterStage "result"
@@ -96,8 +96,8 @@ signedZero :: PropertyT IO ()
 signedZero = do
     (run, events) <- inputs
     let values word = alterResult (probabilities [0, -0.25] [word, 0xbe800000]) events
-        positive = run {N.logBytes = wire (values 0)}
-        negative = run {N.logBytes = replace "[0,-0.25]" "[-0.0,-0.25]" (wire (values 0x80000000))}
+        positive = run {N.recorded = N.Standalone 0 (wire (values 0))}
+        negative = run {N.recorded = N.Standalone 0 (replace "[0,-0.25]" "[-0.0,-0.25]" (wire (values 0x80000000)))}
     observed <- evalEither (N.observe (N.BoundRun positive negative))
     N.behaviorBitsEqual (N.path observed) === False
     N.prefixLogRatio (N.path observed) === 0
@@ -105,9 +105,9 @@ signedZero = do
 invalid :: PropertyT IO ()
 invalid = do
     (run, events) <- inputs
-    N.observe (N.BoundRun run run {N.exitCode = 7}) === Left (N.ProcessFailed N.Candidate 7)
+    N.observe (N.BoundRun run run {N.recorded = N.Standalone 7 (wire events)}) === Left (N.ProcessFailed N.Candidate 7)
     forM_ [Bytes.empty, Bytes.init (wire events), wire (take 3 events)] $ \encoded ->
-        case N.observe (N.BoundRun run run {N.logBytes = encoded}) of
+        case N.observe (N.BoundRun run run {N.recorded = N.Standalone 0 encoded}) of
             Left (N.InvalidRun N.Candidate _) -> success
             other -> annotateShow other >> failure
     pair run (alterResult (change "tokens" (toJSON [9, 2, 3 :: Int])) events) === Left (N.IncomparableInputs "tokenized prefix")
@@ -128,7 +128,7 @@ comparable = do
         planned <- evalEither (Infer.prepare requested)
         let rerequest event = change "request" (change key value (field "request" event)) event
             changed = alterStage "consumed" rerequest (alterStage "result" rerequest events)
-            candidate = run {N.planned = planned, N.logBytes = wire (alterResult (change "truncated" (Bool False)) changed)}
+            candidate = run {N.planned = planned, N.recorded = N.Standalone 0 (wire (alterResult (change "truncated" (Bool False)) changed))}
         N.observe (N.BoundRun run candidate) === Left (N.IncomparableInputs axis)
 
 references :: PropertyT IO ()

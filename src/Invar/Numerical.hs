@@ -2,6 +2,9 @@
 
 module Invar.Numerical (
     Run (..),
+    Log (..),
+    Batch,
+    batched,
     BoundRun (BoundRun, ScoredRun, ProbedRun, reference, candidate),
     Probe (..),
     Side (..),
@@ -35,6 +38,7 @@ import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as Bytes
 import Data.ByteString.Lazy qualified as Lazy
+import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Ratio (denominator, numerator)
 import Invar.Artifact qualified as Artifact
@@ -61,10 +65,21 @@ import System.Exit (ExitCode (..))
 data Run = Run
     { planned :: Infer.Plan
     , binding :: Invocation.Binding
-    , exitCode :: Int
-    , logBytes :: ByteString
-    , batch :: Maybe [Call.Call]
+    , recorded :: Log
     }
+
+-- | A run's own log with its exit status, or its membership in a batch log.
+data Log = Standalone Int ByteString | Member Batch
+
+-- | A batch log's declared plans and its admitted inferences, each indexed by binding. Every member run shares one
+-- value, so the log is replayed and indexed once.
+data Batch = Batch (Map Invocation.Binding [Infer.Plan]) (Either Session.Error (Map Invocation.Binding [Replay.Logged]))
+
+batched :: [Call.Call] -> Int -> ByteString -> Batch
+batched calls status bytes = Batch (indexed Call.binding Call.plan calls) (indexed (Trajectory.binding . Replay.trajectory) id <$> replayed)
+  where
+    replayed = Replay.standalone Session.Batched (Session.Declaration calls Nothing) (Replay.declared status) bytes
+    indexed key value entries = Map.fromListWith (++) [(key entry, [value entry]) | entry <- entries]
 
 data BoundRun
     = BoundRun {reference :: Run, candidate :: Run}
@@ -202,12 +217,11 @@ consistent supplied = mapM_ agreed (Map.elems (Map.fromListWith (++) [(located, 
 admit :: Side -> Run -> Either ObservationError Inference.Report
 admit side run = do
     own <- first (InvalidRun side . show) (Call.prepare (binding run) (planned run))
-    (protocol, declared) <- case batch run of
-        Nothing -> pure (Session.Single, [own])
-        Just calls -> do
-            unless (any (\member -> (Call.binding member, Call.plan member) == (binding run, planned run)) calls) (Left (InvalidRun side "The run's declaration is not a member of its declared batch"))
-            pure (Session.Batched, calls)
-    admitted <- first failed (Replay.standalone protocol (Session.Declaration declared Nothing) (Replay.declared (exitCode run)) (logBytes run))
+    admitted <- case recorded run of
+        Standalone status bytes -> first failed (Replay.standalone Session.Single (Session.Declaration [own] Nothing) (Replay.declared status) bytes)
+        Member (Batch plans replayed) -> do
+            unless (planned run `elem` Map.findWithDefault [] (binding run) plans) (Left (InvalidRun side "The run's declaration is not a member of its declared batch"))
+            first failed (Map.findWithDefault [] (binding run) <$> replayed)
     case filter ((== binding run) . Trajectory.binding . Replay.trajectory) admitted of
         [single] -> pure (Inference.view single)
         _ -> Left (InvalidRun side "Expected one admitted inference for the run's binding")

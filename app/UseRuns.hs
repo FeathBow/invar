@@ -13,13 +13,16 @@ observe path contract = do
         Left problem -> pure (Left problem)
         Right entries -> case traverse shape entries of
             Left problem -> pure (Left problem)
-            Right shaped -> do
-                agreed <- either (pure . Left) (Numerical.consistent . concat) (traverse references shaped)
-                case agreed of
-                    Left problem -> pure (Left problem)
-                    Right () -> do
-                        cases <- traverse build shaped
-                        pure (either (Left . show) Right (U.observe (U.BoundRun (U.declaredDomain contract) (U.declaredMeasurement contract) cases)))
+            Right shaped -> case concat <$> traverse references shaped of
+                Left problem -> pure (Left problem)
+                Right referenced -> do
+                    agreed <- Numerical.consistent referenced
+                    case agreed of
+                        Left problem -> pure (Left problem)
+                        Right () -> do
+                            shared <- Numerical.batches referenced
+                            cases <- traverse (build shared) shaped
+                            pure (either (Left . show) Right (U.observe (U.BoundRun (U.declaredDomain contract) (U.declaredMeasurement contract) cases)))
   where
     shape :: [Value] -> Either String (U.Key, Value, Value)
     shape entry = case entry of
@@ -29,9 +32,9 @@ observe path contract = do
     keyed cohort name arguments repeated = do
         key <- U.Key <$> decode cohort <*> decode name
         pure (key, arguments, repeated)
-    build (key, arguments, repeated) = do
-        paired <- either fail pure (decode arguments) >>= Numerical.readPair
-        repeats <- either fail pure (decode repeated) >>= traverse Numerical.readRun
+    build shared (key, arguments, repeated) = do
+        paired <- either fail pure (decode arguments) >>= Numerical.readPair shared
+        repeats <- either fail pure (decode repeated) >>= traverse (Numerical.readRun shared)
         pure (U.Case key paired repeats)
     references (_, arguments, repeated) = do
         paired <- decode arguments >>= Numerical.pairReferences
