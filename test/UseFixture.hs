@@ -1,9 +1,10 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module UseFixture (Trial (..), trials, fixture, repeated, workloadValue, run) where
+module UseFixture (Trial (..), trials, fixture, repeated, workloadValue, run, logged) where
 
 import Calls (request)
 import Data.Aeson (Value (..), encode, object, toJSON, (.=))
+import Data.ByteString (ByteString)
 import Data.ByteString.Lazy qualified as Lazy
 import Hedgehog
 import Invar.Infer qualified as Infer
@@ -61,4 +62,10 @@ run identity side trial = do
         binding = Invocation.Binding (Invocation.CallId identity) (Invocation.AttemptId identity) (Invocation.Instance identity)
     planned <- evalEither (Infer.prepare requested)
     encoded <- Logs.single planned binding (case side of N.Reference -> before trial; N.Candidate -> after trial, truncated trial)
-    pure (N.Run planned binding 0 encoded Nothing)
+    pure (N.Run planned binding (N.Standalone 0 encoded))
+
+-- | The exit status and log of a fixture run, which always has its own log.
+logged :: N.Run -> (Int, ByteString)
+logged supplied = case N.recorded supplied of
+    N.Standalone status bytes -> (status, bytes)
+    N.Member _ -> error "A fixture run has its own log"

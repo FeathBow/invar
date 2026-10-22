@@ -104,7 +104,7 @@ correspondence = do
 executions :: PropertyT IO ()
 executions = do
     supplied <- F.fixture F.trials
-    forM_ [\run -> run {N.exitCode = 7}, \run -> run {N.logBytes = Bytes.init (N.logBytes run)}] $ \alter ->
+    forM_ [\run -> run {N.recorded = N.Standalone 7 (snd (F.logged run))}, \run -> run {N.recorded = uncurry N.Standalone (fmap Bytes.init (F.logged run))}] $ \alter ->
         rejected (U.observe supplied {U.cases = map (changeCandidate alter) (U.cases supplied)})
     repeated <- traverse repeatBinding (zip (U.cases supplied) F.trials)
     case U.observe supplied {U.cases = repeated} of
@@ -121,9 +121,10 @@ implementation = do
     case U.cases supplied of
         first : remaining -> do
             let run = N.candidate (U.paired first)
-            events <- evalEither (traverse eitherDecodeStrict (Bytes.lines (N.logBytes run)))
+            let (status, bytes) = F.logged run
+            events <- evalEither (traverse eitherDecodeStrict (Bytes.lines bytes))
             let changed = [if field "stage" event == String "loaded_adapter" then change "revision" (String "other-model-revision") event else event | event <- events]
-                candidate = run {N.logBytes = wire changed}
+                candidate = run {N.recorded = N.Standalone status (wire changed)}
                 pair = N.BoundRun (N.reference (U.paired first)) candidate
             case U.observe supplied {U.cases = first {U.paired = pair} : remaining} of
                 Left (U.MixedImplementation N.Candidate _) -> success

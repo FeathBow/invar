@@ -115,11 +115,12 @@ numericalViolation = do
         first : remaining -> do
             let pair = U.paired first
                 candidate = N.candidate pair
-            events <- evalEither (traverse eitherDecodeStrict (Lines.lines (N.logBytes candidate)))
+            let (status, bytes) = F.logged candidate
+            events <- evalEither (traverse eitherDecodeStrict (Lines.lines bytes))
             let alter event
                     | field "stage" event == String "result" = change "tokens" (toJSON [1, 2, 4 :: Int]) event
                     | otherwise = event
-                modified = candidate {N.logBytes = wire (map alter events)}
+                modified = candidate {N.recorded = N.Standalone status (wire (map alter events))}
             pure supplied {U.cases = first {U.paired = pair {N.candidate = modified}} : remaining}
     observed <- evalEither (U.observe changed)
     let criterion = (U.criterion contract) {U.numericalRequirements = [U.NumericalRequirement N.SameTokens [] "Exact fixture comparison"]}
@@ -268,11 +269,12 @@ alterRepeat position stage alter supplied = case U.cases supplied of
 
 alterStage :: String -> (Value -> Value) -> N.Run -> PropertyT IO N.Run
 alterStage stage alter run = do
-    events <- evalEither (traverse eitherDecodeStrict (Lines.lines (N.logBytes run)))
+    let (status, bytes) = F.logged run
+    events <- evalEither (traverse eitherDecodeStrict (Lines.lines bytes))
     let update event
             | field "stage" event == String (Text.pack stage) = alter event
             | otherwise = event
-    pure run {N.logBytes = wire (map update events)}
+    pure run {N.recorded = N.Standalone status (wire (map update events))}
 
 invariance :: PropertyT IO ()
 invariance = do
