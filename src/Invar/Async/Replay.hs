@@ -124,6 +124,7 @@ data Fold grade = Fold
     , processes :: Map Natural Process
     , calls :: Map V.Binding (Natural, Natural, Natural)
     , latest :: Map Natural V.Binding
+    , requested :: Set Natural
     , products :: Map V.Binding (Either String Replay.Logged)
     , stored :: Map V.Binding String
     , completed :: Map V.Binding String
@@ -154,7 +155,8 @@ folded :: (C.Grade grade) => Declaration grade -> [Entry.Entry] -> Map Natural B
 folded declared entries transcripts = foldM (entry declared transcripts) started entries
   where
     settings = Loop.settings (config declared)
-    started = Fold (fst (Core.start (plan declared))) Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty (Map.singleton 0 (Generation (L.policy settings) (L.learner settings) (initial declared))) Map.empty Set.empty 0 Map.empty Map.empty Map.empty Map.empty Map.empty
+    (opening, commands) = Core.start (plan declared)
+    started = Fold opening Map.empty Map.empty Map.empty (dispatches commands) Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty (Map.singleton 0 (Generation (L.policy settings) (L.learner settings) (initial declared))) Map.empty Set.empty 0 Map.empty Map.empty Map.empty Map.empty Map.empty
 
 drained :: (C.Grade grade) => Declaration grade -> Fold grade -> Either String (Replayed grade)
 drained declared fold = summarize <$> foldM (settle declared) fold (Map.keys (inferences fold))
@@ -169,6 +171,7 @@ entry declared transcripts fold recorded = case recorded of
         when (chosen == Entry.Shared && or [life == Running | Process Entry.Shared _ _ life <- Map.elems (processes fold)]) (Left "A shared process is reserved while another shared process runs")
         pure fold {processes = Map.insert number (Process chosen place used Running) (processes fold), epochs = max (epochs fold) (used + 1)}
     Entry.Dispatched request worker used bound number -> do
+        unless (Set.member request (requested fold)) (Left "A request is dispatched without the core's dispatch command")
         running fold number (inferenceRole declared, worker, used)
         encoded <- transcript transcripts number
         fresh fold bound
@@ -177,7 +180,7 @@ entry declared transcripts fold recorded = case recorded of
             replayed = case fromMaybe (hostedOwner declared worker encoded) (Map.lookup number (inferences fold)) of
                 Finite pending -> Finite (pending ++ [bound])
                 Hosting state ending pending -> Hosting state ending (pending ++ [bound])
-        pure fold {calls = Map.insert bound (request, number, selected) (calls fold), latest = Map.insert request bound (latest fold), inferences = Map.insert number replayed (inferences fold), identities = Set.insert bound (identities fold)}
+        pure fold {calls = Map.insert bound (request, number, selected) (calls fold), latest = Map.insert request bound (latest fold), requested = Set.delete request (requested fold), inferences = Map.insert number replayed (inferences fold), identities = Set.insert bound (identities fold)}
     Entry.Attempted update tried bound number -> do
         Process chosen place _ life <- maybe (Left "An attempt names a process that was never reserved") Right (Map.lookup number (processes fold))
         unless (chosen == learnerRole declared && life == Running) (Left "An attempt names a process of another role or one that has ended")
@@ -508,8 +511,11 @@ happened declared fold claimed = case claimed of
 
 stepped :: Fold grade -> Core.Event -> Either String (Fold grade)
 stepped fold event = do
-    (next, _) <- first show (Core.step (core fold) event)
-    pure fold {core = next}
+    (next, commands) <- first show (Core.step (core fold) event)
+    pure fold {core = next, requested = Set.union (requested fold) (dispatches commands)}
+
+dispatches :: [Core.Command] -> Set Natural
+dispatches commands = Set.fromList [request | Core.Dispatch (Request request) _ <- commands]
 
 opened :: Trace.Attempt -> Natural -> Maybe String
 opened attempted index
@@ -642,7 +648,7 @@ restarted fold observed = do
     let (published, committing') = case confirmedPublication of
             Just (Update update, Attempt tried, chosen) -> (Map.insert (update + 1) chosen (generations fold), Map.insert (update + 1) (update, tried) (committers fold))
             Nothing -> (generations fold, committers fold)
-    pure (fold {core = next, generations = published, committers = committing', latest = Map.empty, processes = Map.map (\(Process chosen place used life) -> Process chosen place used (if life == Running then Ended Nothing else life)) (processes fold)}, commands)
+    pure (fold {core = next, generations = published, committers = committing', latest = Map.empty, requested = dispatches commands, processes = Map.map (\(Process chosen place used life) -> Process chosen place used (if life == Running then Ended Nothing else life)) (processes fold)}, commands)
 
 settle :: (C.Grade grade) => Declaration grade -> Fold grade -> Natural -> Either String (Fold grade)
 settle declared fold number = case Map.lookup number (inferences fold) of

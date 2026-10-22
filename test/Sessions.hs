@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Sessions (sessions, options, optionsFrom, optionsWith, workload, workloads) where
+module Sessions (sessions, setup, options, optionsFrom, optionsWith, workload, workloads) where
 
 import BatchCalls (prepared, quote, session)
 import Calls qualified as Fixture
