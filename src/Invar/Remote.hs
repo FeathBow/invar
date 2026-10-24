@@ -3,16 +3,16 @@
 module Invar.Remote (Launch (..), run, exec, status, terminate) where
 
 import Control.Concurrent (MVar, forkIO, newEmptyMVar, putMVar, takeMVar, threadDelay)
-import Control.Exception (IOException, try)
+import Control.Exception (Handler (..), IOException, catches, try)
 import Control.Monad (unless, void)
 import Crypto.Hash.SHA256 qualified as SHA256
-import Data.Aeson (Value, object, (.=))
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as Bytes
 import Data.ByteString.Char8 qualified as Char
 import Data.Maybe (isJust)
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Data.Text.Encoding (decodeUtf8Lenient)
 import GHC.Clock (getMonotonicTime)
 import Invar.Artifact qualified as Artifact
 import Invar.Remote.Control qualified as C
@@ -22,7 +22,7 @@ import System.Directory (createDirectory, doesDirectoryExist, doesFileExist)
 import System.Exit (ExitCode (..), exitWith)
 import System.FilePath ((</>))
 import System.IO (Handle, SeekMode (AbsoluteSeek), hClose, hFlush, hSetBinaryMode, stdout)
-import System.IO.Error (catchIOError, isEOFError)
+import System.IO.Error (catchIOError, isAlreadyExistsError, isEOFError)
 import System.Posix.IO qualified as Posix
 import System.Posix.IO.ByteString qualified as Raw
 import System.Posix.Process (executeFile, getProcessID)
@@ -103,7 +103,7 @@ forward source = do
     void (forkIO (go SHA256.init 0 True))
     pure done
 
-data Phase = Waiting | Ignored | Terminating Double | Killed
+data Phase = Waiting | Answered | Terminating Double | Killed
 
 -- | The one loop that owns the child. It reaps it, and while it still holds the unreaped leader it answers a
 -- matching termination request by signalling the worker's process group, then kills the group after the grace.
@@ -120,18 +120,20 @@ supervise root started handle = go Waiting
         if not pending
             then pure Waiting
             else do
-                decoded <- C.request <$> Bytes.readFile (root </> "terminate.json")
-                case decoded of
-                    Right chosen | matches chosen -> do
+                encoded <- Bytes.readFile (root </> "terminate.json")
+                case C.admitRequest started encoded of
+                    Right chosen -> do
                         sent <- send softwareTermination C.Terminate "terminated"
                         now <- getMonotonicTime
-                        pure (if sent then Terminating (now + fromIntegral (C.grace chosen)) else Ignored)
-                    _ -> pure Ignored
+                        pure (if sent then Terminating (now + fromIntegral (C.grace chosen)) else Answered)
+                    Left why -> do
+                        at <- epochTime
+                        publish root "refused" (C.refusalFile (C.Refusal started (decodeUtf8Lenient encoded) why (fromIntegral (fromEnum at))))
+                        pure Answered
     advance (Terminating deadline) = do
         now <- getMonotonicTime
         if now < deadline then pure (Terminating deadline) else Killed <$ send killProcess C.Kill "killed"
     advance other = pure other
-    matches chosen = C.requested chosen == C.nonce (C.launching started) && C.requestedWrapper chosen == C.wrapper (C.launching started) && C.requestedWorker chosen == C.worker started
     send :: Signal -> C.Signal -> String -> IO Bool
     send number named record = do
         delivered <- try (signalProcessGroup number (fromIntegral (C.worker started)))
@@ -162,16 +164,18 @@ status :: FilePath -> IO (Either String C.Observation)
 status root = do
     present <- doesDirectoryExist root
     if not present
-        then pure (C.observe False (C.Files Nothing Nothing Nothing Nothing Nothing Nothing))
+        then pure (C.observe False (C.Files Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing))
         else do
             holding <- alive root
             outcome <- optional "outcome.json"
             failure <- optional "failure.json"
+            refused <- optional "refused.json"
             killed <- optional "killed.json"
             terminated <- optional "terminated.json"
+            asked <- optional "terminate.json"
             published <- optional "instance.json"
             launched <- optional "launching.json"
-            pure (C.observe holding (C.Files launched published failure outcome terminated killed))
+            pure (C.observe holding (C.Files launched published failure outcome asked terminated killed refused))
   where
     optional name = do
         exists <- doesFileExist (root </> name)
@@ -188,21 +192,24 @@ alive root = do
             Posix.closeFd file
             pure (isJust conflict)
 
--- | Asks a live wrapper to terminate its worker and waits for its confirmation. Without a live wrapper nothing is
--- written and nothing is signalled.
-terminate :: FilePath -> C.Request -> Int -> IO Value
+-- | Asks a live wrapper to terminate its worker, writing the instance's one request only when none exists yet, and
+-- waits for the wrapper's answer. Without a live wrapper nothing is written and nothing is signalled. It reports
+-- whether this call wrote the request and the instance's status, whose answer is confirmed, refused, unanswered or
+-- unrequested.
+terminate :: FilePath -> C.Request -> Int -> IO (Bool, C.Observation)
 terminate root chosen seconds = do
     holding <- alive root
-    if not holding
-        then pure (object ["requested" .= False, "confirmed" .= False])
-        else do
-            publish root "terminate" (C.requestFile chosen)
-            confirmed <- waitFor (seconds * 50) (doesFileExist (root </> "terminated.json"))
-            pure (object ["requested" .= True, "confirmed" .= confirmed])
+    existing <- doesFileExist (root </> "terminate.json")
+    written <- if holding && not existing then requested else pure False
+    current <- if holding then waitFor (seconds * 50) else observed
+    pure (written, current)
   where
-    waitFor remaining check = do
-        done <- check
-        if done || remaining <= 0 then pure done else threadDelay 20000 >> waitFor (remaining - 1 :: Int) check
+    requested = (True <$ publish root "terminate" (C.requestFile chosen)) `catches` [Handler (\(Store.Failure _ problem) -> existed problem), Handler existed]
+    existed problem = if isAlreadyExistsError problem then pure False else ioError problem
+    observed = status root >>= either (ioError . userError) pure
+    waitFor remaining = do
+        current <- observed
+        if C.answer current `elem` [C.Confirmed, C.Refused] || remaining <= (0 :: Int) then pure current else threadDelay 20000 >> waitFor (remaining - 1)
 
 -- | Writes a control file under a staging name, synchronizes it, renames it into place without replacing anything,
 -- and synchronizes the directory.

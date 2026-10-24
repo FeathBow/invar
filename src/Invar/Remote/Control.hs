@@ -9,6 +9,8 @@ module Invar.Remote.Control (
     Signal (..),
     Signalled (..),
     Request (..),
+    Refusal (..),
+    Answer (..),
     Files (..),
     State (..),
     Observation (..),
@@ -18,7 +20,9 @@ module Invar.Remote.Control (
     outcomeFile,
     signalledFile,
     requestFile,
-    request,
+    refusalFile,
+    admitRequest,
+    answer,
     observe,
     describe,
 ) where
@@ -29,8 +33,11 @@ import Data.Aeson.KeyMap qualified as Fields
 import Data.Aeson.Types (Pair, Parser, parseEither)
 import Data.ByteString (ByteString)
 import Data.ByteString.Lazy qualified as Lazy
+import Data.Either (isRight)
 import Data.Maybe (isJust, isNothing)
 import Data.Text (Text)
+import Data.Text qualified as Text
+import Data.Text.Encoding (decodeUtf8Lenient)
 import Invar.Json qualified as Json
 import Numeric.Natural (Natural)
 
@@ -58,12 +65,18 @@ data Signalled = Sent {target :: Instance, signal :: Signal, sentAt :: Integer}
 data Request = Request {requested :: Text, requestedWrapper :: Natural, requestedWorker :: Natural, grace :: Natural}
     deriving (Eq, Show)
 
-data Files = Files {launchingBytes, instanceBytes, failureBytes, outcomeBytes, terminatedBytes, killedBytes :: Maybe ByteString}
+data Refusal = Refusal {held :: Instance, refusedRequest :: Text, refusedBecause :: Text, refusedAt :: Integer}
+    deriving (Eq, Show)
+
+data Answer = Unrequested | Unanswered | Confirmed | Refused
+    deriving (Eq, Show)
+
+data Files = Files {launchingBytes, instanceBytes, failureBytes, outcomeBytes, requestBytes, terminatedBytes, killedBytes, refusedBytes :: Maybe ByteString}
 
 data State = Absent | Launched Launching | Started Instance | LaunchFailed (Maybe Instance) Failure | Ended Outcome
     deriving (Eq, Show)
 
-data Observation = Observation {state :: State, terminated :: Maybe Signalled, killed :: Maybe Signalled, alive :: Bool}
+data Observation = Observation {state :: State, asked :: Maybe ByteString, terminated :: Maybe Signalled, killed :: Maybe Signalled, refused :: Maybe Refusal, alive :: Bool}
     deriving (Eq, Show)
 
 launchingFile :: Launching -> ByteString
@@ -87,8 +100,27 @@ requestFile (Request chosen wrapperId workerId seconds) = file (object ["format"
 file :: Value -> ByteString
 file = Lazy.toStrict . encode
 
-request :: ByteString -> Either String Request
-request = decoded "invar-remote-request-v1" ["nonce", "wrapper", "worker", "grace"] $ \fields -> Request <$> fields .: "nonce" <*> fields .: "wrapper" <*> fields .: "worker" <*> fields .: "grace"
+refusalFile :: Refusal -> ByteString
+refusalFile = file . refusalValue
+
+-- | One termination request per instance: `terminate.json` is written once, and the wrapper either signals for it or
+-- refuses it. A refusal is final, because a request that names another instance or cannot be read is a mistake of
+-- its sender, not a condition that a second request could change.
+admitRequest :: Instance -> ByteString -> Either Text Request
+admitRequest chosen encoded = case decoded "invar-remote-request-v1" ["nonce", "wrapper", "worker", "grace"] parser encoded of
+    Left problem -> Left (Text.pack ("The termination request cannot be read: " ++ problem))
+    Right value
+        | requested value == nonce (launching chosen) && requestedWrapper value == wrapper (launching chosen) && requestedWorker value == worker chosen -> Right value
+        | otherwise -> Left "The termination request names another instance"
+  where
+    parser fields = Request <$> fields .: "nonce" <*> fields .: "wrapper" <*> fields .: "worker" <*> fields .: "grace"
+
+answer :: Observation -> Answer
+answer current
+    | isJust (terminated current) = Confirmed
+    | isJust (refused current) = Refused
+    | isJust (asked current) = Unanswered
+    | otherwise = Unrequested
 
 -- | Every file the wrapper wrote, decoded and checked against each other. The files appear in a fixed order and are
 -- never removed, so a later file names exactly the identity of the earlier ones.
@@ -100,10 +132,11 @@ observe holding supplied = do
     outcome <- traverse (decoded "invar-remote-outcome-v1" outcomeFields outcomeParser) (outcomeBytes supplied)
     termination <- traverse (decoded "invar-remote-signalled-v1" signalledFields signalledParser) (terminatedBytes supplied)
     escalation <- traverse (decoded "invar-remote-signalled-v1" signalledFields signalledParser) (killedBytes supplied)
+    refusal <- traverse (decoded "invar-remote-refused-v1" refusedFields refusalParser) (refusedBytes supplied)
     when (isJust failure && isJust outcome) (Left "A remote instance records both a launch failure and an outcome")
     current <- case started of
         Nothing -> do
-            unless (isNothing published && isNothing failure && isNothing outcome && isNothing termination && isNothing escalation) (Left "Remote control files exist without a launch record")
+            unless (isNothing published && isNothing failure && isNothing outcome && isNothing (requestBytes supplied) && isNothing termination && isNothing escalation && isNothing refusal) (Left "Remote control files exist without a launch record")
             pure Absent
         Just first -> do
             mapM_ (\value -> unless (launching value == first) (Left "The remote instance names another launch")) published
@@ -122,14 +155,20 @@ observe holding supplied = do
     signalled Terminate named termination
     signalled Kill named escalation
     when (isJust escalation && isNothing termination) (Left "A remote kill was recorded without its termination")
-    pure (Observation current termination escalation holding)
+    when (isJust termination && isJust refusal) (Left "A remote termination request was both carried out and refused")
+    mapM_ (\_ -> answered named True) termination
+    mapM_ (\value -> unless (Just (held value) == named) (Left "A remote refusal names another instance") >> answered named False >> unless (Just (refusedRequest value) == fmap decodeUtf8Lenient (requestBytes supplied)) (Left "A remote refusal names another request")) refusal
+    pure (Observation current (requestBytes supplied) termination escalation refusal holding)
   where
     signalled chosen named = mapM_ $ \value -> do
         unless (Just (target value) == named) (Left "A remote signal record names another instance")
         unless (signal value == chosen) (Left "A remote signal record holds another signal")
+    answered named accepted = case (named, requestBytes supplied) of
+        (Just chosen, Just encoded) -> unless (isRight (admitRequest chosen encoded) == accepted) (Left "A remote answer disagrees with its termination request")
+        _ -> Left "A remote answer exists without its instance and termination request"
 
 describe :: Observation -> Value
-describe (Observation current termination escalation holding) =
+describe observation@(Observation current pending termination escalation refusal holding) =
     object
         [ "format" .= ("invar-remote-status-v1" :: Text)
         , "state" .= stateName current
@@ -137,11 +176,19 @@ describe (Observation current termination escalation holding) =
         , "instance" .= fmap instanceValue (instanceOf current)
         , "failure" .= fmap failureValue (failureOf current)
         , "outcome" .= fmap outcomeValue (outcomeOf current)
+        , "request" .= fmap decodeUtf8Lenient pending
         , "terminated" .= fmap signalledValue termination
         , "killed" .= fmap signalledValue escalation
+        , "refused" .= fmap refusalValue refusal
+        , "answer" .= answerName (answer observation)
         , "wrapper_alive" .= holding
         ]
   where
+    answerName value = case value of
+        Unrequested -> "unrequested" :: Text
+        Unanswered -> "unanswered"
+        Confirmed -> "confirmed"
+        Refused -> "refused"
     stateName value = case value of
         Absent -> "absent" :: Text
         Launched _ -> "launching"
@@ -175,12 +222,13 @@ decoded format names parser encoded = Json.decode encoded >>= parseEither (withO
         unless (declared == format) (fail ("Expected " <> show format))
         parser fields
 
-launchingFields, instanceFields, failureFields, outcomeFields, signalledFields :: [Key]
+launchingFields, instanceFields, failureFields, outcomeFields, signalledFields, refusedFields :: [Key]
 launchingFields = ["host", "nonce", "wrapper"]
 instanceFields = launchingFields ++ ["worker", "group"]
 failureFields = launchingFields ++ ["reason"]
 outcomeFields = instanceFields ++ ["ending", "ended", "bytes", "sha256"]
 signalledFields = instanceFields ++ ["signal", "at"]
+refusedFields = instanceFields ++ ["request", "reason", "at"]
 
 launchingParser :: Object -> Parser Launching
 launchingParser fields = Launching <$> fields .: "host" <*> fields .: "nonce" <*> fields .: "wrapper"
@@ -217,6 +265,12 @@ signalledParser fields = do
         "KILL" -> pure Kill
         _ -> fail "Unknown remote signal"
     Sent chosen sent <$> fields .: "at"
+
+refusalParser :: Object -> Parser Refusal
+refusalParser fields = Refusal <$> instanceParser fields <*> fields .: "request" <*> fields .: "reason" <*> fields .: "at"
+
+refusalValue :: Refusal -> Value
+refusalValue (Refusal chosen asking why at) = object (instancePairs chosen ++ ["format" .= ("invar-remote-refused-v1" :: Text), "request" .= asking, "reason" .= why, "at" .= at])
 
 launchingValue :: Launching -> Value
 launchingValue chosen = object (launchingPairs chosen ++ ["format" .= ("invar-remote-launching-v1" :: Text)])

@@ -1,7 +1,9 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 module Remote (run) where
 
 import Control.Monad (unless)
-import Data.Aeson (encode)
+import Data.Aeson (encode, object, (.=))
 import Data.ByteString.Lazy.Char8 qualified as Lazy
 import Data.List (nub)
 import Data.Text qualified as Text
@@ -46,7 +48,8 @@ run ("terminate" : supplied) = do
     chosen <- either die pure (O.required fields "nonce")
     request <- either die pure (C.Request (Text.pack chosen) <$> O.numeric fields "wrapper" <*> O.numeric fields "worker" <*> O.numeric fields "grace")
     seconds <- either die pure (O.numeric fields "wait")
-    R.terminate root request seconds >>= Lazy.putStrLn . encode
+    (written, current) <- R.terminate root request seconds
+    Lazy.putStrLn (encode (object ["requested" .= written, "status" .= C.describe current]))
 run _ = die usage
 
 environment :: [String] -> ([String], [String])
