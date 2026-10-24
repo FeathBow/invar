@@ -165,6 +165,7 @@ grouped = do
     terminated root chosen 1 >>= (=== (True, "confirmed"))
     asked <- evalIO (Bytes.readFile (root </> "terminate.json"))
     terminated root chosen 1 >>= (=== (False, "confirmed"))
+    requestedFor root (C.nonce (C.launching chosen)) (C.wrapper (C.launching chosen)) (C.worker chosen + 1) 1 >>= (=== (False, "unrequested"))
     evalIO (Bytes.readFile (root </> "terminate.json")) >>= (=== asked)
     evalIO (hClose input)
     void (evalIO (waitForProcess handle))
@@ -263,6 +264,7 @@ refused = do
     fmap C.state (C.observe False complete) === Right (C.Ended outcome)
     fmap C.state (C.observe True files {C.launchingBytes = Just (C.launchingFile launched)}) === Right (C.Launched launched)
     fmap C.answer (C.observe False confirmed) === Right C.Confirmed
+    fmap (\current -> map (`C.reply` current) [asked, stray, C.requestFile (C.Request "other" 10 11 2)]) (C.observe False confirmed) === Right [C.Confirmed, C.Unrequested, C.Unrequested]
     fmap C.answer (C.observe False declined) === Right C.Unrequested
     fmap (C.reply stray) (C.observe False declined) === Right C.Refused
     fmap (\current -> (C.answer current, C.reply asked current)) (C.observe False declined {C.requestBytes = Just stray}) === Right (C.Refused, C.Unrequested)

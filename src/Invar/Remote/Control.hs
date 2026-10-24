@@ -126,14 +126,13 @@ answer current = case asked current of
         | refusedOf encoded current -> Refused
         | otherwise -> Unanswered
 
--- | The answer to the request with these bytes: refused when the wrapper refused them, unrequested while the instance
--- holds none or holds another that the wrapper refused and is about to remove, and otherwise the answer to the request
--- the instance holds.
+-- | The answer to the request with these bytes: refused when the wrapper refused them, the answer to the request the
+-- instance holds when it holds these bytes, and otherwise unrequested, so a request never takes another's answer.
 reply :: ByteString -> Observation -> Answer
 reply encoded current
     | refusedOf encoded current = Refused
-    | maybe False (`refusedOf` current) (asked current) = Unrequested
-    | otherwise = answer current
+    | asked current == Just encoded = answer current
+    | otherwise = Unrequested
 
 refusedOf :: ByteString -> Observation -> Bool
 refusedOf encoded current = any ((== decodeUtf8Lenient encoded) . refusedRequest) (refused current)

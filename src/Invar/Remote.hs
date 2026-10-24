@@ -9,7 +9,7 @@ import Crypto.Hash.SHA256 qualified as SHA256
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as Bytes
 import Data.ByteString.Char8 qualified as Char
-import Data.Maybe (isJust)
+import Data.Maybe (isJust, isNothing)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding (decodeUtf8Lenient)
@@ -22,7 +22,7 @@ import System.Directory (createDirectory, doesDirectoryExist, doesFileExist, rem
 import System.Exit (ExitCode (..), exitWith)
 import System.FilePath (takeFileName, (</>))
 import System.IO (Handle, SeekMode (AbsoluteSeek), hClose, hFlush, hSetBinaryMode, stdout)
-import System.IO.Error (catchIOError, isAlreadyExistsError, isEOFError)
+import System.IO.Error (catchIOError, isAlreadyExistsError, isDoesNotExistError, isEOFError)
 import System.Posix.IO qualified as Posix
 import System.Posix.IO.ByteString qualified as Raw
 import System.Posix.Process (executeFile, getProcessID)
@@ -183,9 +183,7 @@ status root = do
             launched <- optional "launching.json"
             pure (C.observe holding (C.Files launched published failure outcome asked terminated killed refused))
   where
-    optional name = do
-        exists <- doesFileExist (root </> name)
-        if exists then Just <$> Bytes.readFile (root </> name) else pure Nothing
+    optional name = (Just <$> Bytes.readFile (root </> name)) `catchIOError` \problem -> if isDoesNotExistError problem then pure Nothing else ioError problem
     refusals count = optional ("refused." ++ show count ++ ".json") >>= maybe (pure []) (\encoded -> (encoded :) <$> refusals (count + 1))
 
 alive :: FilePath -> IO Bool
@@ -202,7 +200,8 @@ alive root = do
 -- | Asks a live wrapper to terminate its worker and waits for the answer to this request. The request is written only
 -- while the instance holds none: an admitted request stays in place, and a refused one is removed by the wrapper, so
 -- this request is written once that refusal leaves room for it. Without a live wrapper nothing is written and nothing
--- is signalled. It reports whether this call wrote the request, the answer to it, and the instance's status.
+-- is signalled. It reports whether this call wrote the request, the answer to this request alone, and the instance's
+-- status.
 terminate :: FilePath -> C.Request -> Int -> IO (Bool, C.Answer, C.Observation)
 terminate root chosen seconds = go (seconds * 50) False
   where
@@ -213,7 +212,7 @@ terminate root chosen seconds = go (seconds * 50) False
         if not (C.alive current) || answered `elem` [C.Confirmed, C.Refused] || remaining < (0 :: Int)
             then pure (written, answered, current)
             else do
-                wrote <- if answered == C.Unrequested then requested else pure False
+                wrote <- if answered == C.Unrequested && isNothing (C.asked current) then requested else pure False
                 threadDelay 20000
                 go (remaining - 1) (written || wrote)
     requested = (True <$ publish root "terminate" encoded) `catch` \problem@(Store.Failure _ cause) -> if isAlreadyExistsError cause then pure False else throwIO problem
