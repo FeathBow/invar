@@ -48,8 +48,8 @@ run ("terminate" : supplied) = do
     chosen <- either die pure (O.required fields "nonce")
     request <- either die pure (C.Request (Text.pack chosen) <$> O.numeric fields "wrapper" <*> O.numeric fields "worker" <*> O.numeric fields "grace")
     seconds <- either die pure (O.numeric fields "wait")
-    (written, current) <- R.terminate root request seconds
-    Lazy.putStrLn (encode (object ["requested" .= written, "status" .= C.describe current]))
+    (written, answered, current) <- R.terminate root request seconds
+    Lazy.putStrLn (encode (object ["requested" .= written, "answer" .= C.answerName answered, "status" .= C.describe current]))
 run _ = die usage
 
 environment :: [String] -> ([String], [String])

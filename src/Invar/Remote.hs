@@ -2,9 +2,9 @@
 
 module Invar.Remote (Launch (..), run, exec, status, terminate) where
 
-import Control.Concurrent (MVar, forkIO, newEmptyMVar, putMVar, takeMVar, threadDelay)
-import Control.Exception (Handler (..), IOException, catches, try)
-import Control.Monad (unless, void)
+import Control.Concurrent (MVar, forkIO, isEmptyMVar, newEmptyMVar, putMVar, takeMVar, threadDelay)
+import Control.Exception (IOException, catch, throwIO, try)
+import Control.Monad (unless, void, when)
 import Crypto.Hash.SHA256 qualified as SHA256
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as Bytes
@@ -18,15 +18,16 @@ import Invar.Artifact qualified as Artifact
 import Invar.Remote.Control qualified as C
 import Invar.Store qualified as Store
 import Numeric.Natural (Natural)
-import System.Directory (createDirectory, doesDirectoryExist, doesFileExist)
+import System.Directory (createDirectory, doesDirectoryExist, doesFileExist, removeFile)
 import System.Exit (ExitCode (..), exitWith)
-import System.FilePath ((</>))
+import System.FilePath (takeFileName, (</>))
 import System.IO (Handle, SeekMode (AbsoluteSeek), hClose, hFlush, hSetBinaryMode, stdout)
 import System.IO.Error (catchIOError, isAlreadyExistsError, isEOFError)
 import System.Posix.IO qualified as Posix
 import System.Posix.IO.ByteString qualified as Raw
 import System.Posix.Process (executeFile, getProcessID)
 import System.Posix.Signals (Handler (Default, Ignore), Signal, installHandler, killProcess, sigHUP, sigPIPE, signalProcessGroup, softwareTermination)
+import System.Posix.Temp (mkstemp)
 import System.Posix.Time (epochTime)
 import System.Posix.Types (Fd)
 import System.Posix.Unistd (getSystemID, nodeName)
@@ -69,7 +70,7 @@ run self launch = do
             Posix.closeFd release
             forwarded <- forward output
             failure <- Posix.fdToHandle report >>= \source -> Bytes.hGetContents source
-            code <- supervise root started handle
+            code <- supervise root started handle forwarded
             (count, sha) <- takeMVar forwarded
             at <- epochTime
             if Bytes.null failure
@@ -103,46 +104,51 @@ forward source = do
     void (forkIO (go SHA256.init 0 True))
     pure done
 
-data Phase = Waiting | Answered | Terminating Double | Killed
+-- | `Waiting` carries the number of the next refusal.
+data Phase = Waiting Int | Terminating Double | Killed
 
--- | The one loop that owns the child. It reaps it, and while it still holds the unreaped leader it answers a
--- matching termination request by signalling the worker's process group, then kills the group after the grace.
-supervise :: FilePath -> C.Instance -> ProcessHandle -> IO ExitCode
-supervise root started handle = go Waiting
+-- | The one loop that owns the child. It keeps the leader unreaped until the worker's stdout is drained and no
+-- termination is under way, so the worker's process group keeps its id while any signal may still go to it. It
+-- answers an admitted termination request by signalling the group, and kills the group when the grace ends.
+supervise :: FilePath -> C.Instance -> ProcessHandle -> MVar (Natural, String) -> IO ExitCode
+supervise root started handle forwarded = go (Waiting 1)
   where
     go phase = do
-        exited <- getProcessExitCode handle
+        drained <- not <$> isEmptyMVar forwarded
+        exited <- if drained && settled phase then getProcessExitCode handle else pure Nothing
         case exited of
             Just code -> pure code
             Nothing -> advance phase >>= \next -> threadDelay 20000 >> go next
-    advance Waiting = do
+    settled (Terminating _) = False
+    settled _ = True
+    advance (Waiting count) = do
         pending <- doesFileExist (root </> "terminate.json")
         if not pending
-            then pure Waiting
+            then pure (Waiting count)
             else do
                 encoded <- Bytes.readFile (root </> "terminate.json")
                 case C.admitRequest started encoded of
                     Right chosen -> do
-                        sent <- send softwareTermination C.Terminate "terminated"
+                        send softwareTermination C.Terminate "terminated"
                         now <- getMonotonicTime
-                        pure (if sent then Terminating (now + fromIntegral (C.grace chosen)) else Answered)
+                        pure (Terminating (now + fromIntegral (C.grace chosen)))
                     Left why -> do
                         at <- epochTime
-                        publish root "refused" (C.refusalFile (C.Refusal started (decodeUtf8Lenient encoded) why (fromIntegral (fromEnum at))))
-                        pure Answered
+                        publish root ("refused." ++ show count) (C.refusalFile (C.Refusal started (decodeUtf8Lenient encoded) why (fromIntegral (fromEnum at))))
+                        removeFile (root </> "terminate.json")
+                        pure (Waiting (count + 1))
     advance (Terminating deadline) = do
         now <- getMonotonicTime
         if now < deadline then pure (Terminating deadline) else Killed <$ send killProcess C.Kill "killed"
-    advance other = pure other
-    send :: Signal -> C.Signal -> String -> IO Bool
+    advance Killed = pure Killed
+    send :: Signal -> C.Signal -> String -> IO ()
     send number named record = do
         delivered <- try (signalProcessGroup number (fromIntegral (C.worker started)))
         case delivered of
-            Left (_ :: IOException) -> pure False
+            Left (_ :: IOException) -> pure ()
             Right () -> do
                 at <- epochTime
                 publish root record (C.signalledFile (C.Sent started named (fromIntegral (fromEnum at))))
-                pure True
 
 -- | The child started by `run`: it leads the process group it was created in, waits for the barrier, and replaces
 -- itself with the worker. A failed replacement is written to the status descriptor, which is closed on success.
@@ -164,15 +170,15 @@ status :: FilePath -> IO (Either String C.Observation)
 status root = do
     present <- doesDirectoryExist root
     if not present
-        then pure (C.observe False (C.Files Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing))
+        then pure (C.observe False (C.Files Nothing Nothing Nothing Nothing Nothing Nothing Nothing []))
         else do
             holding <- alive root
             outcome <- optional "outcome.json"
             failure <- optional "failure.json"
-            refused <- optional "refused.json"
             killed <- optional "killed.json"
             terminated <- optional "terminated.json"
             asked <- optional "terminate.json"
+            refused <- refusals (1 :: Int)
             published <- optional "instance.json"
             launched <- optional "launching.json"
             pure (C.observe holding (C.Files launched published failure outcome asked terminated killed refused))
@@ -180,6 +186,7 @@ status root = do
     optional name = do
         exists <- doesFileExist (root </> name)
         if exists then Just <$> Bytes.readFile (root </> name) else pure Nothing
+    refusals count = optional ("refused." ++ show count ++ ".json") >>= maybe (pure []) (\encoded -> (encoded :) <$> refusals (count + 1))
 
 alive :: FilePath -> IO Bool
 alive root = do
@@ -192,32 +199,32 @@ alive root = do
             Posix.closeFd file
             pure (isJust conflict)
 
--- | Asks a live wrapper to terminate its worker, writing the instance's one request only when none exists yet, and
--- waits for the wrapper's answer. Without a live wrapper nothing is written and nothing is signalled. It reports
--- whether this call wrote the request and the instance's status, whose answer is confirmed, refused, unanswered or
--- unrequested.
-terminate :: FilePath -> C.Request -> Int -> IO (Bool, C.Observation)
-terminate root chosen seconds = do
-    holding <- alive root
-    existing <- doesFileExist (root </> "terminate.json")
-    written <- if holding && not existing then requested else pure False
-    current <- if holding then waitFor (seconds * 50) else observed
-    pure (written, current)
+-- | Asks a live wrapper to terminate its worker and waits for the answer to this request. The request is written only
+-- while the instance holds none: an admitted request stays in place, and a refused one is removed by the wrapper, so
+-- this request is written once that refusal leaves room for it. Without a live wrapper nothing is written and nothing
+-- is signalled. It reports whether this call wrote the request, the answer to it, and the instance's status.
+terminate :: FilePath -> C.Request -> Int -> IO (Bool, C.Answer, C.Observation)
+terminate root chosen seconds = go (seconds * 50) False
   where
-    requested = (True <$ publish root "terminate" (C.requestFile chosen)) `catches` [Handler (\(Store.Failure _ problem) -> existed problem), Handler existed]
-    existed problem = if isAlreadyExistsError problem then pure False else ioError problem
-    observed = status root >>= either (ioError . userError) pure
-    waitFor remaining = do
-        current <- observed
-        if C.answer current `elem` [C.Confirmed, C.Refused] || remaining <= (0 :: Int) then pure current else threadDelay 20000 >> waitFor (remaining - 1)
+    encoded = C.requestFile chosen
+    go remaining written = do
+        current <- status root >>= either (ioError . userError) pure
+        let answered = C.reply encoded current
+        if not (C.alive current) || answered `elem` [C.Confirmed, C.Refused] || remaining < (0 :: Int)
+            then pure (written, answered, current)
+            else do
+                wrote <- if answered == C.Unrequested then requested else pure False
+                threadDelay 20000
+                go (remaining - 1) (written || wrote)
+    requested = (True <$ publish root "terminate" encoded) `catch` \problem@(Store.Failure _ cause) -> if isAlreadyExistsError cause then pure False else throwIO problem
 
--- | Writes a control file under a staging name, synchronizes it, renames it into place without replacing anything,
--- and synchronizes the directory.
+-- | Writes a control file under a staging name of its own, synchronizes it, renames it into place without replacing
+-- anything, and synchronizes the directory. A staging file left by an interrupted writer never blocks another, and a
+-- writer whose rename finds the name taken removes its own.
 publish :: FilePath -> String -> ByteString -> IO ()
 publish root name encoded = do
-    let staged = name ++ ".staging"
-    file <- Posix.openFd (root </> staged) Posix.WriteOnly Posix.defaultFileFlags {Posix.creat = Just 0o644, Posix.exclusive = True, Posix.cloexec = True}
-    written <- Posix.fdToHandle file
+    (staged, written) <- mkstemp (root </> name ++ ".staging.")
     Bytes.hPut written encoded
     hClose written
-    void (Store.publish (Store.Location root (Char.pack staged) (Char.pack (name ++ ".json"))))
+    void (Store.publish (Store.Location root (Char.pack (takeFileName staged)) (Char.pack (name ++ ".json")))) `catch` \problem@(Store.Failure phase _) ->
+        when (phase == Store.Rename) (removeFile staged) >> throwIO problem
