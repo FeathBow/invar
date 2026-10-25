@@ -44,6 +44,7 @@ import Properties (properties)
 import Quality (quality)
 import Records (records)
 import Recoveries (inspections, recoveries)
+import Remotes (remotes)
 import Replays (replays)
 import Reports (reports)
 import ResidentCalls (residentCalls)
@@ -78,5 +79,5 @@ import Workloads (workloads)
 
 main :: IO ()
 main = do
-    outcomes <- traverse checkSequential [fixtures, properties, arguments, values, dependencies, evaluation, artifacts, construction, collections, records, literals, invocations, evidence, loads, store, checkpoints, inference, results, calls, batchCalls, groupedCalls, batchedProtocol, generation, traces, residentCalls, residentDrivers, residentObservations, rewards, cohorts, rollouts, sessions, learning, advantages, objectives, events, journals, replays, recoveries, inspections, restarts, comparisons, drivers, steps, tokenizers, algorithms, distillations, teachers, mismatches, updates, learnerCalls, loops, schedules, policies, probabilities, workloads, reports, quality, observations, inferenceObservations, numerical, scores, scoreProbes, numericalScores, numericalProbes, uses, useEvidence, useAdmission, useBernstein, usePlan, usePrepare, useExecution, useGeneric, statistics]
+    outcomes <- traverse checkSequential [fixtures, properties, arguments, values, dependencies, evaluation, artifacts, construction, collections, records, literals, invocations, evidence, loads, store, checkpoints, inference, results, calls, batchCalls, groupedCalls, batchedProtocol, generation, traces, residentCalls, residentDrivers, residentObservations, rewards, cohorts, rollouts, sessions, learning, advantages, objectives, events, journals, replays, recoveries, inspections, restarts, comparisons, drivers, steps, tokenizers, algorithms, distillations, teachers, mismatches, updates, learnerCalls, loops, schedules, policies, probabilities, workloads, reports, quality, observations, inferenceObservations, numerical, scores, scoreProbes, numericalScores, numericalProbes, uses, useEvidence, useAdmission, useBernstein, usePlan, usePrepare, useExecution, useGeneric, statistics, remotes]
     unless (and outcomes) exitFailure
