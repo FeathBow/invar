@@ -1,14 +1,15 @@
 import hashlib
 import json
 
-FORMAT = "invar-probabilities-v5"
+FORMAT = "invar-probabilities-v6"
 
 
 def document(order, update, *, invocation, request):
     learner_source = request["reference_source"] == "learner"
+    policies = {(step, sample): policy for step, sample, policy in update.policies}
     samples = [{"sample": name, "dtype": "F32", "proximal": list(update.proximal[name]),
                 **({"reference": list(update.reference[name])} if learner_source else {}),
-                "steps": [{"step": step, "current": list(current)} for step, sample, current in update.currents if sample == name]}
+                "steps": [{"step": step, "current": list(current), "policy": policies[step, sample]} for step, sample, current in update.currents if sample == name]}
                for name in order]
     return {"format": FORMAT, "invocation": invocation, "request": request, "samples": samples}
 

@@ -81,6 +81,9 @@ data Premise
     | OwnCacheProbing
     | ProbingCorrespondence
     | VocabularyCorrespondence
+    | PathAuthenticity
+    | PathBehavior
+    | ForwardCorrespondence
     | ScheduleVariation
     | IndependentUnits
     | ReplicateSamplingLaw
@@ -118,6 +121,9 @@ premiseDescription selected = case selected of
     OwnCacheProbing -> probing "own-cache-probing"
     ProbingCorrespondence -> probing "probing-generation-correspondence"
     VocabularyCorrespondence -> probing "vocabulary-coordinate-correspondence"
+    PathAuthenticity -> paths "path-execution-report-authenticity"
+    PathBehavior -> paths "path-behavior-measurement"
+    ForwardCorrespondence -> paths "forward-weight-correspondence"
     ScheduleVariation -> describe "schedule-variation" "finite-paired-inference/v1" "repeated-candidate-execution/v1"
     IndependentUnits -> statistical "independent-unit-sampling"
     ReplicateSamplingLaw -> statistical "declared-replicate-sampling-law"
@@ -134,6 +140,7 @@ premiseDescription selected = case selected of
     generation name = describe name "finite-paired-inference/v1" "selected-token-behavior/v1"
     scoring name = describe name "cached-path-score/v1" "selected-path-behavior/v1"
     probing name = describe name "cached-distribution-probe/v1" "full-vocabulary-behavior/v1"
+    paths name = describe name "path-observation/v1" "selected-path-behavior/v1"
     statistical name = describe name "paired-loss-hoeffding/v1" "unit-mean-loss/v1"
     bernstein name = describe name "paired-loss-bernstein-mp2009/v1" "unit-mean-loss/v1"
     admission name = describe name "use-contract/v1" "frozen-declaration/v1"

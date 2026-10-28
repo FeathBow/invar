@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.History (Declaration (..), Training (..), Log (..), Profiles (..), Checked, admit, compare, describe, rollouts) where
+module Invar.History (Declaration (..), Training (..), Log (..), Profiles (..), Checked, admit, compare, describe, rollouts, paths) where
 
 import Control.Monad (unless)
 import Data.Aeson (Value (..), object, withObject, (.:), (.=))
@@ -38,6 +38,7 @@ import Invar.Learn.State qualified as State
 import Invar.Learn.Stream qualified as S
 import Invar.Learn.Worker qualified as W
 import Invar.Loop qualified as Loop
+import Invar.Paths qualified as Paths
 import Invar.Policy qualified as Policy
 import Invar.Policy.File qualified as File
 import Invar.Resident qualified as Resident
@@ -80,7 +81,7 @@ data Source = FromLog Log Trace.Checked | FromRun Runtime.Checked
 data Arrangement = Arrangement {sessionCount :: Natural, inferenceRun :: Trace.Mode, learningRun :: Trace.Mode, dispatch :: [([Natural], [Natural])], finalCall :: V.Binding}
     deriving (Eq)
 
-data Generation = Generation {generationTrace :: Generation.Generation, generationArtifacts :: Value, generationState :: State.Observed, generationGradients :: Gradient.Observed}
+data Generation = Generation {generationTrace :: Generation.Generation, generationArtifacts :: Value, generationState :: State.Observed, generationGradients :: Gradient.Observed, generationPaths :: Paths.UpdateObservations}
 
 admit :: Decoder -> Declaration -> ByteString -> IO Checked
 admit decoder declared finalOutput = do
@@ -111,10 +112,10 @@ admit decoder declared finalOutput = do
   where
     generation (schema, expectedRng) (expected, selected) = do
         published <- Publication.observe selected
-        (observed, state, gradients) <- Artifacts.successor (decoder, schema) (expected, selected) published
+        (observed, state, gradients, observations) <- Artifacts.successor (decoder, schema) (expected, selected) published
         actualRng <- either invalid pure (rng observed)
         unless (actualRng == expectedRng) (invalid "Successor RNG vector inventory differs from the complete initial state")
-        pure (Generation selected observed state gradients)
+        pure (Generation selected observed state gradients observations)
 
 settingsOf :: Source -> Learn.Settings
 settingsOf (FromLog logged _) = Trace.settings (trainingRun logged)
@@ -240,6 +241,16 @@ decision = either invalid pure . parseEither (withObject "comparison decision" (
 
 field :: Key -> Value -> IO Value
 field key = either invalid pure . parseEither (withObject "artifact observation" (.: key))
+
+paths :: Checked -> Either String [(Natural, String, Paths.Observed)]
+paths checked = concat <$> traverse observed (zip [1 ..] (zip (Workload.shapeCycles (workloadOf (trainingRecord checked))) (generationObservations checked)))
+  where
+    observed (index, ((names, _, _), generation)) = do
+        let samples = [Paths.proximal observations, Paths.currents observations, Paths.references observations]
+            observations = generationPaths generation
+        if length names == length (Paths.proximal observations)
+            then pure (concat [[(index - 1, name, Paths.scoped Nothing learner engine) | (learner, engine) <- pairs] | (name, pairs) <- zip names samples])
+            else Left "A generation's path observations do not cover its cohort"
 
 rollouts :: Checked -> Natural -> Either String [(String, Inference.Report)]
 rollouts checked index = case drop (fromIntegral index - 1) (zip (Workload.shapeCycles (workloadOf (trainingRecord checked))) (generationObservations checked)) of

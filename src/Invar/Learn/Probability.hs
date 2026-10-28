@@ -33,7 +33,7 @@ validate expected encoded = do
         unless (Map.fromList [(sampleName entry, reported) | entry <- observed, Just reported <- [reference entry]] == S.referencesOf streamed) (Left "Probability artifact reference words differ from the reported steps")
     unless (sortOn (\(position, name, _) -> (position, name)) [(position, sampleName entry, words32) | entry <- observed, (position, words32) <- currents entry] == sortOn (\(position, name, _) -> (position, name)) (S.currents streamed)) (Left "Probability artifact current words differ from the reported steps")
 
-data Sample = Sample {sampleObject :: Object, sampleName :: Text, behavior :: [Word32], proximal :: [Word32], reference :: Maybe [Word32], engineReference :: [Word32], currents :: [(Natural, [Word32])]}
+data Sample = Sample {sampleObject :: Object, sampleName :: Text, behavior :: [Word32], proximal :: [Word32], reference :: Maybe [Word32], engineReference :: [Word32], currents :: [(Natural, [Word32])], stepPolicies :: [(Natural, String)]}
 
 observe :: (Value, Request.Request) -> ByteString -> Either String [Sample]
 observe (intended, consumed) encoded = Json.decode encoded >>= parseEither (withObject "probability observation" (document (intended, consumed)))
@@ -42,7 +42,7 @@ document :: (Value, Request.Request) -> Object -> Parser [Sample]
 document (intended, consumed) fields = do
     exact ["format", "invocation", "request", "samples"] fields
     format <- fields .: "format"
-    unless (format == ("invar-probabilities-v5" :: Text)) (fail "Unknown probability observation format")
+    unless (format == ("invar-probabilities-v6" :: Text)) (fail "Unknown probability observation format")
     invocation <- fields .: "invocation"
     unless (invocation == intended) (fail "Probability observation invocation mismatch")
     request <- fields .: "request"
@@ -59,16 +59,18 @@ samples consumed observed = do
         plan = S.batches planned
         originals = Map.fromList [(S.name entry, entry) | entry <- S.members planned]
         learnerSource = S.source planned == S.FromLearner
+        startPolicy = Request.value consumed
         participation name = [position | (position, batch) <- zip [0 ..] plan, name `elem` batch]
         first = case plan of
             batch : _ -> batch
             [] -> []
+    policy <- withObject "update request" (.: "policy") startPolicy
     names <- traverse (.: "sample") observed
     unless (names == Request.order consumed) (fail "Probability samples differ from logical order")
-    traverse (\(name, item) -> maybe (fail "Unknown probability sample") (\declared -> sample learnerSource (participation name, name `elem` first) declared item) (Map.lookup name originals)) (zip names observed)
+    traverse (\(name, item) -> maybe (fail "Unknown probability sample") (\declared -> sample learnerSource (participation name, name `elem` first) policy declared item) (Map.lookup name originals)) (zip names observed)
 
-sample :: Bool -> ([Natural], Bool) -> S.Sample -> Object -> Parser Sample
-sample learnerSource (participation, inFirst) declared fields = do
+sample :: Bool -> ([Natural], Bool) -> String -> S.Sample -> Object -> Parser Sample
+sample learnerSource (participation, inFirst) startPolicy declared fields = do
     let behaviorWords = S.behaviorWords declared
     exact (["sample", "dtype", "proximal", "steps"] ++ ["reference" | learnerSource]) fields
     name <- fields .: "sample"
@@ -78,15 +80,17 @@ sample learnerSource (participation, inFirst) declared fields = do
     referenceWords <- if learnerSource then Just <$> vector (length behaviorWords) fields "reference" else pure Nothing
     entries <- fields .: "steps" :: Parser [Object]
     observed <- traverse entry entries
-    unless (map fst observed == participation) (fail "Probability steps differ from the declared mini-batches of this sample")
+    unless (map (\(position, _, _) -> position) observed == participation) (fail "Probability steps differ from the declared mini-batches of this sample")
     case observed of
-        (0, currentWords) : _ | inFirst -> unless (currentWords == proximalWords) (fail "Proximal words differ from the first step's observation")
+        (0, currentWords, _) : _ | inFirst -> unless (currentWords == proximalWords) (fail "Proximal words differ from the first step's observation")
         _ -> pure ()
-    pure (Sample fields name behaviorWords proximalWords referenceWords (S.engineWords declared) observed)
+    when inFirst $ unless (lookup 0 (map (\(position, _, policy) -> (position, policy)) observed) == Just startPolicy) (fail "The first step does not use the update's starting policy")
+    pure (Sample fields name behaviorWords proximalWords referenceWords (S.engineWords declared) (map (\(position, currentWords, _) -> (position, currentWords)) observed) (map (\(position, _, policy) -> (position, policy)) observed))
   where
     entry item = do
-        exact ["step", "current"] item
-        (,) <$> item .: "step" <*> vector (length (S.behaviorWords declared)) item "current"
+        exact ["step", "current", "policy"] item
+        triple <$> item .: "step" <*> vector (length (S.behaviorWords declared)) item "current" <*> (item .: "policy" >>= Json.identity)
+    triple position currentWords policy = (position, currentWords, policy)
 
 vector :: Int -> Object -> Key -> Parser [Word32]
 vector count fields role = do

@@ -64,7 +64,7 @@ def update(learner, plan):
             exchange.proximal(sample=name, words=proximal[name])
     reference = reference_words(learner, plan)
     trainable = parameters(model)
-    currents, norms, recorded = [], None, None
+    currents, policies, norms, recorded = [], [], None, None
     for step, batch in enumerate(plan.steps):
         optimizer.zero_grad(set_to_none=True)
         surrogate_gradients = tuple(torch.zeros_like(value) for value in trainable)
@@ -75,6 +75,7 @@ def update(learner, plan):
             if step == 0:
                 proximal[name] = observed
             currents.append((step, name, observed))
+            policies.append((step, name, state))
             objective, surrogate = exchange.current(step=step, sample=name, words=observed, state=state)
             cotangents = tensor(objective + surrogate, device=linearized.device).reshape(2, -1)
             consumed.append(observation(words(cotangents.reshape(-1))))
@@ -95,7 +96,7 @@ def update(learner, plan):
     summary = {"gradient_norm": norms[0], "surrogate_gradient_norm": norms[1],
                "active_tokens": sum(value.behavior.numel() for value in plan.trajectories.values()),
                "before": before, "after": state}
-    return Update(summary=summary, gradients=recorded, proximal=proximal, currents=tuple(currents), reference=reference)
+    return Update(summary=summary, gradients=recorded, proximal=proximal, currents=tuple(currents), policies=tuple(policies), reference=reference)
 
 
 def reference_words(learner, plan):

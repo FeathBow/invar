@@ -6,8 +6,12 @@ import Data.Aeson (Value, encode, object, (.=))
 import Data.ByteString qualified as Bytes
 import Data.ByteString.Lazy.Char8 qualified as Lazy
 import Data.Foldable (toList)
+import Data.Map.Strict qualified as Map
+import HistoryInput qualified
+import Invar.History qualified as History
 import Invar.Use qualified as U
 import Invar.Use.Statistics qualified as Statistics
+import NativeCodec qualified
 import Options qualified as O
 import System.Console.GetOpt (OptDescr, usageInfo)
 import System.Exit (die)
@@ -51,7 +55,18 @@ readContract :: O.Fields -> IO U.UseContract
 readContract fields = readInput fields "contract" >>= either die pure . U.decodeContract
 
 observe :: O.Fields -> U.UseContract -> IO U.Observed
-observe fields contract = either die pure (O.required fields "runs") >>= (`UseRuns.observe` contract) >>= either die pure
+observe fields contract = do
+    observed <- either die pure (O.required fields "runs") >>= (`UseRuns.observe` contract) >>= either die pure
+    attachments <- case O.optional fields "history-run" of
+        Nothing -> pure []
+        Just _ -> do
+            let selected = HistoryInput.select "history-" fields
+            decoder <- either die pure (NativeCodec.select selected)
+            (declared, output) <- HistoryInput.load selected
+            admitted <- History.admit decoder declared output
+            either die pure (History.paths admitted)
+    let grouped = Map.toList (Map.fromListWith (++) [(U.Key generation name, [observation]) | (generation, name, observation) <- attachments])
+    either die pure (U.withPaths grouped observed)
 
 readInput :: O.Fields -> String -> IO Bytes.ByteString
 readInput fields name = either die pure (O.required fields name) >>= Bytes.readFile
@@ -82,7 +97,7 @@ statistics contract observed = do
     decimal value = fromRational value :: Double
 
 options :: [OptDescr (String, String)]
-options = O.descriptions [("contract", "Explicit domain, optional measurement and requirements in invar-use-contract JSON"), ("runs", "JSON array of [cohort index, input key, paired-observation argument array, optional array of repeated candidate argument arrays]")]
+options = O.descriptions [("contract", "Explicit domain, optional measurement and requirements in invar-use-contract JSON"), ("runs", "JSON array of [cohort index, input key, paired-observation argument array, optional array of repeated candidate argument arrays]")] ++ O.prefixed "history-" (HistoryInput.inputOptions ++ NativeCodec.options)
 
 usage :: String
-usage = usageInfo "Usage: invar use prepare --declaration FILE --execution FILE --output FILE\n       invar use plan --contract FILE --units N [assumptions]\n       invar use run --contract FILE --execution FILE --output DIRECTORY\n       invar use inspect --contract FILE --runs FILE\n       invar use admit --contract FILE --runs FILE\nprepare, plan and run print one JSON envelope; read its status and problems. Each has its own --help.\ninspect and admit read retained observations and execute no model. Run arguments use compare numerical's input options, without --relation or --budget. Repeated candidate argument arrays use the unprefixed request, binding, log and exit-code options. Paths resolve from the current directory.\nExit zero means the judgment was computed; inspect decision.status for conditional admission, violation or unknown. Declared external reliance is retained, not authenticated." options
+usage = usageInfo "Usage: invar use prepare --declaration FILE --execution FILE --output FILE\n       invar use plan --contract FILE --units N [assumptions]\n       invar use run --contract FILE --execution FILE --output DIRECTORY\n       invar use inspect --contract FILE --runs FILE\n       invar use admit --contract FILE --runs FILE\nprepare, plan and run print one JSON envelope; read its status and problems. Each has its own --help.\ninspect and admit read retained observations and execute no model. Run arguments use compare numerical's input options, without --relation or --budget. Repeated candidate argument arrays use the unprefixed request, binding, log and exit-code options. A training-inference path requirement also reads an admitted training history through the history- options, including --history-run. Paths resolve from the current directory.\nExit zero means the judgment was computed; inspect decision.status for conditional admission, violation or unknown. Declared external reliance is retained, not authenticated." options

@@ -115,7 +115,7 @@ prepare supplied = do
 uncovered :: Measurement.Method -> Value -> [Problem]
 uncovered method document =
     [ Problem "missing-reliance" "declaration:decisions.reliance" ("No reliance is declared for " ++ show kind ++ ", which this contract and execution plan raise")
-    | kind <- Prepare.premisesFor (Prepare.Shape (method <$ quality) (quality >>= standard) (nonempty "numerical") (nonempty "invariance"))
+    | kind <- Prepare.premisesFor (Prepare.Shape (method <$ quality) (quality >>= standard) (nonempty "numerical") (nonempty "invariance") pathsDeclared)
     , show kind `notElem` declared
     ]
   where
@@ -131,6 +131,15 @@ uncovered method document =
     nonempty name = case at ["decisions", "requirements", name] of
         Just (Array values) -> not (null values)
         _ -> False
+    pathsDeclared = case at ["decisions", "requirements", "numerical"] of
+        Just (Array values) -> any pathRelation values
+        _ -> False
+    pathRelation (Object fields) = case Fields.lookup "relation" fields of
+        Just (Object relation) -> case Fields.lookup "kind" relation of
+            Just (String kind) -> Text.isPrefixOf "training-path-" kind
+            _ -> False
+        _ -> False
+    pathRelation _ = False
     declared = case at ["decisions", "reliance"] of
         Just (Array entries) -> [Text.unpack premise | Object entry <- toList entries, Just (String premise) <- [Fields.lookup "premise" entry]]
         _ -> []

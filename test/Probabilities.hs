@@ -40,7 +40,7 @@ fixture :: [Value] -> Value
 fixture = fixtureWith (\_ _ word -> word)
 
 fixtureWith :: (Text.Text -> Text.Text -> Word32 -> Word32) -> [Value] -> Value
-fixtureWith role events = object ["format" .= String "invar-probabilities-v5", "invocation" .= invocation, "request" .= request, "samples" .= map sample ordered]
+fixtureWith role events = object ["format" .= String "invar-probabilities-v6", "invocation" .= invocation, "request" .= request, "samples" .= map sample ordered]
   where
     consumed = events !! 1
     invocation = object ["binding" .= field "binding" consumed, "program" .= field "program" consumed]
@@ -52,7 +52,9 @@ fixtureWith role events = object ["format" .= String "invar-probabilities-v5", "
     behaviors item = decoded (field "behavior_bits" item) :: [Word32]
     current item = map (role "current" (named item)) (behaviors item)
     proximal item = map (role "proximal" (named item)) (behaviors item)
-    sample item = object (["sample" .= field "sample" item, "dtype" .= String "F32", "proximal" .= proximal item] ++ scored item ++ ["steps" .= [object ["step" .= position, "current" .= current item] | (position, batch) <- zip [0 :: Int ..] plan, named item `elem` batch]])
+    sample item = object (["sample" .= field "sample" item, "dtype" .= String "F32", "proximal" .= proximal item] ++ scored item ++ ["steps" .= [object ["step" .= position, "current" .= current item, "policy" .= policyAt position] | (position, batch) <- zip [0 :: Int ..] plan, named item `elem` batch]])
+    policyAt 0 = field "policy" request
+    policyAt _ = field "after" (field "update" (events !! 2))
     scored item = ["reference" .= (decoded (field "reference_bits" item) :: [Word32]) | field "reference_source" request == String "learner"]
 
 decoded :: (FromJSON value) => Value -> value
@@ -135,7 +137,7 @@ ambiguous :: PropertyT IO ()
 ambiguous = do
     configured@(_, events) <- matched
     let encoded = Lazy.toStrict (encode (fixture events))
-    reject configured ("{\"format\":\"invar-probabilities-v5\"," <> Bytes.drop 1 encoded)
+    reject configured ("{\"format\":\"invar-probabilities-v6\"," <> Bytes.drop 1 encoded)
     reject configured (encoded <> " null")
     reject configured (replaceBytes "\"dtype\":\"F32\"" "\"dtype\":\"F32\",\"dtype\":\"F32\"" encoded)
 

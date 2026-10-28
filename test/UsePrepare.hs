@@ -20,6 +20,7 @@ usePrepare =
         [ ("predicted premises equal those an admission relies on", once predicted)
         , ("the basis digest follows the fixed serialization", once basis)
         , ("units follow the domain's aggregation, not the input count", once counted)
+        , ("a training path relation declares path premises", once pathPremises)
         ]
   where
     once = withTests 1 . property
@@ -61,3 +62,10 @@ counted = do
     Prepare.unitCount report === fromIntegral unitTotal
     Prepare.seedsPerUnit report === [(fromIntegral seedTotal, fromIntegral unitTotal)]
     Prepare.candidateExecutions report === 1
+
+pathPremises :: PropertyT IO ()
+pathPremises = do
+    supplied <- F.fixture F.trials
+    base <- contractFor supplied
+    let requested = base {U.criterion = (U.criterion base) {U.numericalRequirements = [U.NumericalRequirement (N.PerTokenLogGapWithin N.Candidate 1) [] "Training path only"]}}
+    assert (all (`elem` Prepare.expectedPremises requested) [U.PathAuthenticity, U.PathBehavior])
