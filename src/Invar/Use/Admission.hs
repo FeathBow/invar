@@ -129,12 +129,16 @@ validTransfer contract transfer =
     current = C.implementation contract (C.transferSide transfer)
 
 validNumerical :: C.NumericalRequirement -> [AdmissionProblem]
-validNumerical requirement = [InvalidContract "numerical requirement rationale" | not (meaningful (C.numericalRationale requirement))] ++ steps
+validNumerical requirement = [InvalidContract "numerical requirement rationale" | not (meaningful (C.numericalRationale requirement))] ++ steps ++ budgets
   where
     selected = C.probeSteps requirement
     steps = case C.relation requirement of
         Numerical.FullVocabularyKLWithin {} -> [InvalidContract "frozen probe steps" | null selected || not (and (zipWith (<) selected (drop 1 selected)))]
         _ -> [InvalidContract "probe steps on a non-distribution requirement" | not (null selected)]
+    budgets = case C.relation requirement of
+        Numerical.PerTokenLogGapWithin _ value -> [InvalidContract "negative path budget" | value < 0]
+        Numerical.TrainingPathLogRatioWithin _ value -> [InvalidContract "negative path budget" | value < 0]
+        _ -> []
 
 validInvariance :: C.InvarianceRequirement -> [AdmissionProblem]
 validInvariance requirement =
@@ -194,14 +198,19 @@ matches contract target supplied = requested ++ domain ++ method ++ implementati
         , Just learnerSide <- [Numerical.pathSide (C.relation requirement)]
         , not (admissiblePath learnerSide (Paths.learner actual) && admissiblePath (otherSide learnerSide) (Paths.engine actual))
         ]
-    admissiblePath side observation = maybe False (samePathImplementation (C.implementation contract side)) (Paths.implementationPolicy observation)
+    admissiblePath side observation = maybe False (admissiblePathFor contract side) (Paths.implementationPolicy observation)
 
 otherSide :: Numerical.Side -> Numerical.Side
 otherSide Numerical.Reference = Numerical.Candidate
 otherSide Numerical.Candidate = Numerical.Reference
 
 samePathImplementation :: Policy.Description -> Policy.Description -> Bool
-samePathImplementation expected actual = and [Policy.model expected == Policy.model actual, Policy.revision expected == Policy.revision actual, Policy.adapter expected == Policy.adapter actual, Policy.tokenizer expected == Policy.tokenizer actual, Policy.base expected == Policy.base actual]
+samePathImplementation expected actual = and [Policy.model expected == Policy.model actual, Policy.revision expected == Policy.revision actual, Policy.tokenizer expected == Policy.tokenizer actual, Policy.base expected == Policy.base actual]
+
+admissiblePathFor :: C.UseContract -> Numerical.Side -> Policy.Description -> Bool
+admissiblePathFor contract side actual = samePathImplementation (C.implementation contract side) actual || any preserved (C.transfers contract)
+  where
+    preserved transfer = C.transferSide transfer == side && samePathImplementation (C.previous transfer) actual
 
 supported :: C.UseContract -> Evidence.Claim -> Either AdmissionProblem ReliedOn
 supported contract (Evidence.External premise) = case C.premiseKind premise of

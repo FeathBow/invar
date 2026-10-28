@@ -438,6 +438,16 @@ trainingPaths = do
     assert (not (null reasons) && all isFindingUnknown reasons)
     missing <- unknown (U.admit within (established within baseObserved))
     assert (not (null missing) && all isFindingUnknown missing)
+    reweighted <- evalEither (Policy.describe (Policy.model policy, Policy.revision policy) (replicate 64 '8', Policy.tokenizer policy, Policy.base policy, Policy.assembly policy))
+    let weightedLearner = learner {P.implementationPolicy = Just reweighted}
+        weightedEngine = engine {P.implementationPolicy = Just reweighted}
+    weightedObserved <- evalEither (U.withPaths [(U.Key 0 name, [P.scoped Nothing weightedLearner weightedEngine]) | name <- ["a1", "a2", "a3", "b1"]] baseObserved)
+    _ <- accepted (U.admit within (established within weightedObserved))
+    let negative = within {U.criterion = (U.criterion within) {U.numericalRequirements = U.NumericalRequirement (N.PerTokenLogGapWithin N.Candidate (-1)) [] "Training path only" : drop 1 (U.numericalRequirements (U.criterion within))}}
+    case U.admit negative (established negative observed) of
+        U.Undetermined problems -> assert (U.InvalidContract "negative path budget" `elem` problems)
+        other -> annotateShow other >> failure
+    assert (isLeft (U.withPaths [(U.Key 9 "unknown", [])] baseObserved))
 
 isFindingUnknown :: U.AdmissionProblem -> Bool
 isFindingUnknown (U.FindingUnknown _) = True

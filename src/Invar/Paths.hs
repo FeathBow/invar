@@ -33,6 +33,7 @@ module Invar.Paths (
     UpdateObservations (..),
     fromUpdate,
     fromSamples,
+    provenanceName,
     measure,
     measureAll,
     judge,
@@ -200,8 +201,13 @@ policyValue :: Policy.Description -> Value
 policyValue policy = object ["model" .= Policy.model policy, "revision" .= Policy.revision policy, "adapter" .= Policy.adapter policy, "tokenizer" .= Policy.tokenizer policy, "base" .= Policy.base policy, "assembly" .= Policy.assembly policy]
 
 provenanceValue :: Provenance -> Value
-provenanceValue (Rollout update name) = object ["kind" .= ("rollout" :: Text), "update" .= update, "sample" .= name]
+provenanceValue (Rollout version name) = object ["kind" .= ("rollout" :: Text), "version" .= version, "sample" .= name]
 provenanceValue (Learner update step name role) = object ["kind" .= ("learner" :: Text), "update" .= update, "step" .= step, "sample" .= name, "role" .= roleText role]
+
+provenanceName :: Observation -> Text
+provenanceName observation = case provenance observation of
+    Rollout _ name -> name
+    Learner _ _ name _ -> name
 
 roleText :: Role -> Text
 roleText Proximal = "proximal"
@@ -228,43 +234,46 @@ fromSamples identity report probabilities = parseEither (withObject "update path
   where
     document samples fields = do
         policy <- fields .: "policy" :: Parser String
+        reference <- fields .: "reference" :: Parser String
         learnerBase <- fields .: "base" :: Parser String
         learnerAssembly <- fields .: "assembly" :: Parser String
         tokenizer <- fields .: "tokenizer" :: Parser String
         learnerPolicy <- either fail pure (Policy.describe identity (policy, tokenizer, learnerBase, learnerAssembly))
+        referenceLearnerPolicy <- either fail pure (Policy.describe identity (reference, tokenizer, learnerBase, learnerAssembly))
         (engineBase, engineAssembly) <- fields .: "behavior_model" >>= withObject "behavior model" (\model -> (,) <$> model .: "base" <*> model .: "assembly") :: Parser (String, String)
         update <- fields .: "schedule" >>= withObject "update schedule" (.: "update") :: Parser Natural
         delivered <- fields .: "samples" :: Parser [Value]
-        observations <- traverse (sample update policy tokenizer learnerPolicy learnerBase learnerAssembly engineBase engineAssembly samples) delivered
+        observations <- traverse (sample update policy reference tokenizer learnerPolicy referenceLearnerPolicy learnerBase learnerAssembly engineBase engineAssembly samples) delivered
         pure (UpdateObservations (concatMap proximalOf observations) (concatMap referencesOf observations) (concatMap currentsOf observations))
       where
         byName = Map.fromList [(Probability.sampleName probability, probability) | probability <- samples]
-        sample update policy tokenizer learnerPolicy learnerBase learnerAssembly engineBase engineAssembly _ = withObject "update path sample" inspect
+        sample update policy reference tokenizer learnerPolicy referenceLearnerPolicy learnerBase learnerAssembly engineBase engineAssembly _ = withObject "update path sample" inspect
           where
             inspect sampleFields = do
                 name <- sampleFields .: "sample" :: Parser Text
+                version <- sampleFields .: "version" :: Parser Natural
                 tokens <- sampleFields .: "tokens" :: Parser [Natural]
                 prefix <- sampleFields .: "prompt_length" :: Parser Natural
                 temperature <- sampleFields .: "temperature" :: Parser Double
+                truncated <- sampleFields .: "truncated" :: Parser Bool
                 behaviorPolicy <- sampleFields .: "behavior_policy" :: Parser String
+                let rule = Rule temperature "processed" (if truncated then "limit" else "none")
                 enginePolicy <- either fail pure (Policy.describe identity (behaviorPolicy, tokenizer, engineBase, engineAssembly))
+                referenceEnginePolicy <- either fail pure (Policy.describe identity (reference, tokenizer, engineBase, engineAssembly))
                 probability <- maybe (fail "Probability sample missing from the admitted update") pure (Map.lookup name byName)
                 let tokenPath = TokenPath (take (fromIntegral prefix) tokens) (drop (fromIntegral prefix) tokens)
-                    learnerImplementation = implementationId "learner" learnerBase learnerAssembly policy
-                    engineImplementation = implementationId "engine" engineBase engineAssembly behaviorPolicy
-                    learner role words32 = Observation (pathId tokenPath) (Rule temperature "processed" "none") (ForwardWeights learnerBase policy) learnerImplementation (Just learnerPolicy) words32 (Learner update 0 name role)
-                    engine words32 = Observation (pathId tokenPath) (Rule temperature "processed" "none") (ForwardWeights engineBase behaviorPolicy) engineImplementation (Just enginePolicy) words32 (Rollout update name)
-                    proximalPair = (learner Proximal (Probability.proximal probability), engine (Probability.behavior probability))
+                    learnerImplementation = implementationId "learner" learnerBase learnerAssembly
+                    engineImplementation = implementationId "engine" engineBase engineAssembly
+                    learner role adapter description words32 = Observation (pathId tokenPath) rule (ForwardWeights learnerBase adapter) learnerImplementation (Just description) words32 (Learner update 0 name role)
+                    engine adapter description words32 = Observation (pathId tokenPath) rule (ForwardWeights engineBase adapter) engineImplementation (Just description) words32 (Rollout version name)
+                    proximalPair = (learner Proximal policy learnerPolicy (Probability.proximal probability), engine behaviorPolicy enginePolicy (Probability.behavior probability))
                     referencePairs = case Probability.reference probability of
                         Nothing -> []
-                        Just words32 -> [(learner Reference words32, engine (Probability.engineReference probability))]
-                    learnerWith step adapter role words32 = do
-                        currentPolicy <- either fail pure (Policy.describe identity (adapter, tokenizer, learnerBase, learnerAssembly))
-                        pure (Observation (pathId tokenPath) (Rule temperature "processed" "none") (ForwardWeights learnerBase adapter) learnerImplementation (Just currentPolicy) words32 (Learner update step name role))
+                        Just words32 -> [(learner Reference reference referenceLearnerPolicy words32, engine reference referenceEnginePolicy (Probability.engineReference probability))]
                     currentPair (step, words32) = do
                         stepPolicy <- maybe (fail "Current step has no declared adapter identity") pure (lookup step (Probability.stepPolicies probability))
-                        current <- learnerWith step stepPolicy Current words32
-                        pure (current, engine (Probability.behavior probability))
+                        currentPolicy <- either fail pure (Policy.describe identity (stepPolicy, tokenizer, learnerBase, learnerAssembly))
+                        pure (learner Current stepPolicy currentPolicy words32, engine behaviorPolicy enginePolicy (Probability.behavior probability))
                 currentPairs <- traverse currentPair (Probability.currents probability)
                 pure (proximalPair, referencePairs, currentPairs)
         proximalOf (pair, _, _) = [pair]
@@ -319,8 +328,8 @@ differenceValue :: Difference -> Value
 differenceValue (Finite value) = object ["kind" .= ("finite" :: Text), "numerator" .= numerator value, "denominator" .= denominator value]
 differenceValue PositiveInfinity = object ["kind" .= ("positive_infinity" :: Text)]
 
-implementationId :: Text -> String -> String -> String -> ImplementationId
-implementationId role base assembly adapter = ImplementationId (SHA256.hash (Canonical.encode (Canonical.Object (Map.fromList [("format", Canonical.Text "invar-path-implementation-v1"), ("role", Canonical.Text role), ("base", text base), ("assembly", text assembly), ("adapter", text adapter)]))))
+implementationId :: Text -> String -> String -> ImplementationId
+implementationId role base assembly = ImplementationId (SHA256.hash (Canonical.encode (Canonical.Object (Map.fromList [("format", Canonical.Text "invar-path-implementation-v1"), ("role", Canonical.Text role), ("base", text base), ("assembly", text assembly)]))))
 
 judge :: Claim -> Observation -> Observation -> Judgement
 judge claim left right

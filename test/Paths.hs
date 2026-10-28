@@ -15,7 +15,7 @@ import Invar.Paths qualified as P
 import Invar.Spec.Evidence qualified as E
 import Invar.Spec.Program qualified as Source
 import Invar.Spec.Value qualified as Value
-import Learning (world)
+import Learning (learnerWorld, world)
 import Probabilities (fixture)
 import Updates (setup, setupFor, wire)
 
@@ -31,6 +31,7 @@ paths =
         , ("a checked correspondence binds both complete forward-weight identities", once correspondence)
         , ("path and forward identities cover their declared contents", once identities)
         , ("an admitted update supplies observations and keeps cross-backend weights incomparable without a correspondence", once fromUpdate)
+        , ("a learner-scored reference names the reference adapter on both sides", once reference)
         , ("a path claim is bound to one observation scope", once scoped)
         , ("a path observation enters the evidence graph with its external premises", once evidence)
         , ("current observations use the adapter identity of their own optimizer step", once currentSteps)
@@ -158,6 +159,17 @@ fromUpdate = do
     checked <- evalEither (P.correspondence (P.forward learner) (P.forward engine))
     P.judge (P.Claim P.SameWords (Just checked)) learner engine === P.Satisfied sameGap
     P.judge (P.Claim P.SameWords Nothing) learner engine === P.Insufficient (P.ForwardDiffer (P.forward learner) (P.forward engine))
+
+reference :: PropertyT IO ()
+reference = do
+    (_, events) <- setupFor learnerWorld
+    report <- evalEither (Report.admit 7 (wire events))
+    observed <- evalEither (P.fromUpdate ("test-model", "test-revision") report (Lazy.toStrict (encode (fixture events))))
+    (learner, engine) <- evalMaybe (listToMaybe (P.references observed))
+    P.forward learner === P.ForwardWeights (replicate 64 'e') (replicate 64 'c')
+    P.forward engine === P.ForwardWeights (replicate 64 '0') (replicate 64 'c')
+    P.provenanceName learner === "s0"
+    P.provenanceName engine === "s0"
 
 scoped :: PropertyT IO ()
 scoped = do

@@ -243,18 +243,31 @@ field :: Key -> Value -> IO Value
 field key = either invalid pure . parseEither (withObject "artifact observation" (.: key))
 
 paths :: Checked -> Either String [(Natural, String, Paths.Observed)]
-paths checked = concat <$> traverse observed (zip [1 ..] (zip (Workload.shapeCycles (workloadOf (trainingRecord checked))) (generationObservations checked)))
+paths checked = concat <$> traverse observed (generationObservations checked)
   where
-    observed (index, ((names, _, _), generation)) = do
-        let samples = [Paths.proximal observations, Paths.currents observations, Paths.references observations]
+    observed generation = do
+        let version = Request.version (Report.checkedRequest (Cohort.update (Generation.cohort (generationTrace generation))))
             observations = generationPaths generation
-        if length names == length (Paths.proximal observations)
-            then pure (concat [[(index - 1, name, Paths.scoped Nothing learner engine) | (learner, engine) <- pairs] | (name, pairs) <- zip names samples])
-            else Left "A generation's path observations do not cover its cohort"
+        names <- cohortAt version
+        let proximalPairs = zip names (Paths.proximal observations)
+            referencePairs = zip names (Paths.references observations)
+            pairs = map snd (proximalPairs ++ referencePairs)
+        unless (length (Paths.proximal observations) == length names) (Left "A generation's path observations do not cover its cohort")
+        unless (null (Paths.references observations) || length (Paths.references observations) == length names) (Left "A generation's reference path observations do not cover its cohort")
+        unless (all (\(learner, engine) -> Paths.provenanceName learner == Paths.provenanceName engine) pairs) (Left "A path observation names different samples")
+        pure [(version, name, Paths.scoped Nothing learner engine) | (name, (learner, engine)) <- proximalPairs ++ referencePairs]
+    cohortAt version = case drop (fromIntegral version) (Workload.shapeCycles (workloadOf (trainingRecord checked))) of
+        (names, _, _) : _ -> Right names
+        [] -> Left "The admitted history has no workload cohort for a generation's samples"
 
 rollouts :: Checked -> Natural -> Either String [(String, Inference.Report)]
-rollouts checked index = case drop (fromIntegral index - 1) (zip (Workload.shapeCycles (workloadOf (trainingRecord checked))) (generationObservations checked)) of
-    ((names, _, _), generation) : _ | index >= 1 -> Right (zip names (Cohort.inferences (Generation.cohort (generationTrace generation))))
+rollouts checked index = case drop (fromIntegral index - 1) (generationObservations checked) of
+    generation : _ | index >= 1 -> do
+        let version = Request.version (Report.checkedRequest (Cohort.update (Generation.cohort (generationTrace generation))))
+        names <- case drop (fromIntegral version) (Workload.shapeCycles (workloadOf (trainingRecord checked))) of
+            (values, _, _) : _ -> Right values
+            [] -> Left "The admitted history has no workload cohort for its samples"
+        pure (zip names (Cohort.inferences (Generation.cohort (generationTrace generation))))
     _ -> Left "The admitted history has no such generation"
 
 describe :: Checked -> Value

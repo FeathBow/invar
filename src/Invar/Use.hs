@@ -89,7 +89,9 @@ withPaths attachments observed = do
         supplied = map fst attachments
         admitted = filter ((`elem` known) . fst) attachments
     unless (length (nub supplied) == length supplied) (Left "A training path observation names an input twice")
-    pure (U.Observed selected unitValues admitted)
+    case filter ((`notElem` known) . fst) attachments of
+        (key, _) : _ -> Left ("A training path observation names an unknown input: " ++ show key)
+        [] -> pure (U.Observed selected unitValues admitted)
 
 describeFinding :: Finding -> Value
 describeFinding (Finding target _ result _) =

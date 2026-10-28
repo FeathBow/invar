@@ -54,7 +54,7 @@ fixtureWith role events = object ["format" .= String "invar-probabilities-v6", "
     proximal item = map (role "proximal" (named item)) (behaviors item)
     sample item = object (["sample" .= field "sample" item, "dtype" .= String "F32", "proximal" .= proximal item] ++ scored item ++ ["steps" .= [object ["step" .= position, "current" .= current item, "policy" .= policyAt position] | (position, batch) <- zip [0 :: Int ..] plan, named item `elem` batch]])
     policyAt 0 = field "policy" request
-    policyAt _ = field "after" (field "update" (events !! 2))
+    policyAt position = String (Text.pack (replicate 64 (case show position of digit : _ -> digit; [] -> '0')))
     scored item = ["reference" .= (decoded (field "reference_bits" item) :: [Word32]) | field "reference_source" request == String "learner"]
 
 decoded :: (FromJSON value) => Value -> value
@@ -186,3 +186,7 @@ laterStep = do
     accepted <- observed root configured (Lazy.toStrict (encode (fixture events)))
     evalIO (Worker.verifyProbabilities root accepted) >>= (=== Right ())
     reject configured (Lazy.toStrict (encode later))
+    let wrongPolicy = change "samples" (toJSON (map wrongPolicies (array (field "samples" (fixture events))))) (fixture events)
+        wrongPolicies sample = change "steps" (toJSON (map wrongStep (array (field "steps" sample)))) sample
+        wrongStep step = if decoded (field "step" step) == (1 :: Int) then change "policy" (String (Text.replicate 64 "9")) step else step
+    reject configured (Lazy.toStrict (encode wrongPolicy))

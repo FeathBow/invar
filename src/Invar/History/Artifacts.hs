@@ -48,6 +48,9 @@ successor (decoder, schema) (expected, generation) published = do
     (gradients, gradient) <- Gradient.observe parameters (report, path </> "gradients.safetensors")
     probabilities <- Observation.probability report (path </> "probabilities.json")
     either invalid pure (reported generation probabilities)
+    applied <- either invalid pure (Generation.applied generation)
+    let recorded = Map.fromList applied
+    unless (all (\(position, policy) -> Map.lookup position recorded == Just policy) [(position, policy) | sample <- probabilities, (position, policy) <- Probability.stepPolicies sample]) (invalid "Probability step policies differ from the applied steps")
     inference <- case Cohort.inferences (Generation.cohort generation) of
         first : _ -> pure first
         [] -> invalid "A generation has no admitted inference for its model identity"

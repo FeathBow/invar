@@ -238,7 +238,7 @@ class OverlapTests(unittest.TestCase):
         self.assertFalse(second["gradients"]["equal"])
 
     def test_a_training_path_contract_reads_the_run_history(self):
-        _, output = self.train("pathcontract", 1, staleness=0)
+        _, output = self.train("pathcontract", 1, staleness=0, steps=2, **{"reference-source": "learner"})
         final = output / "generation1"
         described = core.invoke(["policy", "inspect", "--checkpoint", self.settings["checkpoint"]], executable=CORE)
         adapter = described["adapter"]

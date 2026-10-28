@@ -13,6 +13,7 @@ import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Word (Word32)
+import Invar.Async.Completion qualified as Completion
 import Invar.Float32 qualified as Float32
 import Invar.Infer.Wire qualified as Binding
 import Invar.Json qualified as Json
@@ -32,6 +33,8 @@ validate expected encoded = do
     when (S.sourceOf streamed == S.FromLearner) $
         unless (Map.fromList [(sampleName entry, reported) | entry <- observed, Just reported <- [reference entry]] == S.referencesOf streamed) (Left "Probability artifact reference words differ from the reported steps")
     unless (sortOn (\(position, name, _) -> (position, name)) [(position, sampleName entry, words32) | entry <- observed, (position, words32) <- currents entry] == sortOn (\(position, name, _) -> (position, name)) (S.currents streamed)) (Left "Probability artifact current words differ from the reported steps")
+    let applied = Map.fromList [(Completion.step completion, Completion.before completion) | completion <- S.completions streamed]
+    unless (all (\(position, policy) -> Map.lookup position applied == Just policy) [(position, policy) | entry <- observed, (position, policy) <- stepPolicies entry]) (Left "Probability artifact step policies differ from the applied steps")
 
 data Sample = Sample {sampleObject :: Object, sampleName :: Text, behavior :: [Word32], proximal :: [Word32], reference :: Maybe [Word32], engineReference :: [Word32], currents :: [(Natural, [Word32])], stepPolicies :: [(Natural, String)]}
 

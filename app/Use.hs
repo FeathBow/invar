@@ -57,14 +57,16 @@ readContract fields = readInput fields "contract" >>= either die pure . U.decode
 observe :: O.Fields -> U.UseContract -> IO U.Observed
 observe fields contract = do
     observed <- either die pure (O.required fields "runs") >>= (`UseRuns.observe` contract) >>= either die pure
-    attachments <- case O.optional fields "history-run" of
-        Nothing -> pure []
-        Just _ -> do
-            let selected = HistoryInput.select "history-" fields
-            decoder <- either die pure (NativeCodec.select selected)
-            (declared, output) <- HistoryInput.load selected
-            admitted <- History.admit decoder declared output
-            either die pure (History.paths admitted)
+    let requested = any (`Map.member` fields) ["history-run", "history-log"]
+    attachments <-
+        if not requested
+            then pure []
+            else do
+                let selected = HistoryInput.select "history-" fields
+                decoder <- either die pure (NativeCodec.select selected)
+                (declared, output) <- HistoryInput.load selected
+                admitted <- History.admit decoder declared output
+                either die pure (History.paths admitted)
     let grouped = Map.toList (Map.fromListWith (++) [(U.Key generation name, [observation]) | (generation, name, observation) <- attachments])
     either die pure (U.withPaths grouped observed)
 

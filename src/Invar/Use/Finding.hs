@@ -1,6 +1,6 @@
 {-# LANGUAGE Safe #-}
 
-module Invar.Use.Finding (Finding (..), establish, finding, goal, goalClaim, lossClaims) where
+module Invar.Use.Finding (Finding (..), establish, finding, goalClaim, lossClaims) where
 
 import Data.Foldable (toList)
 import Data.Map.Strict qualified as Map
@@ -44,9 +44,6 @@ establish target observed = Finding target (goalClaim target observed) (Evidence
 
 finding :: Finding -> Evidence.Verdict
 finding (Finding _ _ result _) = result
-
-goal :: Finding -> Evidence.Claim
-goal (Finding _ expected _ _) = expected
 
 goalClaim :: U.Claim -> U.Observed -> Evidence.Claim
 goalClaim (U.Required selected criterion) observed = Evidence.All (requirements selected criterion attachments)
