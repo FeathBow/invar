@@ -14,9 +14,11 @@ import Data.List.NonEmpty qualified as NonEmpty
 import Data.Ratio ((%))
 import Data.Text qualified as Text
 import Data.Word (Word32)
+import GHC.Float (castFloatToWord32)
 import Hedgehog
 import Invar.Infer qualified as Infer
 import Invar.Numerical qualified as N
+import Invar.Paths qualified as P
 import Invar.Policy qualified as Policy
 import Invar.Spec.Evidence qualified as E
 import Invar.Use qualified as U
@@ -41,6 +43,7 @@ useAdmission =
         , ("a diverging repeat refutes invariance with that pair as the witness", once divergentRepeat)
         , ("invariance contracts need enough executions, exact relations and declared schedule variation", once invarianceContract)
         , ("a declared transfer carries evidence only under a relied-on preservation premise", once transfer)
+        , ("a training path requirement is admitted within its per-token budget and violated outside it", once trainingPaths)
         ]
   where
     once = withTests 1 . property
@@ -236,6 +239,9 @@ encoding = do
             [N.SameTokens, N.SameBehaviorBits, N.SameTermination, N.PrefixLogRatioWithin (1 % 7), N.PathLogRatioWithin (1 % 9), N.ModelSubstitution]
                 ++ [N.ScoredPathLogRatioWithin side (1 % 11) | side <- [N.Reference, N.Candidate]]
                 ++ [N.FullVocabularyKLWithin side direction (1 % 13) | side <- [N.Reference, N.Candidate], direction <- [N.ReferenceToCandidate, N.CandidateToReference]]
+                ++ [N.SamePathWords side | side <- [N.Reference, N.Candidate]]
+                ++ [N.PerTokenLogGapWithin side (1 % 15) | side <- [N.Reference, N.Candidate]]
+                ++ [N.TrainingPathLogRatioWithin side (1 % 17) | side <- [N.Reference, N.Candidate]]
         criterion = (U.criterion contract) {U.numericalRequirements = U.NumericalRequirement N.SameTermination [] "Fixture" : [U.NumericalRequirement relation [0, 4] "Codec fixture only" | relation <- relations], U.invarianceRequirements = [U.InvarianceRequirement relation 3 "Codec fixture only" | relation <- [N.SameBehaviorBits, N.SameTokens, N.SameTermination]]}
         obligation = E.Obligation "unproved" (Bytes.pack [0, 255]) "observation" "domain" "binding"
         standards = [U.FiniteDomain, U.HoeffdingPopulation population, U.EmpiricalBernsteinPopulation population, U.ConditionalDerivation [obligation]]
@@ -371,6 +377,7 @@ transfer = do
         narrower = carried {U.criterion = (U.criterion carried) {U.numericalRequirements = []}}
     otherAdmission <- accepted (admitting narrower)
     assert (all (`notElem` preserved otherAdmission) (preserved admitted))
+
     length (U.conditions admitted) === 59
     U.admissionScope admitted === U.scope observed
     uncovered <- unknown (admitting carried {U.reliance = filter ((/= U.ImplementationPreservation) . U.premise) (U.reliance carried)})
@@ -405,3 +412,43 @@ transfer = do
     isInvalid _ = False
     object' (Object fields) = fields
     object' _ = KeyMap.empty
+
+trainingPaths :: PropertyT IO ()
+trainingPaths = do
+    supplied <- F.fixture F.trials
+    contract <- contractFor supplied
+    baseObserved <- evalEither (U.observe supplied)
+    let policy = U.candidateImplementation contract
+        forward = P.ForwardWeights (replicate 64 '1') (replicate 64 '2')
+        tokenPath = P.pathId (P.TokenPath [10] [20, 21])
+        rule = P.Rule 0.8 "processed" "none"
+        learner = P.Observation tokenPath rule forward (P.ImplementationId "learner") (Just policy) (map castFloatToWord32 [-1, -2]) (P.Learner 0 0 "a1" P.Proximal)
+        engine = P.Observation tokenPath rule forward (P.ImplementationId "engine") (Just policy) (map castFloatToWord32 [-1, -1.5]) (P.Rollout 0 "a1")
+    observed <- evalEither (U.withPaths [(U.Key 0 name, [P.scoped Nothing learner engine]) | name <- ["a1", "a2", "a3", "b1"]] baseObserved)
+    let within = contract {U.criterion = (U.criterion contract) {U.numericalRequirements = U.NumericalRequirement (N.PerTokenLogGapWithin N.Candidate (1 % 2)) [] "Training path only" : U.numericalRequirements (U.criterion contract)}}
+    admitted <- accepted (U.admit within (established within observed))
+    assert (E.PathObservation `elem` E.methods (U.evidence admitted))
+    let outside = within {U.criterion = (U.criterion within) {U.numericalRequirements = U.NumericalRequirement (N.PerTokenLogGapWithin N.Candidate (1 % 4)) [] "Training path only" : drop 1 (U.numericalRequirements (U.criterion within))}}
+    case U.admit outside (established outside observed) of
+        U.Rejected _ -> success
+        other -> annotateShow other >> failure
+    let otherEngine = engine {P.forward = P.ForwardWeights (replicate 64 '9') (replicate 64 '2')}
+    otherObserved <- evalEither (U.withPaths [(U.Key 0 "a1", [P.scoped Nothing learner otherEngine])] baseObserved)
+    reasons <- unknown (U.admit within (established within otherObserved))
+    assert (not (null reasons) && all isFindingUnknown reasons)
+    missing <- unknown (U.admit within (established within baseObserved))
+    assert (not (null missing) && all isFindingUnknown missing)
+    reweighted <- evalEither (Policy.describe (Policy.model policy, Policy.revision policy) (replicate 64 '8', Policy.tokenizer policy, Policy.base policy, Policy.assembly policy))
+    let weightedLearner = learner {P.implementationPolicy = Just reweighted}
+        weightedEngine = engine {P.implementationPolicy = Just reweighted}
+    weightedObserved <- evalEither (U.withPaths [(U.Key 0 name, [P.scoped Nothing weightedLearner weightedEngine]) | name <- ["a1", "a2", "a3", "b1"]] baseObserved)
+    _ <- accepted (U.admit within (established within weightedObserved))
+    let negative = within {U.criterion = (U.criterion within) {U.numericalRequirements = U.NumericalRequirement (N.PerTokenLogGapWithin N.Candidate (-1)) [] "Training path only" : drop 1 (U.numericalRequirements (U.criterion within))}}
+    case U.admit negative (established negative observed) of
+        U.Undetermined problems -> assert (U.InvalidContract "negative path budget" `elem` problems)
+        other -> annotateShow other >> failure
+    assert (isLeft (U.withPaths [(U.Key 9 "unknown", [])] baseObserved))
+
+isFindingUnknown :: U.AdmissionProblem -> Bool
+isFindingUnknown (U.FindingUnknown _) = True
+isFindingUnknown _ = False

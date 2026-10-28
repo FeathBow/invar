@@ -32,6 +32,7 @@ module Invar.Use (
     ReliedOn (..),
     Finding,
     observe,
+    withPaths,
     establish,
     finding,
     admit,
@@ -57,12 +58,16 @@ module Invar.Use (
     lossClaims,
 ) where
 
+import Control.Monad (unless)
 import Data.Aeson (Value, object, (.=))
+import Data.Foldable (toList)
+import Data.List (nub)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Ratio (denominator, numerator)
 import Invar.Artifact qualified as Artifact
 import Invar.Evidence.Encoding qualified as EvidenceEncoding
 import Invar.Numerical qualified as Numerical
+import Invar.Paths qualified as Paths
 import Invar.Spec.Domain (Domain (..), Input (..))
 import Invar.Spec.Evidence qualified as Evidence
 import Invar.Spec.Measurement qualified as Measurement
@@ -76,8 +81,20 @@ import Invar.Use.Encoding qualified as Encoding
 import Invar.Use.Finding (Finding (..), establish, finding, lossClaims)
 import Invar.Use.Observation (BoundRun (..), Case (..), ObservationError (..), observe)
 
+withPaths :: [(U.Key, [Paths.Observed])] -> U.Observed -> Either String U.Observed
+withPaths attachments observed = do
+    let U.Observed selected unitValues _ = observed
+        U.Scope _ _ _ samples = selected
+        known = map U.key (toList samples)
+        supplied = map fst attachments
+        admitted = filter ((`elem` known) . fst) attachments
+    unless (length (nub supplied) == length supplied) (Left "A training path observation names an input twice")
+    case filter ((`notElem` known) . fst) attachments of
+        (key, _) : _ -> Left ("A training path observation names an unknown input: " ++ show key)
+        [] -> pure (U.Observed selected unitValues admitted)
+
 describeFinding :: Finding -> Value
-describeFinding (Finding target result) =
+describeFinding (Finding target _ result _) =
     object
         ( [ "scope_sha256" .= Artifact.hex identity
           , "use_admission" .= ("not_evaluated" :: String)
@@ -96,6 +113,7 @@ describeFinding (Finding target result) =
 witnessValue :: Evidence.Witness -> Value
 witnessValue (Evidence.TaskLossWitness observed) = describe observed
 witnessValue (Evidence.NumericalWitness observed) = Numerical.describe observed
+witnessValue (Evidence.PathWitness observed) = Paths.describeObserved observed
 witnessValue (Evidence.OutputWitness _ _) = object ["kind" .= ("output_bytes" :: String)]
 
 describeDecision :: Decision -> Value
@@ -140,10 +158,12 @@ describe observed =
         , "loss_increase" .= fmap rational (mean LossIncrease observed)
         , "units" .= fmap unitValue (units observed)
         , "samples" .= fmap sampleValue samples
+        , "training_paths" .= [object ["cohort" .= cohort, "task" .= task, "observations" .= map Paths.describeObserved observations] | (U.Key cohort task, observations) <- attachments]
         , "unestablished" .= (["measurement meaning and parameter validity", "independent sampling", "schedule variation between repeated executions", "population guarantee", "use admission"] :: [String])
         ]
   where
     U.Scope (U.ScopeId identity) document measured samples = scope observed
+    U.Observed _ _ attachments = observed
 
 unitValue :: Unit -> Value
 unitValue unit = object ["unit" .= unitName unit, "members" .= fmap keyValue (members unit), "reference_loss" .= fmap rational (referenceLoss unit), "candidate_loss" .= fmap rational (candidateLoss unit)]

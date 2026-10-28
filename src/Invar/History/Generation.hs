@@ -1,9 +1,11 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.History.Generation (Generation, Publication (..), generation, cohort, publication, diagnostics, stepOutputs, profiles, describe) where
+module Invar.History.Generation (Generation, Publication (..), generation, cohort, publication, diagnostics, stepOutputs, applied, profiles, describe) where
 
 import Control.Monad (unless)
-import Data.Aeson (Value (..), object, toJSON, (.=))
+import Data.Aeson (Value (..), object, toJSON, withObject, (.:), (.=))
+import Data.Aeson.KeyMap qualified as Fields
+import Data.Aeson.Types (parseEither)
 import Data.ByteString (ByteString)
 import Invar.History.Cohort qualified as Cohort
 import Invar.History.Profile qualified as Profile
@@ -14,6 +16,7 @@ import Invar.Learn.Request qualified as Request
 import Invar.Learn.Step qualified as Step
 import Invar.Learn.Trace qualified as Trace
 import Invar.Resident.Group qualified as Group
+import Numeric.Natural (Natural)
 import System.FilePath ((</>))
 
 data Publication = Publication {directory :: FilePath, method :: String}
@@ -40,6 +43,11 @@ diagnostics (Generation _ _ learned context _ _) = map (Object . Framing.fields)
 
 stepOutputs :: Generation -> [ByteString]
 stepOutputs (Generation _ _ learned _ _ _) = [Framing.raw record | record <- learned, Framing.stageName record `elem` map (Just . String) Step.reports]
+
+applied :: Generation -> Either String [(Natural, String)]
+applied (Generation _ _ learned context _ _) = traverse record [fields | Object fields <- map (Object . Framing.fields) (learned ++ context), Fields.lookup "stage" fields == Just (String "applied")]
+  where
+    record fields = (,) <$> parseEither (withObject "applied step" (.: "step")) (Object fields) <*> parseEither (withObject "applied step" (.: "before")) (Object fields)
 
 profiles :: Generation -> [Profile.Observation]
 profiles (Generation _ _ _ _ _ observations) = observations

@@ -52,7 +52,7 @@ def update(learner, plan, *, linearize):
         current = response(model, plan.trajectories[name], evaluate=learner.evaluate, linearize=linearize)[0]
         proximal[name] = probability.words(current)
         exchange.proximal(sample=name, words=proximal[name])
-    currents, norms, recorded = [], None, None
+    currents, policies, norms, recorded = [], [], None, None
     for step, batch in enumerate(plan.steps):
         parameters = adapter(model)
         accumulated = {role: {name: mx.zeros_like(value) for name, value in parameters.items()}
@@ -64,6 +64,7 @@ def update(learner, plan, *, linearize):
             if step == 0:
                 proximal[name] = observed
             currents.append((step, name, observed))
+            policies.append((step, name, state))
             objective, surrogate = exchange.current(step=step, sample=name, words=observed, state=state)
             cotangents = (("objective", probability.tensor(objective)), ("surrogate", probability.tensor(surrogate)))
             consumed.append(observation(tuple(word for _, value in cotangents for word in probability.words(value))))
@@ -89,4 +90,4 @@ def update(learner, plan, *, linearize):
     summary = {"gradient_norm": norms[0], "surrogate_gradient_norm": norms[1],
                "active_tokens": sum(item.behavior.size for item in plan.trajectories.values()),
                "before": before, "after": state}
-    return Update(summary=summary, gradients=recorded, proximal=proximal, currents=tuple(currents))
+    return Update(summary=summary, gradients=recorded, proximal=proximal, currents=tuple(currents), policies=tuple(policies))

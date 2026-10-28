@@ -34,6 +34,7 @@ import Data.Map.Strict qualified as Map
 import Data.Maybe (isNothing)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as Text
+import Invar.Paths qualified as Paths
 import Invar.Spec.Domain (Key (..))
 import Invar.Spec.Domain qualified as Domain
 import Invar.Spec.Measurement qualified as Measurement
@@ -68,7 +69,7 @@ data Unit = Unit
     }
     deriving (Eq, Show)
 
-data Observed = Observed Scope (NonEmpty Unit)
+data Observed = Observed Scope (NonEmpty Unit) [(Key, [Paths.Observed])]
     deriving (Eq, Show)
 
 data Metric = ReferenceLoss | CandidateLoss | LossIncrease
@@ -159,13 +160,13 @@ populationClaim (EmpiricalBernsteinClaim selected population metric budget) = Ju
 populationClaim _ = Nothing
 
 scope :: Observed -> Scope
-scope (Observed value _) = value
+scope (Observed value _ _) = value
 
 scopeId :: Scope -> ScopeId
 scopeId (Scope value _ _ _) = value
 
 units :: Observed -> NonEmpty Unit
-units (Observed _ values) = values
+units (Observed _ values _) = values
 
 mean :: Metric -> Observed -> Maybe Rational
 mean metric observed = do

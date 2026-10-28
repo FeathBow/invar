@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.History (Declaration (..), Training (..), Log (..), Profiles (..), Checked, admit, compare, describe, rollouts) where
+module Invar.History (Declaration (..), Training (..), Log (..), Profiles (..), Checked, admit, compare, describe, rollouts, paths) where
 
 import Control.Monad (unless)
 import Data.Aeson (Value (..), object, withObject, (.:), (.=))
@@ -38,6 +38,7 @@ import Invar.Learn.State qualified as State
 import Invar.Learn.Stream qualified as S
 import Invar.Learn.Worker qualified as W
 import Invar.Loop qualified as Loop
+import Invar.Paths qualified as Paths
 import Invar.Policy qualified as Policy
 import Invar.Policy.File qualified as File
 import Invar.Resident qualified as Resident
@@ -80,7 +81,7 @@ data Source = FromLog Log Trace.Checked | FromRun Runtime.Checked
 data Arrangement = Arrangement {sessionCount :: Natural, inferenceRun :: Trace.Mode, learningRun :: Trace.Mode, dispatch :: [([Natural], [Natural])], finalCall :: V.Binding}
     deriving (Eq)
 
-data Generation = Generation {generationTrace :: Generation.Generation, generationArtifacts :: Value, generationState :: State.Observed, generationGradients :: Gradient.Observed}
+data Generation = Generation {generationTrace :: Generation.Generation, generationArtifacts :: Value, generationState :: State.Observed, generationGradients :: Gradient.Observed, generationPaths :: Paths.UpdateObservations}
 
 admit :: Decoder -> Declaration -> ByteString -> IO Checked
 admit decoder declared finalOutput = do
@@ -111,10 +112,10 @@ admit decoder declared finalOutput = do
   where
     generation (schema, expectedRng) (expected, selected) = do
         published <- Publication.observe selected
-        (observed, state, gradients) <- Artifacts.successor (decoder, schema) (expected, selected) published
+        (observed, state, gradients, observations) <- Artifacts.successor (decoder, schema) (expected, selected) published
         actualRng <- either invalid pure (rng observed)
         unless (actualRng == expectedRng) (invalid "Successor RNG vector inventory differs from the complete initial state")
-        pure (Generation selected observed state gradients)
+        pure (Generation selected observed state gradients observations)
 
 settingsOf :: Source -> Learn.Settings
 settingsOf (FromLog logged _) = Trace.settings (trainingRun logged)
@@ -241,9 +242,32 @@ decision = either invalid pure . parseEither (withObject "comparison decision" (
 field :: Key -> Value -> IO Value
 field key = either invalid pure . parseEither (withObject "artifact observation" (.: key))
 
+paths :: Checked -> Either String [(Natural, String, Paths.Observed)]
+paths checked = concat <$> traverse observed (generationObservations checked)
+  where
+    observed generation = do
+        let version = Request.version (Report.checkedRequest (Cohort.update (Generation.cohort (generationTrace generation))))
+            observations = generationPaths generation
+        names <- cohortAt version
+        let proximalPairs = zip names (Paths.proximal observations)
+            referencePairs = zip names (Paths.references observations)
+            pairs = map snd (proximalPairs ++ referencePairs)
+        unless (length (Paths.proximal observations) == length names) (Left "A generation's path observations do not cover its cohort")
+        unless (null (Paths.references observations) || length (Paths.references observations) == length names) (Left "A generation's reference path observations do not cover its cohort")
+        unless (all (\(learner, engine) -> Paths.provenanceName learner == Paths.provenanceName engine) pairs) (Left "A path observation names different samples")
+        pure [(version, name, Paths.scoped Nothing learner engine) | (name, (learner, engine)) <- proximalPairs ++ referencePairs]
+    cohortAt version = case drop (fromIntegral version) (Workload.shapeCycles (workloadOf (trainingRecord checked))) of
+        (names, _, _) : _ -> Right names
+        [] -> Left "The admitted history has no workload cohort for a generation's samples"
+
 rollouts :: Checked -> Natural -> Either String [(String, Inference.Report)]
-rollouts checked index = case drop (fromIntegral index - 1) (zip (Workload.shapeCycles (workloadOf (trainingRecord checked))) (generationObservations checked)) of
-    ((names, _, _), generation) : _ | index >= 1 -> Right (zip names (Cohort.inferences (Generation.cohort (generationTrace generation))))
+rollouts checked index = case drop (fromIntegral index - 1) (generationObservations checked) of
+    generation : _ | index >= 1 -> do
+        let version = Request.version (Report.checkedRequest (Cohort.update (Generation.cohort (generationTrace generation))))
+        names <- case drop (fromIntegral version) (Workload.shapeCycles (workloadOf (trainingRecord checked))) of
+            (values, _, _) : _ -> Right values
+            [] -> Left "The admitted history has no workload cohort for its samples"
+        pure (zip names (Cohort.inferences (Generation.cohort (generationTrace generation))))
     _ -> Left "The admitted history has no such generation"
 
 describe :: Checked -> Value

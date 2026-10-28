@@ -1,26 +1,27 @@
 {-# LANGUAGE Safe #-}
 
-module Invar.Use.Finding (Finding (..), establish, finding, goal, lossClaims) where
+module Invar.Use.Finding (Finding (..), establish, finding, goalClaim, lossClaims) where
 
 import Data.Foldable (toList)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (mapMaybe)
+import Invar.Paths qualified as Paths
 import Invar.Spec.Evidence qualified as Evidence
 import Invar.Spec.Numerical qualified as Numerical
 import Invar.Spec.Use qualified as U
 import Invar.Spec.UseContract qualified as Contract
 
-data Finding = Finding U.Claim Evidence.Verdict
+data Finding = Finding U.Claim Evidence.Claim Evidence.Verdict U.Observed
     deriving (Eq, Show)
 
 establish :: U.Claim -> U.Observed -> Finding
-establish target observed = Finding target (Evidence.check graph root)
+establish target observed = Finding target (goalClaim target observed) (Evidence.check graph root) observed
   where
     root = Evidence.EvidenceId 0
     graph = case target of
         U.Required selected criterion
             | selected == U.scope observed ->
-                let targets = requirements selected criterion
+                let targets = requirements selected criterion attachments
                     indexed = zip (map Evidence.EvidenceId [1 ..]) targets
                     dependencies = map fst indexed
                     parent = Evidence.Node (Evidence.All targets) (Evidence.Conjoin dependencies)
@@ -31,29 +32,39 @@ establish target observed = Finding target (Evidence.check graph root)
         Evidence.Numerical (Numerical.Claim expected _) -> do
             actual <- Map.lookup (scopeBytes (Numerical.scopeId expected)) numericalByScope
             pure (identity, Evidence.Node claim (Evidence.Observe actual))
+        Evidence.Paths (Paths.ScopedClaim expected _) -> do
+            actual <- Map.lookup expected pathByScope
+            pure (identity, Evidence.Node claim (Evidence.ObservePaths actual))
         _ -> Nothing
     U.Scope _ _ _ samples = U.scope observed
+    U.Observed _ _ attachments = observed
     numericalByScope = Map.fromList [(scopeBytes (Numerical.scopeId (Numerical.scope actual)), actual) | sample <- toList samples, actual <- U.numerical sample : U.invariance sample]
+    pathByScope = Map.fromList [(Paths.scope actual, actual) | (_, observations) <- attachments, actual <- observations]
     scopeBytes (Numerical.ScopeId bytes) = bytes
 
 finding :: Finding -> Evidence.Verdict
-finding (Finding _ result) = result
+finding (Finding _ _ result _) = result
 
-goal :: U.Claim -> Evidence.Claim
-goal (U.Required selected criterion) = Evidence.All (requirements selected criterion)
-goal target = Evidence.TaskLoss target
+goalClaim :: U.Claim -> U.Observed -> Evidence.Claim
+goalClaim (U.Required selected criterion) observed = Evidence.All (requirements selected criterion attachments)
+  where
+    U.Observed _ _ attachments = observed
+goalClaim target _ = Evidence.TaskLoss target
 
-requirements :: U.Scope -> Contract.Criterion -> [Evidence.Claim]
-requirements selected criterion = case Contract.lossRequirement criterion of
+requirements :: U.Scope -> Contract.Criterion -> [(U.Key, [Paths.Observed])] -> [Evidence.Claim]
+requirements selected criterion attachments = case Contract.lossRequirement criterion of
     Just required | Contract.ConditionalDerivation _ <- Contract.standard required -> [Evidence.TaskLoss (U.Required selected criterion)]
-    _ -> map Evidence.TaskLoss (lossClaims selected criterion) ++ numerical ++ invariance
+    _ -> map Evidence.TaskLoss (lossClaims selected criterion) ++ concatMap numerical samples ++ invariance
   where
     U.Scope _ _ _ samples = selected
-    numerical =
-        [ Evidence.Numerical (Numerical.Claim (Numerical.scope (U.numerical sample)) (Contract.relation requirement))
-        | sample <- toList samples
-        , requirement <- toList (Contract.numericalRequirements criterion)
-        ]
+    numerical sample = concatMap (forSample sample) (Contract.numericalRequirements criterion)
+    forSample sample requirement = case (Numerical.pathRelation (Contract.relation requirement), Numerical.pathSide (Contract.relation requirement)) of
+        (Just relation, Just _) ->
+            let candidates = [actual | (key, observations) <- attachments, key == U.key sample, actual <- observations]
+             in case candidates of
+                    [] -> [Evidence.Paths (Paths.ScopedClaim (Paths.missingScope (U.key sample) relation) relation)]
+                    _ -> [Evidence.Paths (Paths.ScopedClaim (Paths.scope actual) relation) | actual <- candidates]
+        _ -> [Evidence.Numerical (Numerical.Claim (Numerical.scope (U.numerical sample)) (Contract.relation requirement))]
     invariance =
         [ Evidence.Numerical (Numerical.Claim (Numerical.scope repeated) (Contract.invariant requirement))
         | sample <- toList samples

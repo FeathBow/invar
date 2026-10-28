@@ -122,10 +122,16 @@ parseRelation = withObject "numerical relation" $ \fields -> do
             side <- fields .: "path" >>= named [("reference", N.Reference), ("candidate", N.Candidate)]
             direction <- fields .: "direction" >>= named [("reference-candidate", N.ReferenceToCandidate), ("candidate-reference", N.CandidateToReference)]
             N.FullVocabularyKLWithin side direction <$> (fields .: "budget" >>= parseRational)
+        "training-path-words" -> pathExact N.SamePathWords fields
+        "training-path-token-log-gap" -> pathBounded N.PerTokenLogGapWithin fields
+        "training-path-log-ratio" -> pathBounded N.TrainingPathLogRatioWithin fields
         _ -> fail "Unknown numerical relation"
   where
     exact relation fields = Json.fields ["kind"] fields >> pure relation
     bounded relation fields = Json.fields ["kind", "budget"] fields >> relation <$> (fields .: "budget" >>= parseRational)
+    pathExact relation fields = Json.fields ["kind", "learner"] fields >> relation <$> learnerValue fields
+    pathBounded relation fields = Json.fields ["kind", "learner", "budget"] fields >> relation <$> learnerValue fields <*> (fields .: "budget" >>= parseRational)
+    learnerValue fields = fields .: "learner" >>= named [("reference", N.Reference), ("candidate", N.Candidate)]
 
 parseStandard :: Value -> Parser C.Standard
 parseStandard = withObject "evidence standard" $ \fields -> do
@@ -244,9 +250,14 @@ relationValue relation = case relation of
             , "path" .= String (case side of N.Reference -> "reference"; N.Candidate -> "candidate")
             , "direction" .= String (case direction of N.ReferenceToCandidate -> "reference-candidate"; N.CandidateToReference -> "candidate-reference")
             ]
+    N.SamePathWords side -> object ["kind" .= String "training-path-words", "learner" .= sideName side]
+    N.PerTokenLogGapWithin side bound -> object ["kind" .= String "training-path-token-log-gap", "learner" .= sideName side, "budget" .= rational bound]
+    N.TrainingPathLogRatioWithin side bound -> object ["kind" .= String "training-path-log-ratio", "learner" .= sideName side, "budget" .= rational bound]
   where
     exact kind = object ["kind" .= String kind]
     bounded kind bound = object ["kind" .= String kind, "budget" .= rational bound]
+    sideName N.Reference = String "reference"
+    sideName N.Candidate = String "candidate"
 
 standardValue :: C.Standard -> Value
 standardValue C.FiniteDomain = object ["kind" .= String "finite_domain"]

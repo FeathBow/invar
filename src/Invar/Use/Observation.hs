@@ -59,7 +59,7 @@ observe supplied = do
         groups = Map.elems (Map.fromListWith (<>) [(U.unitId sample, sample :| []) | sample <- matched])
     case NonEmpty.nonEmpty (map aggregate groups) of
         Nothing -> Left EmptyDomain
-        Just values -> pure (U.Observed selected values)
+        Just values -> pure (U.Observed selected values [])
 
 uniqueCases :: [Case] -> Either ObservationError ()
 uniqueCases = visit Set.empty
