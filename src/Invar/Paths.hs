@@ -12,9 +12,9 @@ module Invar.Paths (
     ImplementationId (..),
     Role (..),
     Provenance (..),
+    Input (..),
+    Side (..),
     Observation (..),
-    Correspondence (..),
-    correspondence,
     Relation (..),
     Claim (..),
     Difference (..),
@@ -27,9 +27,9 @@ module Invar.Paths (
     scoped,
     missingScope,
     judgeScoped,
+    policyDifference,
     describeObserved,
     describeObservation,
-    describeCorrespondence,
     UpdateObservations (..),
     fromUpdate,
     fromSamples,
@@ -42,6 +42,7 @@ module Invar.Paths (
 
 import Prelude hiding (words)
 
+import Control.Monad (unless)
 import Crypto.Hash.SHA256 qualified as SHA256
 import Data.Aeson (Value (..), encode, object, withObject, (.:), (.=))
 import Data.Aeson.KeyMap qualified as Fields
@@ -102,9 +103,27 @@ data UpdateObservations = UpdateObservations
     }
     deriving (Eq, Show)
 
+data Input = Input
+    { inputPrompt :: Text
+    , inputSeed :: Integer
+    , inputLimit :: Natural
+    , inputTemperature :: Double
+    }
+    deriving (Eq, Show)
+
+data Side = Side
+    { sideModel :: String
+    , sideRevision :: String
+    , sideTokenizer :: String
+    , sideBase :: String
+    , sideAssembly :: String
+    }
+    deriving (Eq, Show)
+
 data Observation = Observation
     { path :: PathId
     , rule :: Rule
+    , input :: Input
     , forward :: ForwardWeights
     , implementation :: ImplementationId
     , implementationPolicy :: Maybe Policy.Description
@@ -113,18 +132,10 @@ data Observation = Observation
     }
     deriving (Eq, Show)
 
-data Correspondence = Correspondence {left :: ForwardWeights, right :: ForwardWeights}
-    deriving (Eq, Show)
-
-correspondence :: ForwardWeights -> ForwardWeights -> Either Problem Correspondence
-correspondence left right
-    | valid left && valid right = Right (Correspondence left right)
-    | otherwise = Left IncompleteCorrespondence
-
 data Relation = SameWords | PerTokenLogGapWithin Rational | PathLogRatioWithin Rational
     deriving (Eq, Show)
 
-data Claim = Claim {relation :: Relation, correspondenceOf :: Maybe Correspondence}
+newtype Claim = Claim {relation :: Relation}
     deriving (Eq, Show)
 
 data Difference = Finite Rational | PositiveInfinity
@@ -144,7 +155,6 @@ data Problem
     | PathDiffer PathId PathId
     | RuleDiffer Rule Rule
     | ForwardDiffer ForwardWeights ForwardWeights
-    | IncompleteCorrespondence
     | LengthDiffer Natural Natural
     | EmptyPath
     | InvalidWord Natural Word32
@@ -157,16 +167,16 @@ data Judgement = Satisfied Gap | Violated Gap | Insufficient Problem
 newtype ScopeId = ScopeId ByteString
     deriving (Eq, Ord, Show)
 
-data Observed = Observed {scope :: ScopeId, observedCorrespondence :: Maybe Correspondence, learner :: Observation, engine :: Observation}
+data Observed = Observed {scope :: ScopeId, learner :: Observation, engine :: Observation}
     deriving (Eq, Show)
 
 data ScopedClaim = ScopedClaim {scopeOf :: ScopeId, relationOf :: Relation}
     deriving (Eq, Show)
 
-scoped :: Maybe Correspondence -> Observation -> Observation -> Observed
-scoped checked learner engine = Observed identity checked learner engine
+scoped :: Observation -> Observation -> Observed
+scoped learner engine = Observed identity learner engine
   where
-    identity = ScopeId (SHA256.hash (Lazy.toStrict (encode (object ["format" .= ("invar-path-observation-v1" :: Text), "learner" .= describeObservation learner, "engine" .= describeObservation engine, "correspondence" .= fmap describeCorrespondence checked]))))
+    identity = ScopeId (SHA256.hash (Lazy.toStrict (encode (object ["format" .= ("invar-path-observation-v1" :: Text), "learner" .= describeObservation learner, "engine" .= describeObservation engine]))))
 
 missingScope :: (Show key) => key -> Relation -> ScopeId
 missingScope key relation = ScopeId (SHA256.hash (Text.encodeUtf8 (Text.pack (show (key, relation)))))
@@ -174,16 +184,17 @@ missingScope key relation = ScopeId (SHA256.hash (Text.encodeUtf8 (Text.pack (sh
 judgeScoped :: ScopedClaim -> Observed -> Judgement
 judgeScoped claim observed
     | scopeOf claim /= scope observed = Insufficient (ScopeMismatch (scopeOf claim) (scope observed))
-    | otherwise = judge (Claim (relationOf claim) (observedCorrespondence observed)) (learner observed) (engine observed)
+    | otherwise = judge (Claim (relationOf claim)) (learner observed) (engine observed)
 
 describeObserved :: Observed -> Value
-describeObserved observed = object ["format" .= ("invar-path-observation-v1" :: Text), "scope_sha256" .= scopeText (scope observed), "learner" .= describeObservation (learner observed), "engine" .= describeObservation (engine observed), "correspondence" .= fmap describeCorrespondence (observedCorrespondence observed)]
+describeObserved observed = object ["format" .= ("invar-path-observation-v1" :: Text), "scope_sha256" .= scopeText (scope observed), "input" .= describeInput (input (learner observed)), "learner" .= describeObservation (learner observed), "engine" .= describeObservation (engine observed)]
 
 describeObservation :: Observation -> Value
 describeObservation observation =
     object
         [ "path_sha256" .= pathText (path observation)
         , "rule" .= object ["temperature" .= temperature (rule observation), "logprobs" .= logprobs (rule observation), "truncation" .= truncation (rule observation)]
+        , "input" .= describeInput (input observation)
         , "forward_weights" .= object ["base" .= base (forward observation), "adapter" .= adapter (forward observation), "identity_sha256" .= forwardText (forwardId (forward observation))]
         , "implementation_sha256" .= implementationText (implementation observation)
         , "policy" .= fmap policyValue (implementationPolicy observation)
@@ -191,11 +202,8 @@ describeObservation observation =
         , "provenance" .= provenanceValue (provenance observation)
         ]
 
-describeCorrespondence :: Correspondence -> Value
-describeCorrespondence (Correspondence left right) = object ["left" .= forwardValue left, "right" .= forwardValue right]
-
-forwardValue :: ForwardWeights -> Value
-forwardValue (ForwardWeights base adapter) = object ["base" .= base, "adapter" .= adapter]
+describeInput :: Input -> Value
+describeInput selected = object ["prompt" .= inputPrompt selected, "seed" .= inputSeed selected, "limit" .= inputLimit selected, "temperature" .= inputTemperature selected]
 
 policyValue :: Policy.Description -> Value
 policyValue policy = object ["model" .= Policy.model policy, "revision" .= Policy.revision policy, "adapter" .= Policy.adapter policy, "tokenizer" .= Policy.tokenizer policy, "base" .= Policy.base policy, "assembly" .= Policy.assembly policy]
@@ -226,56 +234,68 @@ implementationText (ImplementationId identity) = Artifact.hex identity
 scopeText :: ScopeId -> String
 scopeText (ScopeId identity) = Artifact.hex identity
 
-fromUpdate :: (String, String) -> Report.Report -> ByteString -> Either String UpdateObservations
-fromUpdate identity report encoded = Probability.observe (Report.invocation report, Report.checkedRequest report) encoded >>= fromSamples identity report
+fromUpdate :: Side -> Side -> Report.Report -> ByteString -> [(Natural, Text, String)] -> Either String UpdateObservations
+fromUpdate learner engine report encoded states = do
+    samples <- Probability.observe (Report.invocation report, Report.checkedRequest report) encoded
+    fromSamples learner engine report samples states
 
-fromSamples :: (String, String) -> Report.Report -> [Probability.Sample] -> Either String UpdateObservations
-fromSamples identity report probabilities = parseEither (withObject "update path observations" (document probabilities)) (Request.value (Report.checkedRequest report))
+fromSamples :: Side -> Side -> Report.Report -> [Probability.Sample] -> [(Natural, Text, String)] -> Either String UpdateObservations
+fromSamples learnerIdentity engineIdentity report probabilities currentStates = parseEither (withObject "update path observations" (document probabilities)) (Request.value (Report.checkedRequest report))
   where
+    states = Map.fromList [((step, sample), state) | (step, sample, state) <- currentStates]
     document samples fields = do
         policy <- fields .: "policy" :: Parser String
         reference <- fields .: "reference" :: Parser String
         learnerBase <- fields .: "base" :: Parser String
         learnerAssembly <- fields .: "assembly" :: Parser String
-        tokenizer <- fields .: "tokenizer" :: Parser String
-        learnerPolicy <- either fail pure (Policy.describe identity (policy, tokenizer, learnerBase, learnerAssembly))
-        referenceLearnerPolicy <- either fail pure (Policy.describe identity (reference, tokenizer, learnerBase, learnerAssembly))
+        learnerTokenizer <- fields .: "tokenizer" :: Parser String
         (engineBase, engineAssembly) <- fields .: "behavior_model" >>= withObject "behavior model" (\model -> (,) <$> model .: "base" <*> model .: "assembly") :: Parser (String, String)
+        unless (learnerBase == sideBase learnerIdentity && learnerAssembly == sideAssembly learnerIdentity && learnerTokenizer == sideTokenizer learnerIdentity) (fail "Learner path identity differs from the update request")
+        unless (engineBase == sideBase engineIdentity && engineAssembly == sideAssembly engineIdentity) (fail "Engine path identity differs from the update request")
         update <- fields .: "schedule" >>= withObject "update schedule" (.: "update") :: Parser Natural
         delivered <- fields .: "samples" :: Parser [Value]
-        observations <- traverse (sample update policy reference tokenizer learnerPolicy referenceLearnerPolicy learnerBase learnerAssembly engineBase engineAssembly samples) delivered
+        observations <- traverse (sample update policy reference samples) delivered
         pure (UpdateObservations (concatMap proximalOf observations) (concatMap referencesOf observations) (concatMap currentsOf observations))
       where
         byName = Map.fromList [(Probability.sampleName probability, probability) | probability <- samples]
-        sample update policy reference tokenizer learnerPolicy referenceLearnerPolicy learnerBase learnerAssembly engineBase engineAssembly _ = withObject "update path sample" inspect
+        sample update policy reference _ = withObject "update path sample" inspect
           where
             inspect sampleFields = do
                 name <- sampleFields .: "sample" :: Parser Text
                 version <- sampleFields .: "version" :: Parser Natural
+                prompt <- sampleFields .: "prompt" :: Parser Text
+                seed <- sampleFields .: "seed" :: Parser Integer
+                limit <- sampleFields .: "limit" :: Parser Natural
                 tokens <- sampleFields .: "tokens" :: Parser [Natural]
                 prefix <- sampleFields .: "prompt_length" :: Parser Natural
                 temperature <- sampleFields .: "temperature" :: Parser Double
-                truncated <- sampleFields .: "truncated" :: Parser Bool
                 behaviorPolicy <- sampleFields .: "behavior_policy" :: Parser String
-                let rule = Rule temperature "processed" (if truncated then "limit" else "none")
-                enginePolicy <- either fail pure (Policy.describe identity (behaviorPolicy, tokenizer, engineBase, engineAssembly))
-                referenceEnginePolicy <- either fail pure (Policy.describe identity (reference, tokenizer, engineBase, engineAssembly))
+                let rule = Rule temperature "processed" "none"
+                    selectedInput = Input prompt seed limit temperature
+                enginePolicy <- either fail pure (engineDescription engineIdentifier behaviorPolicy)
+                referenceEnginePolicy <- either fail pure (engineDescription engineIdentifier reference)
+                learnerPolicy <- either fail pure (learnerDescription learnerIdentifier policy)
+                referenceLearnerPolicy <- either fail pure (learnerDescription learnerIdentifier reference)
                 probability <- maybe (fail "Probability sample missing from the admitted update") pure (Map.lookup name byName)
                 let tokenPath = TokenPath (take (fromIntegral prefix) tokens) (drop (fromIntegral prefix) tokens)
-                    learnerImplementation = implementationId "learner" learnerBase learnerAssembly
-                    engineImplementation = implementationId "engine" engineBase engineAssembly
-                    learner role adapter description words32 = Observation (pathId tokenPath) rule (ForwardWeights learnerBase adapter) learnerImplementation (Just description) words32 (Learner update 0 name role)
-                    engine adapter description words32 = Observation (pathId tokenPath) rule (ForwardWeights engineBase adapter) engineImplementation (Just description) words32 (Rollout version name)
-                    proximalPair = (learner Proximal policy learnerPolicy (Probability.proximal probability), engine behaviorPolicy enginePolicy (Probability.behavior probability))
+                    learnerImplementation = implementationId "learner" (sideBase learnerIdentity) (sideAssembly learnerIdentity)
+                    engineImplementation = implementationId "engine" (sideBase engineIdentity) (sideAssembly engineIdentity)
+                    learner step role adapter description words32 = Observation (pathId tokenPath) rule selectedInput (ForwardWeights (sideBase learnerIdentity) adapter) learnerImplementation (Just description) words32 (Learner update step name role)
+                    engine adapter description words32 = Observation (pathId tokenPath) rule selectedInput (ForwardWeights (sideBase engineIdentity) adapter) engineImplementation (Just description) words32 (Rollout version name)
+                    proximalPair = (learner 0 Proximal policy learnerPolicy (Probability.proximal probability), engine behaviorPolicy enginePolicy (Probability.behavior probability))
                     referencePairs = case Probability.reference probability of
                         Nothing -> []
-                        Just words32 -> [(learner Reference reference referenceLearnerPolicy words32, engine reference referenceEnginePolicy (Probability.engineReference probability))]
+                        Just words32 -> [(learner 0 Reference reference referenceLearnerPolicy words32, engine reference referenceEnginePolicy (Probability.engineReference probability))]
                     currentPair (step, words32) = do
-                        stepPolicy <- maybe (fail "Current step has no declared adapter identity") pure (lookup step (Probability.stepPolicies probability))
-                        currentPolicy <- either fail pure (Policy.describe identity (stepPolicy, tokenizer, learnerBase, learnerAssembly))
-                        pure (learner Current stepPolicy currentPolicy words32, engine behaviorPolicy enginePolicy (Probability.behavior probability))
+                        state <- maybe (fail "Current step has no applied state") pure (Map.lookup (step, name) states)
+                        currentPolicy <- either fail pure (learnerDescription learnerIdentifier state)
+                        pure (learner step Current state currentPolicy words32, engine behaviorPolicy enginePolicy (Probability.behavior probability))
                 currentPairs <- traverse currentPair (Probability.currents probability)
                 pure (proximalPair, referencePairs, currentPairs)
+        learnerIdentifier = (sideModel learnerIdentity, sideRevision learnerIdentity)
+        engineIdentifier = (sideModel engineIdentity, sideRevision engineIdentity)
+        learnerDescription (model, revision) adapter = Policy.describe (model, revision) (adapter, sideTokenizer learnerIdentity, sideBase learnerIdentity, sideAssembly learnerIdentity)
+        engineDescription (model, revision) adapter = Policy.describe (model, revision) (adapter, sideTokenizer engineIdentity, sideBase engineIdentity, sideAssembly engineIdentity)
         proximalOf (pair, _, _) = [pair]
         referencesOf (_, pairs, _) = pairs
         currentsOf (_, _, pairs) = pairs
@@ -335,14 +355,13 @@ judge :: Claim -> Observation -> Observation -> Judgement
 judge claim left right
     | path left /= path right = Insufficient (PathDiffer (path left) (path right))
     | rule left /= rule right = Insufficient (RuleDiffer (rule left) (rule right))
-    | not (comparable (correspondenceOf claim) left right) = Insufficient (ForwardDiffer (forward left) (forward right))
+    | not (comparable left right) = Insufficient (ForwardDiffer (forward left) (forward right))
     | invalid (relation claim) = Insufficient (InvalidBudget (budget (relation claim)))
     | otherwise = case measure left right of
         Left problem -> Insufficient problem
         Right gap -> decide gap
   where
-    comparable Nothing learner engine = valid (forward learner) && valid (forward engine) && forward learner == forward engine
-    comparable (Just (Correspondence expectedLeft expectedRight)) learner engine = valid expectedLeft && valid expectedRight && expectedLeft == forward learner && expectedRight == forward engine
+    comparable learner engine = valid (forward learner) && valid (forward engine) && forward learner == forward engine
     invalid (PerTokenLogGapWithin value) = value < 0
     invalid (PathLogRatioWithin value) = value < 0
     invalid SameWords = False
@@ -355,6 +374,19 @@ judge claim left right
         PathLogRatioWithin limit -> verdict (within limit (ratio gap)) gap
     verdict True gap = Satisfied gap
     verdict False gap = Violated gap
+
+policyDifference :: Relation -> Observation -> Observation -> Bool
+policyDifference relation left right =
+    path left == path right
+        && rule left == rule right
+        && valid (forward left)
+        && valid (forward right)
+        && forward left /= forward right
+        && not (invalid relation)
+  where
+    invalid (PerTokenLogGapWithin value) = value < 0
+    invalid (PathLogRatioWithin value) = value < 0
+    invalid SameWords = False
 
 within :: Rational -> Difference -> Bool
 within _ PositiveInfinity = False

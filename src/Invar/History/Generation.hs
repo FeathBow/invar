@@ -1,12 +1,13 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Invar.History.Generation (Generation, Publication (..), generation, cohort, publication, diagnostics, stepOutputs, applied, profiles, describe) where
+module Invar.History.Generation (Generation, Publication (..), generation, cohort, publication, diagnostics, stepOutputs, currents, learner, profiles, describe) where
 
 import Control.Monad (unless)
 import Data.Aeson (Value (..), object, toJSON, withObject, (.:), (.=))
 import Data.Aeson.KeyMap qualified as Fields
 import Data.Aeson.Types (parseEither)
 import Data.ByteString (ByteString)
+import Data.Text (Text)
 import Invar.History.Cohort qualified as Cohort
 import Invar.History.Profile qualified as Profile
 import Invar.Infer.Framing qualified as Framing
@@ -15,6 +16,7 @@ import Invar.Learn.Report qualified as Report
 import Invar.Learn.Request qualified as Request
 import Invar.Learn.Step qualified as Step
 import Invar.Learn.Trace qualified as Trace
+import Invar.Paths qualified as Paths
 import Invar.Resident.Group qualified as Group
 import Numeric.Natural (Natural)
 import System.FilePath ((</>))
@@ -44,10 +46,22 @@ diagnostics (Generation _ _ learned context _ _) = map (Object . Framing.fields)
 stepOutputs :: Generation -> [ByteString]
 stepOutputs (Generation _ _ learned _ _ _) = [Framing.raw record | record <- learned, Framing.stageName record `elem` map (Just . String) Step.reports]
 
-applied :: Generation -> Either String [(Natural, String)]
-applied (Generation _ _ learned context _ _) = traverse record [fields | Object fields <- map (Object . Framing.fields) (learned ++ context), Fields.lookup "stage" fields == Just (String "applied")]
+currents :: Generation -> Either String [(Natural, Text, String)]
+currents (Generation _ _ learned context _ _) = traverse record [fields | Object fields <- map (Object . Framing.fields) (learned ++ context), Fields.lookup "stage" fields == Just (String "current")]
   where
-    record fields = (,) <$> parseEither (withObject "applied step" (.: "step")) (Object fields) <*> parseEither (withObject "applied step" (.: "before")) (Object fields)
+    record fields = (,,) <$> parseEither (withObject "current step" (.: "step")) (Object fields) <*> parseEither (withObject "current step" (.: "sample")) (Object fields) <*> parseEither (withObject "current step" (.: "state")) (Object fields)
+
+learner :: Generation -> Either String Paths.Side
+learner (Generation _ _ learned context _ _) = case [fields | Object fields <- map (Object . Framing.fields) (learned ++ context), Fields.lookup "stage" fields == Just (String "loaded_learner")] of
+    fields : _ -> do
+        model <- parseEither (withObject "learner load" (.: "model")) (Object fields)
+        revision <- parseEither (withObject "learner load" (.: "revision")) (Object fields)
+        state <- parseEither (withObject "learner load" (.: "state")) (Object fields)
+        tokenizer <- parseEither (withObject "learner state" (.: "tokenizer")) state
+        base <- parseEither (withObject "learner state" (.: "base")) state
+        assembly <- parseEither (withObject "learner state" (.: "assembly")) state
+        pure (Paths.Side model revision tokenizer base assembly)
+    [] -> Left "A generation has no learner load report"
 
 profiles :: Generation -> [Profile.Observation]
 profiles (Generation _ _ _ _ _ observations) = observations

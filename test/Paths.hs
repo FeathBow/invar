@@ -26,15 +26,16 @@ paths =
         [ ("the same path and forward weights compare exact words", once compared)
         , ("a per-token bound catches a deviation that cancels in the path sum", once cancelled)
         , ("different paths, rules or forward weights are incomparable rather than violated", once incomparable)
+        , ("a policy difference is reported without entering the comparison", once policyDifference)
         , ("a missing position and an invalid word leave the comparison undetermined", once missing)
         , ("zero support is an infinite difference only on one side", once infinite)
-        , ("a checked correspondence binds both complete forward-weight identities", once correspondence)
         , ("path and forward identities cover their declared contents", once identities)
-        , ("an admitted update supplies observations and keeps cross-backend weights incomparable without a correspondence", once fromUpdate)
+        , ("an admitted update supplies observations and keeps cross-backend weights incomparable", once fromUpdate)
         , ("a learner-scored reference names the reference adapter on both sides", once reference)
         , ("a path claim is bound to one observation scope", once scoped)
         , ("a path observation enters the evidence graph with its external premises", once evidence)
         , ("current observations use the adapter identity of their own optimizer step", once currentSteps)
+        , ("a current step that changes state but not weights remains comparable", once currentComparable)
         ]
   where
     once = withTests 1 . property
@@ -54,6 +55,9 @@ forwardA, forwardB :: P.ForwardWeights
 forwardA = weights baseA adapter
 forwardB = weights baseB adapter
 
+input :: P.Input
+input = P.Input "Compute the answer." 17 1 0.8
+
 path :: P.TokenPath
 path = P.TokenPath [10, 11] [20, 21, 22]
 
@@ -61,10 +65,10 @@ rule :: P.Rule
 rule = P.Rule 0.8 "processed" "none"
 
 observation :: P.ForwardWeights -> [Word32] -> P.Observation
-observation forward words32 = P.Observation (P.pathId path) rule forward (P.ImplementationId "learner") Nothing words32 (P.Learner 0 0 "s0" P.Proximal)
+observation forward words32 = P.Observation (P.pathId path) rule input forward (P.ImplementationId "learner") Nothing words32 (P.Learner 0 0 "s0" P.Proximal)
 
 claim :: P.Relation -> P.Claim
-claim relation = P.Claim relation Nothing
+claim = P.Claim
 
 compared :: PropertyT IO ()
 compared = do
@@ -104,6 +108,14 @@ incomparable = do
     gap <- evalEither (P.measure left otherAssembly)
     P.judge (claim P.SameWords) left otherAssembly === P.Satisfied gap
 
+policyDifference :: PropertyT IO ()
+policyDifference = do
+    let left = observation forwardA [word (-1)]
+        right = observation forwardB [word (-1)]
+    assert (P.policyDifference P.SameWords left right)
+    assert (not (P.policyDifference P.SameWords left left))
+    assert (not (P.policyDifference P.SameWords left (left {P.path = P.pathId (P.TokenPath [10] [20])})))
+
 missing :: PropertyT IO ()
 missing = do
     let left = observation forwardA [word (-1), word (-2)]
@@ -125,16 +137,6 @@ infinite = do
     same <- evalEither (P.measure left both)
     P.judge (claim P.SameWords) left both === P.Satisfied same
 
-correspondence :: PropertyT IO ()
-correspondence = do
-    checked <- evalEither (P.correspondence forwardA forwardB)
-    let left = observation forwardA [word (-1)]
-        right = observation forwardB [word (-1)]
-    gap <- evalEither (P.measure left right)
-    P.judge (P.Claim P.SameWords (Just checked)) left right === P.Satisfied gap
-    P.judge (P.Claim P.SameWords (Just checked)) right left === P.Insufficient (P.ForwardDiffer forwardB forwardA)
-    assert (isLeft (P.correspondence (weights "" adapter) forwardB))
-
 identities :: PropertyT IO ()
 identities = do
     P.pathId path /== P.pathId (P.TokenPath [10, 12] [20, 21, 22])
@@ -142,11 +144,18 @@ identities = do
     P.forwardId forwardA /== P.forwardId forwardB
     P.forwardId forwardA /== P.forwardId (weights baseA (replicate 64 '4'))
 
+learnerSide, engineSide :: P.Side
+learnerSide = P.Side "test-model" "test-revision" (replicate 64 'd') (replicate 64 'e') (replicate 64 'f')
+engineSide = P.Side "test-model" "test-revision" (replicate 64 'd') (replicate 64 '0') (replicate 64 '1')
+
+startPolicy :: String
+startPolicy = replicate 64 'a'
+
 fromUpdate :: PropertyT IO ()
 fromUpdate = do
     (_, events) <- setup
     report <- evalEither (Report.admit 7 (wire events))
-    observed <- evalEither (P.fromUpdate ("test-model", "test-revision") report (Lazy.toStrict (encode (fixture events))))
+    observed <- evalEither (P.fromUpdate learnerSide engineSide report (Lazy.toStrict (encode (fixture events))) [(0, "s0", startPolicy), (0, "s1", startPolicy)])
     let pairs = P.proximal observed
     assert (not (null pairs))
     gap <- evalEither (P.measureAll pairs)
@@ -155,16 +164,17 @@ fromUpdate = do
     P.ratio gap === P.Finite 0
     P.describeGap gap === object ["tokens" .= (2 :: Int), "identical" .= (2 :: Int), "gap" .= object ["p50" .= (0 :: Double), "p90" .= (0 :: Double), "p99" .= (0 :: Double), "mean" .= (0 :: Double), "mean_absolute" .= (0 :: Double), "max" .= (0 :: Double)], "path_log_ratio" .= object ["kind" .= ("finite" :: String), "numerator" .= (0 :: Int), "denominator" .= (1 :: Int)]]
     (learner, engine) <- evalMaybe (listToMaybe pairs)
-    sameGap <- evalEither (P.measure learner engine)
-    checked <- evalEither (P.correspondence (P.forward learner) (P.forward engine))
-    P.judge (P.Claim P.SameWords (Just checked)) learner engine === P.Satisfied sameGap
-    P.judge (P.Claim P.SameWords Nothing) learner engine === P.Insufficient (P.ForwardDiffer (P.forward learner) (P.forward engine))
+    assert (P.policyDifference P.SameWords learner engine)
+    P.judge (claim P.SameWords) learner engine === P.Insufficient (P.ForwardDiffer (P.forward learner) (P.forward engine))
+    P.forward learner === P.ForwardWeights (replicate 64 'e') startPolicy
+    P.forward engine === P.ForwardWeights (replicate 64 '0') startPolicy
+    P.input learner === P.Input "Compute the answer." 18 1 0.8
 
 reference :: PropertyT IO ()
 reference = do
     (_, events) <- setupFor learnerWorld
     report <- evalEither (Report.admit 7 (wire events))
-    observed <- evalEither (P.fromUpdate ("test-model", "test-revision") report (Lazy.toStrict (encode (fixture events))))
+    observed <- evalEither (P.fromUpdate learnerSide engineSide report (Lazy.toStrict (encode (fixture events))) [(0, "s0", startPolicy), (0, "s1", startPolicy)])
     (learner, engine) <- evalMaybe (listToMaybe (P.references observed))
     P.forward learner === P.ForwardWeights (replicate 64 'e') (replicate 64 'c')
     P.forward engine === P.ForwardWeights (replicate 64 '0') (replicate 64 'c')
@@ -175,7 +185,7 @@ scoped :: PropertyT IO ()
 scoped = do
     let left = observation forwardA [word (-1)]
         right = observation forwardA [word (-1)]
-        observed = P.scoped Nothing left right
+        observed = P.scoped left right
     gap <- evalEither (P.measure left right)
     P.judgeScoped (P.ScopedClaim (P.scope observed) P.SameWords) observed === P.Satisfied gap
     P.judgeScoped (P.ScopedClaim (P.ScopeId "another-scope") P.SameWords) observed === P.Insufficient (P.ScopeMismatch (P.ScopeId "another-scope") (P.scope observed))
@@ -184,7 +194,7 @@ evidence :: PropertyT IO ()
 evidence = do
     let left = observation forwardA [word (-1)]
         right = observation forwardA [word (-1)]
-        observed = P.scoped Nothing left right
+        observed = P.scoped left right
         target = E.Paths (P.ScopedClaim (P.scope observed) P.SameWords)
         graph = Map.singleton (E.EvidenceId 0) (E.Node target (E.ObservePaths observed))
     case E.check graph (E.EvidenceId 0) of
@@ -200,11 +210,20 @@ currentSteps = do
         sameReference = Map.insert (Source.Semantic "reference_scores") (world Map.! Source.Semantic "behavior") world
     (_, events) <- setupFor (Map.insert (Source.Semantic "algorithm") algorithm sameReference)
     report <- evalEither (Report.admit 7 (wire events))
-    observed <- evalEither (P.fromUpdate ("test-model", "test-revision") report (Lazy.toStrict (encode (fixture events))))
+    observed <- evalEither (P.fromUpdate learnerSide engineSide report (Lazy.toStrict (encode (fixture events))) [(0, "s0", startPolicy), (0, "s1", "1" <> replicate 63 '1'), (1, "s0", startPolicy), (1, "s1", "1" <> replicate 63 '1')])
     length (P.currents observed) === 2
     (firstLearner, firstEngine) <- evalMaybe (listToMaybe (P.currents observed))
     (secondLearner, secondEngine) <- evalMaybe (listToMaybe (drop 1 (P.currents observed)))
-    checked <- evalEither (P.correspondence (P.forward firstLearner) (P.forward firstEngine))
-    firstGap <- evalEither (P.measure firstLearner firstEngine)
-    P.judge (P.Claim P.SameWords (Just checked)) firstLearner firstEngine === P.Satisfied firstGap
-    P.judge (P.Claim P.SameWords (Just checked)) secondLearner secondEngine === P.Insufficient (P.ForwardDiffer (P.forward secondLearner) (P.forward secondEngine))
+    assert (P.provenanceName firstLearner == P.provenanceName firstEngine)
+    assert (P.provenanceName secondLearner == P.provenanceName secondEngine)
+    P.judge (claim P.SameWords) firstLearner firstEngine === P.Insufficient (P.ForwardDiffer (P.forward firstLearner) (P.forward firstEngine))
+    P.judge (claim P.SameWords) secondLearner secondEngine === P.Insufficient (P.ForwardDiffer (P.forward secondLearner) (P.forward secondEngine))
+    P.forward secondLearner === P.ForwardWeights (replicate 64 'e') ("1" <> replicate 63 '1')
+
+currentComparable :: PropertyT IO ()
+currentComparable = do
+    let learner = (observation forwardA [word (-1)]) {P.provenance = P.Learner 0 1 "s0" P.Current}
+        engine = (observation forwardA [word (-1)]) {P.provenance = P.Rollout 0 "s0"}
+    gap <- evalEither (P.measure learner engine)
+    P.judge (claim P.SameWords) learner engine === P.Satisfied gap
+    assert (not (P.policyDifference P.SameWords learner engine))

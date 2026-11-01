@@ -61,14 +61,16 @@ module Invar.Use (
 import Control.Monad (unless)
 import Data.Aeson (Value, object, (.=))
 import Data.Foldable (toList)
-import Data.List (nub)
+import Data.List (find, nub)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Ratio (denominator, numerator)
+import Data.Text qualified as Text
 import Invar.Artifact qualified as Artifact
 import Invar.Evidence.Encoding qualified as EvidenceEncoding
 import Invar.Numerical qualified as Numerical
 import Invar.Paths qualified as Paths
 import Invar.Spec.Domain (Domain (..), Input (..))
+import Invar.Spec.Domain qualified as Domain
 import Invar.Spec.Evidence qualified as Evidence
 import Invar.Spec.Measurement qualified as Measurement
 import Invar.Spec.Use (Claim (..), Confidence (..), Key (..), Metric (..), Observed, Problem (..), Scope, ScopeId, Unit (..), confidence, mean, measurements, scope, scopeId, units)
@@ -78,23 +80,34 @@ import Invar.Use.Contract (Budget (..), Criterion (..), InvarianceRequirement (.
 import Invar.Use.Contract qualified as Contract
 import Invar.Use.Encoding (decodeContract, describeContract)
 import Invar.Use.Encoding qualified as Encoding
-import Invar.Use.Finding (Finding (..), establish, finding, lossClaims)
+import Invar.Use.Finding (Finding (..), PolicyDifference (..), establish, finding, lossClaims, pathPolicyDifferences)
 import Invar.Use.Observation (BoundRun (..), Case (..), ObservationError (..), observe)
 
 withPaths :: [(U.Key, [Paths.Observed])] -> U.Observed -> Either String U.Observed
 withPaths attachments observed = do
     let U.Observed selected unitValues _ = observed
-        U.Scope _ _ _ samples = selected
+        U.Scope _ domain _ samples = selected
         known = map U.key (toList samples)
         supplied = map fst attachments
         admitted = filter ((`elem` known) . fst) attachments
     unless (length (nub supplied) == length supplied) (Left "A training path observation names an input twice")
     case filter ((`notElem` known) . fst) attachments of
         (key, _) : _ -> Left ("A training path observation names an unknown input: " ++ show key)
-        [] -> pure (U.Observed selected unitValues admitted)
+        [] -> pure ()
+    mapM_ (bound domain) attachments
+    pure (U.Observed selected unitValues admitted)
+  where
+    bound domain (key, observations) = case find ((== key) . Domain.inputKey) (Domain.declaredInputs domain) of
+        Nothing -> Left ("A training path observation names an unknown input: " ++ show key)
+        Just selected -> mapM_ (check key selected) observations
+    check key selected actual = mapM_ (matches key selected) [Paths.learner actual, Paths.engine actual]
+    matches key selected observation =
+        let declared = Paths.input observation
+            same = Text.pack (Domain.prompt selected) == Paths.inputPrompt declared && Domain.tokens selected == Paths.inputLimit declared && Domain.temperature selected == Paths.inputTemperature declared && Domain.seed selected == Paths.inputSeed declared
+         in unless same (Left ("A training path observation does not match input " ++ show key))
 
 describeFinding :: Finding -> Value
-describeFinding (Finding target _ result _) =
+describeFinding (Finding target _ result observed) =
     object
         ( [ "scope_sha256" .= Artifact.hex identity
           , "use_admission" .= ("not_evaluated" :: String)
@@ -104,11 +117,12 @@ describeFinding (Finding target _ result _) =
         )
   where
     U.ScopeId identity = scopeId (U.claimScope target)
-    description = case target of
-        Claim _ metric budget -> ["metric" .= show metric, "budget" .= rational budget, "strength" .= ("finite_domain" :: String)]
-        PopulationClaim _ population metric budget -> ["metric" .= show metric, "budget" .= rational budget, "strength" .= ("population_hoeffding" :: String), "population" .= Encoding.standardValue (HoeffdingPopulation population)]
-        EmpiricalBernsteinClaim _ population metric budget -> ["metric" .= show metric, "budget" .= rational budget, "strength" .= ("population_bernstein_mp2009" :: String), "population" .= Encoding.standardValue (EmpiricalBernsteinPopulation population)]
-        Required _ selected -> ["requirements" .= Encoding.criterionValue selected]
+    description =
+        ("path_policy_differences" .= [object ["input" .= show key, "relation" .= show relation, "observation" .= Paths.describeObserved actual] | PolicyDifference key relation actual <- pathPolicyDifferences target observed]) : case target of
+            Claim _ metric budget -> ["metric" .= show metric, "budget" .= rational budget, "strength" .= ("finite_domain" :: String)]
+            PopulationClaim _ population metric budget -> ["metric" .= show metric, "budget" .= rational budget, "strength" .= ("population_hoeffding" :: String), "population" .= Encoding.standardValue (HoeffdingPopulation population)]
+            EmpiricalBernsteinClaim _ population metric budget -> ["metric" .= show metric, "budget" .= rational budget, "strength" .= ("population_bernstein_mp2009" :: String), "population" .= Encoding.standardValue (EmpiricalBernsteinPopulation population)]
+            Required _ selected -> ["requirements" .= Encoding.criterionValue selected]
 
 witnessValue :: Evidence.Witness -> Value
 witnessValue (Evidence.TaskLossWitness observed) = describe observed

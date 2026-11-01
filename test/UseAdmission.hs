@@ -10,6 +10,7 @@ import Data.ByteString qualified as Bytes
 import Data.ByteString.Char8 qualified as Lines
 import Data.ByteString.Lazy qualified as Lazy
 import Data.Either (isLeft)
+import Data.List (find)
 import Data.List.NonEmpty qualified as NonEmpty
 import Data.Ratio ((%))
 import Data.Text qualified as Text
@@ -58,6 +59,7 @@ contractFor supplied = do
             , U.declaredMeasurement = U.measurement supplied
             , U.referenceImplementation = implementation
             , U.candidateImplementation = implementation
+            , U.learnerImplementation = Just implementation
             , U.maximumContext = 3
             , U.criterion =
                 U.Criterion
@@ -107,7 +109,7 @@ inadequate = do
         U.Rejected counterexample -> do
             E.witness counterexample === E.TaskLossWitness observed
             field "witness" (field "finding" (U.describeDecision result)) === U.describe observed
-        other -> annotateShow other >> failure
+        unexpected -> annotateShow unexpected >> failure
 
 numericalViolation :: PropertyT IO ()
 numericalViolation = do
@@ -138,8 +140,8 @@ numericalViolation = do
     case result of
         U.Rejected counterexample -> case E.witness counterexample of
             E.NumericalWitness measured -> field "witness" (field "finding" (U.describeDecision result)) === N.describe measured
-            other -> annotateShow other >> failure
-        other -> annotateShow other >> failure
+            unexpected -> annotateShow unexpected >> failure
+        unexpected -> annotateShow unexpected >> failure
 
 missingNumerical :: PropertyT IO ()
 missingNumerical = do
@@ -225,7 +227,7 @@ statistical = do
         E.Unknown (E.TaskLossProblem (U.InsufficientLossBound U.LossIncrease budget bound)) -> do
             budget === 1 % 50
             U.unitCount bound === 32
-        other -> annotateShow other >> failure
+        unexpected -> annotateShow unexpected >> failure
     let requested = mapLoss (\value -> value {U.referenceCeiling = U.Budget (1 % 4) "Fixture bound only", U.regressionCeiling = U.Budget (1 % 2) "Fixture bound only", U.standard = U.HoeffdingPopulation population}) contract
     admitted <- accepted (U.admit requested (established requested observed))
     [metric | E.HoeffdingBound metric _ <- E.methods (U.evidence admitted)] === [U.ReferenceLoss, U.LossIncrease]
@@ -293,7 +295,7 @@ invariance = do
     admitted <- accepted (U.admit contract (established contract observed))
     case E.conclusion (U.evidence admitted) of
         E.All conjuncts -> length conjuncts === 2 + 4 + 4 * 2
-        other -> annotateShow other >> failure
+        unexpected -> annotateShow unexpected >> failure
     length (E.assumptions (U.evidence admitted)) === 53 + 8 * 6
     length (U.conditions admitted) === 57 + 8 * 6 + 8
     length [() | U.ReliedOn _ selected <- U.conditions admitted, U.premise selected == U.ScheduleVariation] === 8
@@ -314,8 +316,8 @@ divergentRepeat = do
                 field "tokens_equal" (N.describe measured) === Bool True
                 field "behavior_bits_equal" (N.describe measured) === Bool False
                 assert (N.scopeId (N.scope measured) `notElem` map (N.scopeId . N.scope . snd) (NonEmpty.toList (U.numerical observed)))
-            other -> annotateShow other >> failure
-        other -> annotateShow other >> failure
+            unexpected -> annotateShow unexpected >> failure
+        unexpected -> annotateShow unexpected >> failure
 
 invarianceContract :: PropertyT IO ()
 invarianceContract = do
@@ -337,12 +339,12 @@ invarianceContract = do
     differing <- alterRepeat 0 "loaded_adapter" (change "revision" (String "other-model-revision")) supplied
     case U.observe differing of
         Left (U.MixedImplementation N.Candidate _) -> success
-        other -> annotateShow other >> failure
+        unexpected -> annotateShow unexpected >> failure
     case U.cases supplied of
         [] -> failure
         first : remaining -> case U.observe supplied {U.cases = first {U.repeats = [N.candidate (U.paired first)]} : remaining} of
             Left (U.ReusedExecution N.Candidate _) -> success
-            other -> annotateShow other >> failure
+            unexpected -> annotateShow unexpected >> failure
   where
     invalidReason (U.InvalidContract _) = True
     invalidReason _ = False
@@ -418,36 +420,64 @@ trainingPaths = do
     supplied <- F.fixture F.trials
     contract <- contractFor supplied
     baseObserved <- evalEither (U.observe supplied)
-    let policy = U.candidateImplementation contract
+    let names = ["a1", "a2", "a3", "b1"]
+        policy = U.candidateImplementation contract
         forward = P.ForwardWeights (replicate 64 '1') (replicate 64 '2')
         tokenPath = P.pathId (P.TokenPath [10] [20, 21])
         rule = P.Rule 0.8 "processed" "none"
-        learner = P.Observation tokenPath rule forward (P.ImplementationId "learner") (Just policy) (map castFloatToWord32 [-1, -2]) (P.Learner 0 0 "a1" P.Proximal)
-        engine = P.Observation tokenPath rule forward (P.ImplementationId "engine") (Just policy) (map castFloatToWord32 [-1, -1.5]) (P.Rollout 0 "a1")
-    observed <- evalEither (U.withPaths [(U.Key 0 name, [P.scoped Nothing learner engine]) | name <- ["a1", "a2", "a3", "b1"]] baseObserved)
+        inputs = U.declaredInputs (U.declaredDomain contract)
+        inputFor name = case find ((== U.Key 0 name) . U.inputKey) inputs of
+            Just selected -> P.Input (Text.pack (U.prompt selected)) (U.seed selected) (U.tokens selected) (U.temperature selected)
+            Nothing -> error "Fixture input missing"
+        learner name = P.Observation tokenPath rule (inputFor name) forward (P.ImplementationId "learner") (Just policy) (map castFloatToWord32 [-1, -2]) (P.Learner 0 0 (Text.pack name) P.Proximal)
+        engine name = P.Observation tokenPath rule (inputFor name) forward (P.ImplementationId "engine") (Just policy) (map castFloatToWord32 [-1, -1.5]) (P.Rollout 0 (Text.pack name))
+        scoped name = P.scoped (learner name) (engine name)
+        current name = ((learner name) {P.provenance = P.Learner 0 1 (Text.pack name) P.Current}, engine name)
+        changedEngine name = (engine name) {P.forward = P.ForwardWeights (replicate 64 '9') (replicate 64 '2')}
+        otherScoped name = P.scoped (learner name) (changedEngine name)
+    observed <- evalEither (U.withPaths [(U.Key 0 "a1", [scoped "a1"]), (U.Key 0 "a2", [scoped "a2", uncurry P.scoped (current "a2")]), (U.Key 0 "a3", [scoped "a3"]), (U.Key 0 "b1", [scoped "b1"])] baseObserved)
     let within = contract {U.criterion = (U.criterion contract) {U.numericalRequirements = U.NumericalRequirement (N.PerTokenLogGapWithin N.Candidate (1 % 2)) [] "Training path only" : U.numericalRequirements (U.criterion contract)}}
     admitted <- accepted (U.admit within (established within observed))
     assert (E.PathObservation `elem` E.methods (U.evidence admitted))
     let outside = within {U.criterion = (U.criterion within) {U.numericalRequirements = U.NumericalRequirement (N.PerTokenLogGapWithin N.Candidate (1 % 4)) [] "Training path only" : drop 1 (U.numericalRequirements (U.criterion within))}}
     case U.admit outside (established outside observed) of
         U.Rejected _ -> success
-        other -> annotateShow other >> failure
-    let otherEngine = engine {P.forward = P.ForwardWeights (replicate 64 '9') (replicate 64 '2')}
-    otherObserved <- evalEither (U.withPaths [(U.Key 0 "a1", [P.scoped Nothing learner otherEngine])] baseObserved)
-    reasons <- unknown (U.admit within (established within otherObserved))
+        unexpected -> annotateShow unexpected >> failure
+    allOther <- evalEither (U.withPaths [(U.Key 0 name, [otherScoped name]) | name <- names] baseObserved)
+    reasons <- unknown (U.admit within (established within allOther))
     assert (not (null reasons) && all isFindingUnknown reasons)
+    mixed <- evalEither (U.withPaths ((U.Key 0 "a1", [otherScoped "a1"]) : [(U.Key 0 name, [scoped name]) | name <- drop 1 names]) baseObserved)
+    _ <- accepted (U.admit within (established within mixed))
+    case U.describeFinding (established within mixed) of
+        Object fields -> case KeyMap.lookup "path_policy_differences" fields of
+            Just (Array values) -> assert (not (null values))
+            _ -> failure
+        _ -> failure
     missing <- unknown (U.admit within (established within baseObserved))
     assert (not (null missing) && all isFindingUnknown missing)
     reweighted <- evalEither (Policy.describe (Policy.model policy, Policy.revision policy) (replicate 64 '8', Policy.tokenizer policy, Policy.base policy, Policy.assembly policy))
-    let weightedLearner = learner {P.implementationPolicy = Just reweighted}
-        weightedEngine = engine {P.implementationPolicy = Just reweighted}
-    weightedObserved <- evalEither (U.withPaths [(U.Key 0 name, [P.scoped Nothing weightedLearner weightedEngine]) | name <- ["a1", "a2", "a3", "b1"]] baseObserved)
+    let weighted name = (learner name) {P.implementationPolicy = Just reweighted}
+        weightedEngine name = (engine name) {P.implementationPolicy = Just reweighted}
+    weightedObserved <- evalEither (U.withPaths [(U.Key 0 name, [P.scoped (weighted name) (weightedEngine name)]) | name <- names] baseObserved)
     _ <- accepted (U.admit within (established within weightedObserved))
+    differentAssembly <- evalEither (Policy.describe (Policy.model policy, Policy.revision policy) (Policy.adapter policy, Policy.tokenizer policy, Policy.base policy, replicate 64 '7'))
+    let altered name = (learner name) {P.implementationPolicy = Just differentAssembly}
+        alteredEngine name = (engine name) {P.implementationPolicy = Just differentAssembly}
+    alteredObserved <- evalEither (U.withPaths [(U.Key 0 name, [P.scoped (altered name) (alteredEngine name)]) | name <- names] baseObserved)
+    case U.admit within (established within alteredObserved) of
+        U.Undetermined problems -> assert (any isImplementationMismatch problems)
+        unexpected -> annotateShow unexpected >> failure
+    let badInput name = (learner name) {P.input = P.Input "wrong prompt" 1 1 0.8}
+    assert (isLeft (U.withPaths [(U.Key 0 "a1", [P.scoped (badInput "a1") (engine "a1")])] baseObserved))
     let negative = within {U.criterion = (U.criterion within) {U.numericalRequirements = U.NumericalRequirement (N.PerTokenLogGapWithin N.Candidate (-1)) [] "Training path only" : drop 1 (U.numericalRequirements (U.criterion within))}}
     case U.admit negative (established negative observed) of
         U.Undetermined problems -> assert (U.InvalidContract "negative path budget" `elem` problems)
-        other -> annotateShow other >> failure
+        unexpected -> annotateShow unexpected >> failure
     assert (isLeft (U.withPaths [(U.Key 9 "unknown", [])] baseObserved))
+
+isImplementationMismatch :: U.AdmissionProblem -> Bool
+isImplementationMismatch (U.ImplementationMismatch _ _) = True
+isImplementationMismatch _ = False
 
 isFindingUnknown :: U.AdmissionProblem -> Bool
 isFindingUnknown (U.FindingUnknown _) = True

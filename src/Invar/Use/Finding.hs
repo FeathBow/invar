@@ -1,6 +1,6 @@
 {-# LANGUAGE Safe #-}
 
-module Invar.Use.Finding (Finding (..), establish, finding, goalClaim, lossClaims) where
+module Invar.Use.Finding (Finding (..), PolicyDifference (..), establish, finding, goalClaim, lossClaims, pathPolicyDifferences) where
 
 import Data.Foldable (toList)
 import Data.Map.Strict qualified as Map
@@ -12,6 +12,9 @@ import Invar.Spec.Use qualified as U
 import Invar.Spec.UseContract qualified as Contract
 
 data Finding = Finding U.Claim Evidence.Claim Evidence.Verdict U.Observed
+    deriving (Eq, Show)
+
+data PolicyDifference = PolicyDifference U.Key Paths.Relation Paths.Observed
     deriving (Eq, Show)
 
 establish :: U.Claim -> U.Observed -> Finding
@@ -54,23 +57,45 @@ goalClaim target _ = Evidence.TaskLoss target
 requirements :: U.Scope -> Contract.Criterion -> [(U.Key, [Paths.Observed])] -> [Evidence.Claim]
 requirements selected criterion attachments = case Contract.lossRequirement criterion of
     Just required | Contract.ConditionalDerivation _ <- Contract.standard required -> [Evidence.TaskLoss (U.Required selected criterion)]
-    _ -> map Evidence.TaskLoss (lossClaims selected criterion) ++ concatMap numerical samples ++ invariance
+    _ -> map Evidence.TaskLoss (lossClaims selected criterion) ++ concatMap numerical (Contract.numericalRequirements criterion) ++ invariance
   where
     U.Scope _ _ _ samples = selected
-    numerical sample = concatMap (forSample sample) (Contract.numericalRequirements criterion)
-    forSample sample requirement = case (Numerical.pathRelation (Contract.relation requirement), Numerical.pathSide (Contract.relation requirement)) of
-        (Just relation, Just _) ->
-            let candidates = [actual | (key, observations) <- attachments, key == U.key sample, actual <- observations]
-             in case candidates of
-                    [] -> [Evidence.Paths (Paths.ScopedClaim (Paths.missingScope (U.key sample) relation) relation)]
-                    _ -> [Evidence.Paths (Paths.ScopedClaim (Paths.scope actual) relation) | actual <- candidates]
-        _ -> [Evidence.Numerical (Numerical.Claim (Numerical.scope (U.numerical sample)) (Contract.relation requirement))]
+    numerical requirement = case (Numerical.pathRelation (Contract.relation requirement), Numerical.pathSide (Contract.relation requirement)) of
+        (Just relation, Just _) -> pathClaims relation
+        _ -> [Evidence.Numerical (Numerical.Claim (Numerical.scope (U.numerical sample)) (Contract.relation requirement)) | sample <- toList samples]
+    pathClaims relation = case comparable relation of
+        [] -> [Evidence.Paths (Paths.ScopedClaim (Paths.missingScope (map U.key (toList samples)) relation) relation)]
+        _ -> [Evidence.Paths (Paths.ScopedClaim (Paths.scope actual) relation) | actual <- comparable relation]
+    comparable relation =
+        [ actual
+        | sample <- toList samples
+        , (key, observations) <- attachments
+        , key == U.key sample
+        , actual <- observations
+        , not (Paths.policyDifference relation (Paths.learner actual) (Paths.engine actual))
+        ]
     invariance =
         [ Evidence.Numerical (Numerical.Claim (Numerical.scope repeated) (Contract.invariant requirement))
         | sample <- toList samples
         , requirement <- toList (Contract.invarianceRequirements criterion)
         , repeated <- U.invariance sample
         ]
+
+pathPolicyDifferences :: U.Claim -> U.Observed -> [PolicyDifference]
+pathPolicyDifferences (U.Required selected criterion) observed =
+    [ PolicyDifference (U.key sample) relation actual
+    | requirement <- toList (Contract.numericalRequirements criterion)
+    , Just relation <- [Numerical.pathRelation (Contract.relation requirement)]
+    , sample <- toList samples
+    , (key, observations) <- attachments
+    , key == U.key sample
+    , actual <- observations
+    , Paths.policyDifference relation (Paths.learner actual) (Paths.engine actual)
+    ]
+  where
+    U.Scope _ _ _ samples = selected
+    U.Observed _ _ attachments = observed
+pathPolicyDifferences _ _ = []
 
 lossClaims :: U.Scope -> Contract.Criterion -> [U.Claim]
 lossClaims selected criterion = case Contract.lossRequirement criterion of

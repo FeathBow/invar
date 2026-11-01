@@ -32,7 +32,6 @@ class Update(Generic[Tensor]):
     gradients: dict[str, Tensor]
     proximal: dict[str, tuple[int, ...]]
     currents: tuple[tuple[int, str, tuple[int, ...]], ...]
-    policies: tuple[tuple[int, str, str], ...] = ()
     reference: dict[str, tuple[int, ...]] = field(default_factory=dict)
 
 

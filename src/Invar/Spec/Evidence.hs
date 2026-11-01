@@ -202,14 +202,13 @@ comparePaths target@(Paths expected) observed = case Paths.judgeScoped expected 
 comparePaths target _ = Unknown (UnsupportedObservation target)
 
 pathPremises :: Paths.ScopedClaim -> Paths.Observed -> [Obligation]
-pathPremises claim observed = observations ++ correspondence
+pathPremises claim observed = observations
   where
     observations =
         [ obligation kind ("/" ++ label) (digest (Paths.describeObservation value))
         | (label, value) <- [("learner", Paths.learner observed), ("engine", Paths.engine observed)]
         , kind <- [Contract.PathAuthenticity, Contract.PathBehavior]
         ]
-    correspondence = [obligation Contract.ForwardCorrespondence "" (digest (Paths.describeCorrespondence checked)) | Just checked <- [Paths.observedCorrespondence observed]]
     Paths.ScopeId domain = Paths.scopeOf claim
     obligation kind suffix binding =
         let (name, specification, observation) = Contract.premiseDescription kind

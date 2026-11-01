@@ -48,14 +48,14 @@ successor (decoder, schema) (expected, generation) published = do
     (gradients, gradient) <- Gradient.observe parameters (report, path </> "gradients.safetensors")
     probabilities <- Observation.probability report (path </> "probabilities.json")
     either invalid pure (reported generation probabilities)
-    applied <- either invalid pure (Generation.applied generation)
-    let recorded = Map.fromList applied
-    unless (all (\(position, policy) -> Map.lookup position recorded == Just policy) [(position, policy) | sample <- probabilities, (position, policy) <- Probability.stepPolicies sample]) (invalid "Probability step policies differ from the applied steps")
     inference <- case Cohort.inferences (Generation.cohort generation) of
         first : _ -> pure first
         [] -> invalid "A generation has no admitted inference for its model identity"
     description <- either invalid pure (Inference.policyDescription inference)
-    observations <- either invalid pure (Paths.fromSamples (Policy.model description, Policy.revision description) report probabilities)
+    learnerSide <- either invalid pure (Generation.learner generation)
+    currentStates <- either invalid pure (Generation.currents generation)
+    let engineSide = Paths.Side (Policy.model description) (Policy.revision description) (Policy.tokenizer description) (Policy.base description) (Policy.assembly description)
+    observations <- either invalid pure (Paths.fromSamples learnerSide engineSide report probabilities currentStates)
     learnerGap <- either (invalid . show) pure (Paths.measureAll (Paths.proximal observations))
     referenceGap <- case Paths.references observations of
         [] -> pure Nothing

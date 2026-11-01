@@ -94,7 +94,7 @@ meaningful :: String -> Bool
 meaningful = not . all isSpace
 
 validate :: C.UseContract -> [AdmissionProblem]
-validate contract = fields ++ budgets ++ numerical ++ invariance ++ standard ++ reliance ++ transfers
+validate contract = fields ++ budgets ++ numerical ++ invariance ++ standard ++ reliance ++ transfers ++ learner
   where
     criterion = C.criterion contract
     fields =
@@ -118,6 +118,7 @@ validate contract = fields ++ budgets ++ numerical ++ invariance ++ standard ++ 
     transfers =
         [InvalidContract "one transfer per side" | length (nub (map C.transferSide (C.transfers contract))) /= length (C.transfers contract)]
             ++ concatMap (validTransfer contract) (C.transfers contract)
+    learner = [InvalidContract "path requirements need a learner implementation" | any (isJust . Numerical.pathSide . C.relation) (C.numericalRequirements criterion), isNothing (C.learnerImplementation contract)]
 
 validTransfer :: C.UseContract -> C.Transfer -> [AdmissionProblem]
 validTransfer contract transfer =
@@ -193,19 +194,22 @@ matches contract target supplied = requested ++ domain ++ method ++ implementati
         [ ImplementationMismatch learnerSide key
         | (key, observations) <- attachments
         , actual <- observations
-        , Paths.forward (Paths.learner actual) == Paths.forward (Paths.engine actual) || isJust (Paths.observedCorrespondence actual)
+        , Paths.forward (Paths.learner actual) == Paths.forward (Paths.engine actual)
         , requirement <- toList (C.numericalRequirements (C.criterion contract))
         , Just learnerSide <- [Numerical.pathSide (C.relation requirement)]
-        , not (admissiblePath learnerSide (Paths.learner actual) && admissiblePath (otherSide learnerSide) (Paths.engine actual))
+        , not (learnerPath (Paths.learner actual) && enginePath learnerSide (Paths.engine actual))
         ]
-    admissiblePath side observation = maybe False (admissiblePathFor contract side) (Paths.implementationPolicy observation)
+    learnerPath observation = case C.learnerImplementation contract of
+        Just expected -> maybe False (samePathImplementation expected) (Paths.implementationPolicy observation)
+        Nothing -> False
+    enginePath learnerSide observation = maybe False (admissiblePathFor contract (otherSide learnerSide)) (Paths.implementationPolicy observation)
 
 otherSide :: Numerical.Side -> Numerical.Side
 otherSide Numerical.Reference = Numerical.Candidate
 otherSide Numerical.Candidate = Numerical.Reference
 
 samePathImplementation :: Policy.Description -> Policy.Description -> Bool
-samePathImplementation expected actual = and [Policy.model expected == Policy.model actual, Policy.revision expected == Policy.revision actual, Policy.tokenizer expected == Policy.tokenizer actual, Policy.base expected == Policy.base actual]
+samePathImplementation expected actual = and [Policy.model expected == Policy.model actual, Policy.revision expected == Policy.revision actual, Policy.tokenizer expected == Policy.tokenizer actual, Policy.base expected == Policy.base actual, Policy.assembly expected == Policy.assembly actual]
 
 admissiblePathFor :: C.UseContract -> Numerical.Side -> Policy.Description -> Bool
 admissiblePathFor contract side actual = samePathImplementation (C.implementation contract side) actual || any preserved (C.transfers contract)
@@ -235,13 +239,14 @@ transferred contract target supplied = generated || paths
             ]
     paths =
         or
-            [ maybe False (not . samePathImplementation (C.implementation contract side)) (Paths.implementationPolicy observation)
+            [ learnerChanged || engineChanged
             | (_, observations) <- attachments
             , actual <- observations
-            , Paths.forward (Paths.learner actual) == Paths.forward (Paths.engine actual) || isJust (Paths.observedCorrespondence actual)
+            , Paths.forward (Paths.learner actual) == Paths.forward (Paths.engine actual)
             , requirement <- toList (C.numericalRequirements (C.criterion contract))
             , Just learnerSide <- [Numerical.pathSide (C.relation requirement)]
-            , (side, observation) <- [(learnerSide, Paths.learner actual), (otherSide learnerSide, Paths.engine actual)]
+            , let learnerChanged = maybe False (\expected -> maybe True (not . samePathImplementation expected) (Paths.implementationPolicy (Paths.learner actual))) (C.learnerImplementation contract)
+                  engineChanged = maybe False (not . samePathImplementation (C.implementation contract (otherSide learnerSide))) (Paths.implementationPolicy (Paths.engine actual))
             ]
 
 admissible :: C.UseContract -> Numerical.Side -> Policy.Description -> Bool

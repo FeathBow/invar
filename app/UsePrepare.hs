@@ -43,6 +43,7 @@ data Declaration = Declaration
     { workload :: FilePath
     , referencePolicy :: FilePath
     , candidatePolicy :: FilePath
+    , learnerPolicy :: Maybe FilePath
     , purpose :: String
     , context :: Integer
     , criterion :: Value
@@ -69,9 +70,10 @@ prepare supplied = do
     domain <- readWorkload (base </> workload declared)
     reference <- readPolicy "reference_policy" (base </> referencePolicy declared)
     candidate <- readPolicy "candidate_policy" (base </> candidatePolicy declared)
+    learner <- traverse (readPolicy "learner_policy" . (base </>)) (learnerPolicy declared)
     reliedOn <- traverse (digestBasis base) (zip [0 ..] (reliance declared))
     let (freeze, isolation, selection) = protocols declared
-        skeleton = U.UseContract (purpose declared) domain (Just method) reference candidate (fromInteger (context declared)) (U.Criterion [] Nothing []) freeze isolation selection [] []
+        skeleton = U.UseContract (purpose declared) domain (Just method) reference candidate learner (fromInteger (context declared)) (U.Criterion [] Nothing []) freeze isolation selection [] []
         document = case U.describeContract skeleton of
             Object encoded -> Object (Fields.insert "criterion" (criterion declared) (Fields.insert "reliance" (toJSONList reliedOn) encoded))
             other -> other
@@ -181,7 +183,7 @@ declaration document =
         L.only top ["format", "artifacts", "decisions"] fields
             *> formatted fields
             *> ( L.field "missing-decision" top fields "artifacts" `andThen` L.object artifactsPath `andThen` \artifacts ->
-                    L.only artifactsPath ["workload", "reference_policy", "candidate_policy"] artifacts
+                    L.only artifactsPath ["workload", "reference_policy", "candidate_policy", "learner_policy"] artifacts
                         *> ( L.field "missing-decision" top fields "decisions" `andThen` L.object decisionsPath `andThen` \decisions ->
                                 decided artifacts decisions
                            )
@@ -192,6 +194,10 @@ declaration document =
     decisionsPath = L.child top "decisions"
     formatted fields = L.field "invalid-value" top fields "format" `andThen` L.text "invalid-value" (L.child top "format") `andThen` \found -> if found == "invar-use-declaration-v1" then value () else problem "invalid-value" (L.render (L.child top "format")) "Expected invar-use-declaration-v1"
     artifact artifacts name = L.field "artifact-missing" artifactsPath artifacts name `andThen` L.text "artifact-missing" (L.child artifactsPath name)
+    optionalArtifact artifacts name = case L.optionalField artifacts name of
+        Nothing -> pure Nothing
+        Just (String path) -> pure (Just (Text.unpack path))
+        Just _ -> problem "invalid-value" (L.render (L.child artifactsPath name)) "Expected an artifact path"
     decision = L.field "missing-decision" decisionsPath
     said decisions name = decision decisions name `andThen` L.text "missing-decision" (L.child decisionsPath name)
     decided artifacts decisions =
@@ -201,6 +207,7 @@ declaration document =
                     <$> artifact artifacts "workload"
                     <*> artifact artifacts "reference_policy"
                     <*> artifact artifacts "candidate_policy"
+                    <*> optionalArtifact artifacts "learner_policy"
                     <*> said decisions "purpose"
                     <*> (decision decisions "context_tokens" `andThen` L.positive (L.child decisionsPath "context_tokens"))
                     <*> (decision decisions "quality" `andThen` quality)
@@ -208,11 +215,12 @@ declaration document =
                     <*> (decision decisions "protocols" `andThen` protocolsOf)
                     <*> (decision decisions "reliance" `andThen` reliances)
                )
-    build workloadPath referencePath candidatePath purposeText contextTokens (lossValue, lossReview) (numericalValues, invarianceValues, requirementReview) (freeze, isolation, selection) relied =
+    build workloadPath referencePath candidatePath learnerPath purposeText contextTokens (lossValue, lossReview) (numericalValues, invarianceValues, requirementReview) (freeze, isolation, selection) relied =
         Declaration
             workloadPath
             referencePath
             candidatePath
+            learnerPath
             purposeText
             (toInteger contextTokens)
             (object ["numerical" .= numericalValues, "loss" .= lossValue, "invariance" .= invarianceValues])

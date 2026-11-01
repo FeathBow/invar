@@ -83,7 +83,6 @@ data Premise
     | VocabularyCorrespondence
     | PathAuthenticity
     | PathBehavior
-    | ForwardCorrespondence
     | ScheduleVariation
     | IndependentUnits
     | ReplicateSamplingLaw
@@ -123,7 +122,6 @@ premiseDescription selected = case selected of
     VocabularyCorrespondence -> probing "vocabulary-coordinate-correspondence"
     PathAuthenticity -> paths "path-execution-report-authenticity"
     PathBehavior -> paths "path-behavior-measurement"
-    ForwardCorrespondence -> paths "forward-weight-correspondence"
     ScheduleVariation -> describe "schedule-variation" "finite-paired-inference/v1" "repeated-candidate-execution/v1"
     IndependentUnits -> statistical "independent-unit-sampling"
     ReplicateSamplingLaw -> statistical "declared-replicate-sampling-law"

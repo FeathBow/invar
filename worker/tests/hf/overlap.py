@@ -267,6 +267,7 @@ class OverlapTests(unittest.TestCase):
                     "RequirementsJustified", "ContractFrozen", "AcceptanceIsolation", "SelectionControl"]
         policy = {"format": "invar-policy-v1", "model": described["model"], "revision": described["revision"],
                   "adapter": adapter, "tokenizer": described["tokenizer"], "base": described["base"], "assembly": described["assembly"]}
+        learner = {**policy, "assembly": self.settings["assembly-digest"]}
         contract = self.root / "pathcontract.json"
         contract.write_text(json.dumps({
             "format": "invar-use-contract/v2", "purpose": "Fixture training-path comparison",
@@ -276,6 +277,7 @@ class OverlapTests(unittest.TestCase):
             "measurement": None,
             "reference": policy,
             "candidate": policy,
+            "learner": learner,
             "maximum_context": 1024,
             "criterion": {"numerical": [{"relation": {"kind": "training-path-token-log-gap", "learner": "candidate",
                                                        "budget": {"numerator": 1, "denominator": 2}},
@@ -288,8 +290,72 @@ class OverlapTests(unittest.TestCase):
                    "history-python": sys.executable,
                    **{"history-" + key: value for key, value in independent(self.root, final, "pathcontract").items()}}
         decision = core.invoke(["use", "admit", "--contract", contract, "--runs", runs, *flags(history)], executable=CORE)
-        self.assertEqual(decision["decision"]["status"], "admitted_under_declared_reliance")
+        self.assertEqual(decision["decision"]["status"], "admitted_under_declared_reliance", decision["decision"].get("reasons"))
         self.assertFalse(any("ImplementationMismatch" in reason for reason in decision["decision"].get("reasons", [])))
+
+    def test_a_stale_training_path_uses_the_update_cohort(self):
+        _, output = self.train("stalepath", 2, staleness=1)
+        final = output / "generation2"
+        described = core.invoke(["policy", "inspect", "--checkpoint", self.settings["checkpoint"]], executable=CORE)
+        adapter = described["adapter"]
+        identities = {"digest": adapter, "tokenizer-digest": described["tokenizer"], "base-digest": described["base"],
+                      "assembly-digest": described["assembly"]}
+        logs = {}
+        calls = iter(range(301, 309))
+        for cohort in (0, 1):
+            for seed in SEEDS:
+                for side in ("reference", "candidate"):
+                    call = next(calls)
+                    logs[call] = self.root / f"stale{call}.jsonl"
+                    execute([CORE, "infer", *flags({**identities, "prompt": PROMPT, "tokens": 4, "temperature": 0.8, "seed": seed,
+                                                    "call": call, "attempt": call, "instance": call, "python": sys.executable,
+                                                    "worker": ENTRY, "cache": self.root, "adapter": self.settings["checkpoint"] / "adapter.safetensors"})], logs[call])
+        runs = self.root / "staleruns.json"
+        rows = []
+        for cohort in (0, 1):
+            for name, seed, first, second in zip(("0", "1"), SEEDS, (301, 303), (302, 304)):
+                reference, candidate = first + 4 * cohort, second + 4 * cohort
+                arguments = []
+                for side, call in (("reference", reference), ("candidate", candidate)):
+                    arguments += [f"--{side}-log", str(logs[call]), f"--{side}-exit-code", "0",
+                                  f"--{side}-call", str(call), f"--{side}-attempt", str(call), f"--{side}-instance", str(call),
+                                  f"--{side}-prompt", PROMPT, f"--{side}-tokens", "4", f"--{side}-temperature", "0.8",
+                                  f"--{side}-seed", str(seed)]
+                    arguments += [f"--{side}-digest", adapter, f"--{side}-tokenizer-digest", described["tokenizer"],
+                                  f"--{side}-base-digest", described["base"], f"--{side}-assembly-digest", described["assembly"]]
+                rows.append([cohort, name, arguments])
+        runs.write_text(json.dumps(rows))
+        reliance = ["ExecutionAuthenticity", "SelectedBehavior", "OwnCacheExecution", "PathAuthenticity", "PathBehavior",
+                    "RequirementsJustified", "ContractFrozen", "AcceptanceIsolation", "SelectionControl"]
+        policy = {"format": "invar-policy-v1", "model": described["model"], "revision": described["revision"],
+                  "adapter": adapter, "tokenizer": described["tokenizer"], "base": described["base"], "assembly": described["assembly"]}
+        learner = {**policy, "assembly": self.settings["assembly-digest"]}
+        contract = self.root / "stalecontract.json"
+        contract.write_text(json.dumps({
+            "format": "invar-use-contract/v2", "purpose": "Fixture stale training-path comparison",
+            "domain": {"name": "stale-path-fixture", "provenance_hex": "00" * 32, "unit_definition": "one task per unit",
+                       "inputs": [{"cohort": cohort, "key": name, "unit": name, "prompt": PROMPT, "tokens": 4,
+                                   "temperature": 0.8, "seed": seed, "parameters": {}}
+                                  for cohort in (0, 1) for name, seed in zip(("0", "1"), SEEDS)]},
+            "measurement": None,
+            "reference": policy,
+            "candidate": policy,
+            "learner": learner,
+            "maximum_context": 1024,
+            "criterion": {"numerical": [{"relation": {"kind": "training-path-token-log-gap", "learner": "candidate",
+                                                       "budget": {"numerator": 1, "denominator": 2}},
+                                         "probe_steps": [], "rationale": "Fixture per-token training-inference bound"}],
+                          "loss": None, "invariance": []},
+            "protocols": {"freeze": "Fixture only", "isolation": "Fixture only", "selection": "Fixture only"},
+            "reliance": [{"premise": kind, "authority": "Fixture authority", "basis_sha256": "00" * 32} for kind in reliance],
+            "transfers": []}))
+        history = {"history-run": output, "history-codec": Path(__file__).resolve().parents[3] / "entries" / "codec.py",
+                   "history-python": sys.executable,
+                   **{"history-" + key: value for key, value in independent(self.root, final, "stalepath").items()}}
+        decision = core.invoke(["use", "admit", "--contract", contract, "--runs", runs, *flags(history)], executable=CORE)
+        self.assertEqual(decision["decision"]["status"], "admitted_under_declared_reliance", decision["decision"].get("reasons"))
+        self.assertEqual({item["cohort"] for item in decision["observation"]["training_paths"]}, {0, 1})
+        self.assertTrue(decision["finding"]["path_policy_differences"])
 
     def test_staleness_is_a_schedule_difference(self):
         _, fresh = self.train("fresh", 1, staleness=0)
