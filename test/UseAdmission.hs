@@ -429,8 +429,8 @@ trainingPaths = do
         inputFor name = case find ((== U.Key 0 name) . U.inputKey) inputs of
             Just selected -> P.Input (Text.pack (U.prompt selected)) (U.seed selected) (U.tokens selected) (U.temperature selected)
             Nothing -> error "Fixture input missing"
-        learner name = P.Observation tokenPath rule (inputFor name) forward (P.ImplementationId "learner") (Just policy) (map castFloatToWord32 [-1, -2]) (P.Learner 0 0 (Text.pack name) P.Proximal)
-        engine name = P.Observation tokenPath rule (inputFor name) forward (P.ImplementationId "engine") (Just policy) (map castFloatToWord32 [-1, -1.5]) (P.Rollout 0 (Text.pack name))
+        learner name = P.Observation tokenPath rule (inputFor name) forward (P.ImplementationId "learner") (Just policy) (map castFloatToWord32 [-1, -2]) (P.Execution 1 2 3 (replicate 64 '9')) (P.Learner 0 0 (Text.pack name) P.Proximal)
+        engine name = P.Observation tokenPath rule (inputFor name) forward (P.ImplementationId "engine") (Just policy) (map castFloatToWord32 [-1, -1.5]) (P.Execution 4 5 6 (replicate 64 '8')) (P.Rollout 0 (Text.pack name))
         scoped name = P.scoped (learner name) (engine name)
         current name = ((learner name) {P.provenance = P.Learner 0 1 (Text.pack name) P.Current}, engine name)
         changedEngine name = (engine name) {P.forward = P.ForwardWeights (replicate 64 '9') (replicate 64 '2')}
@@ -455,6 +455,11 @@ trainingPaths = do
         _ -> failure
     missing <- unknown (U.admit within (established within baseObserved))
     assert (not (null missing) && all isFindingUnknown missing)
+    partial <- evalEither (U.withPaths [(U.Key 0 "a1", [scoped "a1"])] baseObserved)
+    partialMissing <- unknown (U.admit within (established within partial))
+    assert (not (null partialMissing) && all isFindingUnknown partialMissing)
+    partialOutside <- unknown (U.admit outside (established outside partial))
+    assert (not (null partialOutside) && all isFindingUnknown partialOutside)
     reweighted <- evalEither (Policy.describe (Policy.model policy, Policy.revision policy) (replicate 64 '8', Policy.tokenizer policy, Policy.base policy, Policy.assembly policy))
     let weighted name = (learner name) {P.implementationPolicy = Just reweighted}
         weightedEngine name = (engine name) {P.implementationPolicy = Just reweighted}

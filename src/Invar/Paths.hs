@@ -14,6 +14,7 @@ module Invar.Paths (
     Provenance (..),
     Input (..),
     Side (..),
+    Execution (..),
     Observation (..),
     Relation (..),
     Claim (..),
@@ -120,6 +121,14 @@ data Side = Side
     }
     deriving (Eq, Show)
 
+data Execution = Execution
+    { executionCall :: Natural
+    , executionAttempt :: Natural
+    , executionInstance :: Natural
+    , executionLog :: String
+    }
+    deriving (Eq, Show)
+
 data Observation = Observation
     { path :: PathId
     , rule :: Rule
@@ -128,6 +137,7 @@ data Observation = Observation
     , implementation :: ImplementationId
     , implementationPolicy :: Maybe Policy.Description
     , words :: [Word32]
+    , execution :: Execution
     , provenance :: Provenance
     }
     deriving (Eq, Show)
@@ -199,6 +209,7 @@ describeObservation observation =
         , "implementation_sha256" .= implementationText (implementation observation)
         , "policy" .= fmap policyValue (implementationPolicy observation)
         , "words" .= words observation
+        , "execution" .= executionValue (execution observation)
         , "provenance" .= provenanceValue (provenance observation)
         ]
 
@@ -207,6 +218,9 @@ describeInput selected = object ["prompt" .= inputPrompt selected, "seed" .= inp
 
 policyValue :: Policy.Description -> Value
 policyValue policy = object ["model" .= Policy.model policy, "revision" .= Policy.revision policy, "adapter" .= Policy.adapter policy, "tokenizer" .= Policy.tokenizer policy, "base" .= Policy.base policy, "assembly" .= Policy.assembly policy]
+
+executionValue :: Execution -> Value
+executionValue source = object ["call" .= executionCall source, "attempt" .= executionAttempt source, "instance" .= executionInstance source, "log_sha256" .= executionLog source]
 
 provenanceValue :: Provenance -> Value
 provenanceValue (Rollout version name) = object ["kind" .= ("rollout" :: Text), "version" .= version, "sample" .= name]
@@ -234,16 +248,18 @@ implementationText (ImplementationId identity) = Artifact.hex identity
 scopeText :: ScopeId -> String
 scopeText (ScopeId identity) = Artifact.hex identity
 
-fromUpdate :: Side -> Side -> Report.Report -> ByteString -> [(Natural, Text, String)] -> Either String UpdateObservations
-fromUpdate learner engine report encoded states = do
+fromUpdate :: Side -> Side -> Report.Report -> ByteString -> Map.Map Text Execution -> [(Natural, Text, String)] -> Either String UpdateObservations
+fromUpdate learner engine report encoded engineExecutions states = do
     samples <- Probability.observe (Report.invocation report, Report.checkedRequest report) encoded
-    fromSamples learner engine report samples states
+    fromSamples learner engine report samples engineExecutions states
 
-fromSamples :: Side -> Side -> Report.Report -> [Probability.Sample] -> [(Natural, Text, String)] -> Either String UpdateObservations
-fromSamples learnerIdentity engineIdentity report probabilities currentStates = parseEither (withObject "update path observations" (document probabilities)) (Request.value (Report.checkedRequest report))
+fromSamples :: Side -> Side -> Report.Report -> [Probability.Sample] -> Map.Map Text Execution -> [(Natural, Text, String)] -> Either String UpdateObservations
+fromSamples learnerIdentity engineIdentity report probabilities engineExecutions currentStates = do
+    learnerExecution <- reportExecution report
+    parseEither (withObject "update path observations" (document probabilities learnerExecution)) (Request.value (Report.checkedRequest report))
   where
     states = Map.fromList [((step, sample), state) | (step, sample, state) <- currentStates]
-    document samples fields = do
+    document samples learnerExecution fields = do
         policy <- fields .: "policy" :: Parser String
         reference <- fields .: "reference" :: Parser String
         learnerBase <- fields .: "base" :: Parser String
@@ -277,11 +293,12 @@ fromSamples learnerIdentity engineIdentity report probabilities currentStates = 
                 learnerPolicy <- either fail pure (learnerDescription learnerIdentifier policy)
                 referenceLearnerPolicy <- either fail pure (learnerDescription learnerIdentifier reference)
                 probability <- maybe (fail "Probability sample missing from the admitted update") pure (Map.lookup name byName)
+                engineExecution <- maybe (fail "A path sample has no admitted engine execution") pure (Map.lookup name engineExecutions)
                 let tokenPath = TokenPath (take (fromIntegral prefix) tokens) (drop (fromIntegral prefix) tokens)
                     learnerImplementation = implementationId "learner" (sideBase learnerIdentity) (sideAssembly learnerIdentity)
                     engineImplementation = implementationId "engine" (sideBase engineIdentity) (sideAssembly engineIdentity)
-                    learner step role adapter description words32 = Observation (pathId tokenPath) rule selectedInput (ForwardWeights (sideBase learnerIdentity) adapter) learnerImplementation (Just description) words32 (Learner update step name role)
-                    engine adapter description words32 = Observation (pathId tokenPath) rule selectedInput (ForwardWeights (sideBase engineIdentity) adapter) engineImplementation (Just description) words32 (Rollout version name)
+                    learner step role adapter description words32 = Observation (pathId tokenPath) rule selectedInput (ForwardWeights (sideBase learnerIdentity) adapter) learnerImplementation (Just description) words32 learnerExecution (Learner update step name role)
+                    engine adapter description words32 = Observation (pathId tokenPath) rule selectedInput (ForwardWeights (sideBase engineIdentity) adapter) engineImplementation (Just description) words32 engineExecution (Rollout version name)
                     proximalPair = (learner 0 Proximal policy learnerPolicy (Probability.proximal probability), engine behaviorPolicy enginePolicy (Probability.behavior probability))
                     referencePairs = case Probability.reference probability of
                         Nothing -> []
@@ -299,6 +316,16 @@ fromSamples learnerIdentity engineIdentity report probabilities currentStates = 
         proximalOf (pair, _, _) = [pair]
         referencesOf (_, pairs, _) = pairs
         currentsOf (_, _, pairs) = pairs
+
+reportExecution :: Report.Report -> Either String Execution
+reportExecution report = do
+    bound <- Report.bindingValue report
+    call <- field "call" bound
+    attempt <- field "attempt" bound
+    instance' <- field "instance" bound
+    pure (Execution call attempt instance' (Report.logDigest report))
+  where
+    field name = parseEither (withObject "update binding" (.: name))
 
 measure :: Observation -> Observation -> Either Problem Gap
 measure left right = measureAll [(left, right)]

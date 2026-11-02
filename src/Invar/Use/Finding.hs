@@ -63,17 +63,21 @@ requirements selected criterion attachments = case Contract.lossRequirement crit
     numerical requirement = case (Numerical.pathRelation (Contract.relation requirement), Numerical.pathSide (Contract.relation requirement)) of
         (Just relation, Just _) -> pathClaims relation
         _ -> [Evidence.Numerical (Numerical.Claim (Numerical.scope (U.numerical sample)) (Contract.relation requirement)) | sample <- toList samples]
-    pathClaims relation = case comparable relation of
-        [] -> [Evidence.Paths (Paths.ScopedClaim (Paths.missingScope (map U.key (toList samples)) relation) relation)]
-        _ -> [Evidence.Paths (Paths.ScopedClaim (Paths.scope actual) relation) | actual <- comparable relation]
-    comparable relation =
-        [ actual
-        | sample <- toList samples
-        , (key, observations) <- attachments
-        , key == U.key sample
-        , actual <- observations
-        , not (Paths.policyDifference relation (Paths.learner actual) (Paths.engine actual))
-        ]
+    pathClaims relation
+        | not (null uncovered) = [missing key | key <- uncovered]
+        | null compared = [missing key | key <- keys]
+        | otherwise = [Evidence.Paths (Paths.ScopedClaim (Paths.scope actual) relation) | actual <- compared]
+      where
+        keys = map U.key (toList samples)
+        uncovered = [key | key <- keys, null (attached key)]
+        compared =
+            [ actual
+            | key <- keys
+            , actual <- attached key
+            , not (Paths.policyDifference relation (Paths.learner actual) (Paths.engine actual))
+            ]
+        attached key = [actual | (candidate, observations) <- attachments, candidate == key, actual <- observations]
+        missing key = Evidence.Paths (Paths.ScopedClaim (Paths.missingScope key relation) relation)
     invariance =
         [ Evidence.Numerical (Numerical.Claim (Numerical.scope repeated) (Contract.invariant requirement))
         | sample <- toList samples

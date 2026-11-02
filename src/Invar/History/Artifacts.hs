@@ -8,6 +8,7 @@ import Data.Aeson.Types (parseEither)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
+import Data.Text qualified as Text
 import Invar.History.Cohort qualified as Cohort
 import Invar.History.Generation qualified as Generation
 import Invar.History.Publication qualified as Publication
@@ -25,6 +26,7 @@ import Invar.Learn.Step qualified as Step
 import Invar.Learn.Stream qualified as S
 import Invar.Paths qualified as Paths
 import Invar.Policy qualified as Policy
+import Invar.Spec.Invocation qualified as V
 import System.FilePath ((</>))
 import System.Posix.Files qualified as Posix
 
@@ -55,13 +57,18 @@ successor (decoder, schema) (expected, generation) published = do
     learnerSide <- either invalid pure (Generation.learner generation)
     currentStates <- either invalid pure (Generation.currents generation)
     let engineSide = Paths.Side (Policy.model description) (Policy.revision description) (Policy.tokenizer description) (Policy.base description) (Policy.assembly description)
-    observations <- either invalid pure (Paths.fromSamples learnerSide engineSide report probabilities currentStates)
+        engineExecutions = Map.fromList [(Text.pack ("s" ++ show position), execution inferenceReport) | (position, inferenceReport) <- zip [(0 :: Int) ..] (Cohort.inferences (Generation.cohort generation))]
+    observations <- either invalid pure (Paths.fromSamples learnerSide engineSide report probabilities engineExecutions currentStates)
     learnerGap <- either (invalid . show) pure (Paths.measureAll (Paths.proximal observations))
     referenceGap <- case Paths.references observations of
         [] -> pure Nothing
         pairs -> Just <$> either (invalid . show) pure (Paths.measureAll pairs)
     let diagnostics = ["reference_engine" .= Paths.describeGap value | Just value <- [referenceGap]]
     pure (object (["publication" .= Publication.describe published, "state" .= observed, "gradients" .= gradients, "probabilities" .= map Probability.sampleObject probabilities, "learner_engine" .= Paths.describeGap learnerGap] ++ diagnostics), state', gradient, observations)
+
+execution :: Inference.Report -> Paths.Execution
+execution report = case Inference.binding report of
+    V.Binding (V.CallId call) (V.AttemptId attempt) (V.Instance instance') -> Paths.Execution call attempt instance' (Inference.logDigest report)
 
 stateSummary :: Checkpoint.Checked -> [Integer] -> IO Value
 stateSummary checked steps = pure (object ("steps" .= steps : Checkpoint.rngSummary checked))

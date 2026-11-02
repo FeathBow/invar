@@ -8,6 +8,7 @@ import Data.Char (ord)
 import Data.Either (isLeft)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (listToMaybe)
+import Data.Text qualified as Text
 import Data.Word (Word32)
 import GHC.Float (castFloatToWord32)
 import Hedgehog
@@ -18,7 +19,7 @@ import Invar.Spec.Program qualified as Source
 import Invar.Spec.Value qualified as Value
 import Learning (learnerWorld, world)
 import Probabilities (fixture)
-import Updates (setup, setupFor, wire)
+import Updates (change, setup, setupFor, wire)
 
 paths :: Group
 paths =
@@ -38,6 +39,7 @@ paths =
         , ("current observations use the adapter identity of their own optimizer step", once currentSteps)
         , ("a current step that changes state but not weights remains comparable", once currentComparable)
         , ("a current step whose state equals the starting adapter is compared through fromUpdate", once currentUnchanged)
+        , ("an observation keeps its admitted call, attempt, instance and source log", once executionIdentity)
         ]
   where
     once = withTests 1 . property
@@ -66,8 +68,14 @@ path = P.TokenPath [10, 11] [20, 21, 22]
 rule :: P.Rule
 rule = P.Rule 0.8 "processed" "none"
 
+execution :: P.Execution
+execution = P.Execution 5 6 7 (replicate 64 '9')
+
+engineExecutions :: Map.Map Text.Text P.Execution
+engineExecutions = Map.fromList [("s0", P.Execution 8 9 10 (replicate 64 '8')), ("s1", P.Execution 18 19 20 (replicate 64 '8'))]
+
 observation :: P.ForwardWeights -> [Word32] -> P.Observation
-observation forward words32 = P.Observation (P.pathId path) rule input forward (P.ImplementationId "learner") Nothing words32 (P.Learner 0 0 "s0" P.Proximal)
+observation forward words32 = P.Observation (P.pathId path) rule input forward (P.ImplementationId "learner") Nothing words32 execution (P.Learner 0 0 "s0" P.Proximal)
 
 claim :: P.Relation -> P.Claim
 claim = P.Claim
@@ -157,7 +165,7 @@ fromUpdate :: PropertyT IO ()
 fromUpdate = do
     (_, events) <- setup
     report <- evalEither (Report.admit 7 (wire events))
-    observed <- evalEither (P.fromUpdate learnerSide engineSide report (Lazy.toStrict (encode (fixture events))) [(0, "s0", startPolicy), (0, "s1", startPolicy)])
+    observed <- evalEither (P.fromUpdate learnerSide engineSide report (Lazy.toStrict (encode (fixture events))) engineExecutions [(0, "s0", startPolicy), (0, "s1", startPolicy)])
     let pairs = P.proximal observed
     assert (not (null pairs))
     gap <- evalEither (P.measureAll pairs)
@@ -176,7 +184,7 @@ reference :: PropertyT IO ()
 reference = do
     (_, events) <- setupFor learnerWorld
     report <- evalEither (Report.admit 7 (wire events))
-    observed <- evalEither (P.fromUpdate learnerSide engineSide report (Lazy.toStrict (encode (fixture events))) [(0, "s0", startPolicy), (0, "s1", startPolicy)])
+    observed <- evalEither (P.fromUpdate learnerSide engineSide report (Lazy.toStrict (encode (fixture events))) engineExecutions [(0, "s0", startPolicy), (0, "s1", startPolicy)])
     (learner, engine) <- evalMaybe (listToMaybe (P.references observed))
     P.forward learner === P.ForwardWeights (replicate 64 'e') (replicate 64 'c')
     P.forward engine === P.ForwardWeights (replicate 64 '0') (replicate 64 'c')
@@ -212,7 +220,7 @@ currentSteps = do
         sameReference = Map.insert (Source.Semantic "reference_scores") (world Map.! Source.Semantic "behavior") world
     (_, events) <- setupFor (Map.insert (Source.Semantic "algorithm") algorithm sameReference)
     report <- evalEither (Report.admit 7 (wire events))
-    observed <- evalEither (P.fromUpdate learnerSide engineSide report (Lazy.toStrict (encode (fixture events))) [(0, "s0", startPolicy), (0, "s1", "1" <> replicate 63 '1'), (1, "s0", startPolicy), (1, "s1", "1" <> replicate 63 '1')])
+    observed <- evalEither (P.fromUpdate learnerSide engineSide report (Lazy.toStrict (encode (fixture events))) engineExecutions [(0, "s0", startPolicy), (0, "s1", "1" <> replicate 63 '1'), (1, "s0", startPolicy), (1, "s1", "1" <> replicate 63 '1')])
     length (P.currents observed) === 2
     (firstLearner, firstEngine) <- evalMaybe (listToMaybe (P.currents observed))
     (secondLearner, secondEngine) <- evalMaybe (listToMaybe (drop 1 (P.currents observed)))
@@ -242,7 +250,7 @@ currentUnchanged = do
         states = [(step, name, startPolicy) | step <- [0, 1], name <- ["s0", "s1"]]
     (_, events) <- setupFor (Map.insert (Source.Semantic "algorithm") algorithm sameBase)
     report <- evalEither (Report.admit 7 (wire events))
-    observed <- evalEither (P.fromUpdate learnerSide sameEngineSide report (Lazy.toStrict (encode (fixture events))) states)
+    observed <- evalEither (P.fromUpdate learnerSide sameEngineSide report (Lazy.toStrict (encode (fixture events))) engineExecutions states)
     length (P.currents observed) === 2
     (firstLearner, firstEngine) <- evalMaybe (listToMaybe (P.currents observed))
     (secondLearner, secondEngine) <- evalMaybe (listToMaybe (drop 1 (P.currents observed)))
@@ -254,3 +262,21 @@ currentUnchanged = do
     case P.provenance secondLearner of
         P.Learner _ step _ P.Current -> step === 1
         _ -> failure
+
+executionIdentity :: PropertyT IO ()
+executionIdentity = do
+    (_, events) <- setup
+    let changed = map (change "binding" (object ["call" .= (8 :: Int), "attempt" .= (18 :: Int), "instance" .= (28 :: Int)])) events
+    first <- evalEither (Report.admit 7 (wire events))
+    second <- evalEither (Report.admit 8 (wire changed))
+    let states = [(step, name, startPolicy) | step <- [0, 1], name <- ["s0", "s1"]]
+    firstObserved <- evalEither (P.fromUpdate learnerSide engineSide first (Lazy.toStrict (encode (fixture events))) engineExecutions states)
+    secondObserved <- evalEither (P.fromUpdate learnerSide engineSide second (Lazy.toStrict (encode (fixture changed))) engineExecutions states)
+    (firstLearner, firstEngine) <- evalMaybe (listToMaybe (P.proximal firstObserved))
+    (secondLearner, secondEngine) <- evalMaybe (listToMaybe (P.proximal secondObserved))
+    P.execution firstLearner === P.Execution 7 11 13 (Report.logDigest first)
+    P.execution secondLearner === P.Execution 8 18 28 (Report.logDigest second)
+    P.execution firstEngine === P.execution secondEngine
+    assert (P.scope (P.scoped firstLearner firstEngine) /= P.scope (P.scoped secondLearner secondEngine))
+    let movedEngine = secondEngine {P.execution = P.Execution 9 9 9 (replicate 64 '7')}
+    assert (P.scope (P.scoped secondLearner secondEngine) /= P.scope (P.scoped secondLearner movedEngine))
