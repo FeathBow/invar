@@ -4,6 +4,7 @@ module Paths (paths) where
 
 import Data.Aeson (encode, object, (.=))
 import Data.ByteString.Lazy qualified as Lazy
+import Data.Char (ord)
 import Data.Either (isLeft)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (listToMaybe)
@@ -36,6 +37,7 @@ paths =
         , ("a path observation enters the evidence graph with its external premises", once evidence)
         , ("current observations use the adapter identity of their own optimizer step", once currentSteps)
         , ("a current step that changes state but not weights remains comparable", once currentComparable)
+        , ("a current step whose state equals the starting adapter is compared through fromUpdate", once currentUnchanged)
         ]
   where
     once = withTests 1 . property
@@ -227,3 +229,28 @@ currentComparable = do
     gap <- evalEither (P.measure learner engine)
     P.judge (claim P.SameWords) learner engine === P.Satisfied gap
     assert (not (P.policyDifference P.SameWords learner engine))
+
+currentUnchanged :: PropertyT IO ()
+currentUnchanged = do
+    let algorithm = Value.Record (Map.fromList [("epsilon", Value.Atom (Value.Number (1 / 5))), ("penalty", Value.Atom (Value.Number (1 / 25))), ("delta", Value.Atom (Value.Number (1 / 10000))), ("steps", Value.Atom (Value.Number 2))])
+        sameReference = Map.insert (Source.Semantic "reference_scores") (world Map.! Source.Semantic "behavior") world
+        sameBase = Map.adjust replace (Source.Semantic "behavior_model") sameReference
+        replace (Value.Record fields) = Value.Record (Map.insert "base" (textValue (replicate 64 'e')) fields)
+        replace value = value
+        textValue value = Value.Sequence (map (Value.Atom . Value.Token . fromIntegral . ord) value)
+        sameEngineSide = engineSide {P.sideBase = replicate 64 'e'}
+        states = [(step, name, startPolicy) | step <- [0, 1], name <- ["s0", "s1"]]
+    (_, events) <- setupFor (Map.insert (Source.Semantic "algorithm") algorithm sameBase)
+    report <- evalEither (Report.admit 7 (wire events))
+    observed <- evalEither (P.fromUpdate learnerSide sameEngineSide report (Lazy.toStrict (encode (fixture events))) states)
+    length (P.currents observed) === 2
+    (firstLearner, firstEngine) <- evalMaybe (listToMaybe (P.currents observed))
+    (secondLearner, secondEngine) <- evalMaybe (listToMaybe (drop 1 (P.currents observed)))
+    firstGap <- evalEither (P.measure firstLearner firstEngine)
+    secondGap <- evalEither (P.measure secondLearner secondEngine)
+    P.judge (claim P.SameWords) firstLearner firstEngine === P.Satisfied firstGap
+    P.judge (claim P.SameWords) secondLearner secondEngine === P.Satisfied secondGap
+    assert (not (P.policyDifference P.SameWords secondLearner secondEngine))
+    case P.provenance secondLearner of
+        P.Learner _ step _ P.Current -> step === 1
+        _ -> failure

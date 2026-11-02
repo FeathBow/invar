@@ -355,7 +355,11 @@ class OverlapTests(unittest.TestCase):
         decision = core.invoke(["use", "admit", "--contract", contract, "--runs", runs, *flags(history)], executable=CORE)
         self.assertEqual(decision["decision"]["status"], "admitted_under_declared_reliance", decision["decision"].get("reasons"))
         self.assertEqual({item["cohort"] for item in decision["observation"]["training_paths"]}, {0, 1})
-        self.assertTrue(decision["finding"]["path_policy_differences"])
+        self.assertTrue([item for item in decision["observation"]["training_paths"] if item["cohort"] == 0])
+        differences = decision["finding"]["path_policy_differences"]
+        self.assertTrue(differences)
+        self.assertTrue(all("cohort = 1" in item["input"] for item in differences))
+        self.assertTrue(any(item["observation"]["learner"]["provenance"]["role"] == "proximal" for item in differences))
 
     def test_staleness_is_a_schedule_difference(self):
         _, fresh = self.train("fresh", 1, staleness=0)
