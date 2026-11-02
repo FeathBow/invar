@@ -292,6 +292,13 @@ class OverlapTests(unittest.TestCase):
         decision = core.invoke(["use", "admit", "--contract", contract, "--runs", runs, *flags(history)], executable=CORE)
         self.assertEqual(decision["decision"]["status"], "admitted_under_declared_reliance", decision["decision"].get("reasons"))
         self.assertFalse(any("ImplementationMismatch" in reason for reason in decision["decision"].get("reasons", [])))
+        observations = [observation for item in decision["observation"]["training_paths"] for observation in item["observations"]]
+        self.assertTrue(observations)
+        for observation in observations:
+            for side in ("learner", "engine"):
+                execution = observation[side]["execution"]
+                self.assertEqual(set(execution), {"call", "attempt", "instance", "log_sha256"})
+                self.assertTrue(execution["log_sha256"])
 
     def test_a_stale_training_path_uses_the_update_cohort(self):
         _, output = self.train("stalepath", 2, staleness=1)

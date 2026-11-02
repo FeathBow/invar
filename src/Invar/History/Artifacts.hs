@@ -8,11 +8,11 @@ import Data.Aeson.Types (parseEither)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
-import Data.Text qualified as Text
 import Invar.History.Cohort qualified as Cohort
 import Invar.History.Generation qualified as Generation
 import Invar.History.Publication qualified as Publication
 import Invar.Infer.Observation qualified as Inference
+import Invar.Infer.Trajectory qualified as Trajectory
 import Invar.Json qualified as Json
 import Invar.Learn qualified as Learn
 import Invar.Learn.Adapter qualified as Adapter
@@ -57,7 +57,7 @@ successor (decoder, schema) (expected, generation) published = do
     learnerSide <- either invalid pure (Generation.learner generation)
     currentStates <- either invalid pure (Generation.currents generation)
     let engineSide = Paths.Side (Policy.model description) (Policy.revision description) (Policy.tokenizer description) (Policy.base description) (Policy.assembly description)
-        engineExecutions = Map.fromList [(Text.pack ("s" ++ show position), execution inferenceReport) | (position, inferenceReport) <- zip [(0 :: Int) ..] (Cohort.inferences (Generation.cohort generation))]
+    engineExecutions <- either invalid pure (executions probabilities (Cohort.inferences (Generation.cohort generation)))
     observations <- either invalid pure (Paths.fromSamples learnerSide engineSide report probabilities engineExecutions currentStates)
     learnerGap <- either (invalid . show) pure (Paths.measureAll (Paths.proximal observations))
     referenceGap <- case Paths.references observations of
@@ -65,6 +65,15 @@ successor (decoder, schema) (expected, generation) published = do
         pairs -> Just <$> either (invalid . show) pure (Paths.measureAll pairs)
     let diagnostics = ["reference_engine" .= Paths.describeGap value | Just value <- [referenceGap]]
     pure (object (["publication" .= Publication.describe published, "state" .= observed, "gradients" .= gradients, "probabilities" .= map Probability.sampleObject probabilities, "learner_engine" .= Paths.describeGap learnerGap] ++ diagnostics), state', gradient, observations)
+
+executions :: [Probability.Sample] -> [Inference.Report] -> Either String (Map Text Paths.Execution)
+executions samples reports = do
+    unless (length samples == length reports) (Left "A generation's path samples and admitted inferences differ")
+    Map.fromList <$> traverse pair (zip samples reports)
+  where
+    pair (sample, inferenceReport) = do
+        unless (Probability.behavior sample == Trajectory.behaviorBits (Inference.trajectory inferenceReport)) (Left "A path sample's behavior words differ from its admitted inference")
+        pure (Probability.sampleName sample, execution inferenceReport)
 
 execution :: Inference.Report -> Paths.Execution
 execution report = case Inference.binding report of

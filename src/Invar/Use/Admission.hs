@@ -194,7 +194,6 @@ matches contract target supplied = requested ++ domain ++ method ++ implementati
         [ ImplementationMismatch learnerSide key
         | (key, observations) <- attachments
         , actual <- observations
-        , Paths.forward (Paths.learner actual) == Paths.forward (Paths.engine actual)
         , requirement <- toList (C.numericalRequirements (C.criterion contract))
         , Just learnerSide <- [Numerical.pathSide (C.relation requirement)]
         , not (learnerPath (Paths.learner actual) && enginePath learnerSide (Paths.engine actual))

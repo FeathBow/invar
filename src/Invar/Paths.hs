@@ -162,6 +162,7 @@ data Gap = Gap
 
 data Problem
     = ScopeMismatch ScopeId ScopeId
+    | InputDiffer Input Input
     | PathDiffer PathId PathId
     | RuleDiffer Rule Rule
     | ForwardDiffer ForwardWeights ForwardWeights
@@ -337,6 +338,7 @@ measureAll observations = do
 
 checkedPair :: (Observation, Observation) -> Either Problem [(Word32, Word32)]
 checkedPair (left, right)
+    | input left /= input right = Left (InputDiffer (input left) (input right))
     | path left /= path right = Left (PathDiffer (path left) (path right))
     | rule left /= rule right = Left (RuleDiffer (rule left) (rule right))
     | length (words left) /= length (words right) = Left (LengthDiffer (fromIntegral (length (words left))) (fromIntegral (length (words right))))
@@ -380,6 +382,7 @@ implementationId role base assembly = ImplementationId (SHA256.hash (Canonical.e
 
 judge :: Claim -> Observation -> Observation -> Judgement
 judge claim left right
+    | input left /= input right = Insufficient (InputDiffer (input left) (input right))
     | path left /= path right = Insufficient (PathDiffer (path left) (path right))
     | rule left /= rule right = Insufficient (RuleDiffer (rule left) (rule right))
     | not (comparable left right) = Insufficient (ForwardDiffer (forward left) (forward right))
@@ -404,7 +407,8 @@ judge claim left right
 
 policyDifference :: Relation -> Observation -> Observation -> Bool
 policyDifference relation left right =
-    path left == path right
+    input left == input right
+        && path left == path right
         && rule left == rule right
         && valid (forward left)
         && valid (forward right)

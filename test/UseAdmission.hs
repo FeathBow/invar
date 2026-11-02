@@ -472,6 +472,15 @@ trainingPaths = do
     case U.admit within (established within alteredObserved) of
         U.Undetermined problems -> assert (any isImplementationMismatch problems)
         unexpected -> annotateShow unexpected >> failure
+    foreignObserved <- evalEither (U.withPaths ((U.Key 0 "a1", [P.scoped (altered "a1") (changedEngine "a1")]) : [(U.Key 0 name, [scoped name]) | name <- drop 1 names]) baseObserved)
+    case U.admit within (established within foreignObserved) of
+        U.Undetermined problems -> assert (any isImplementationMismatch problems)
+        unexpected -> annotateShow unexpected >> failure
+    let noLearner = within {U.learnerImplementation = Nothing}
+    case U.admit noLearner (established noLearner observed) of
+        U.Undetermined problems -> assert (U.InvalidContract "path requirements need a learner implementation" `elem` problems)
+        unexpected -> annotateShow unexpected >> failure
+    assert (isLeft (U.withPaths [(U.Key 0 "a1", [scoped "a1"]), (U.Key 0 "a1", [])] baseObserved))
     let badInput name = (learner name) {P.input = P.Input "wrong prompt" 1 1 0.8}
     assert (isLeft (U.withPaths [(U.Key 0 "a1", [P.scoped (badInput "a1") (engine "a1")])] baseObserved))
     let negative = within {U.criterion = (U.criterion within) {U.numericalRequirements = U.NumericalRequirement (N.PerTokenLogGapWithin N.Candidate (-1)) [] "Training path only" : drop 1 (U.numericalRequirements (U.criterion within))}}

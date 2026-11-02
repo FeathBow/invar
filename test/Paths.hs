@@ -40,6 +40,7 @@ paths =
         , ("a current step that changes state but not weights remains comparable", once currentComparable)
         , ("a current step whose state equals the starting adapter is compared through fromUpdate", once currentUnchanged)
         , ("an observation keeps its admitted call, attempt, instance and source log", once executionIdentity)
+        , ("a missing engine execution leaves path observations undetermined", once missingExecution)
         ]
   where
     once = withTests 1 . property
@@ -112,6 +113,9 @@ incomparable = do
         otherRule = left {P.rule = P.Rule 0.7 "processed" "none"}
         otherWeights = observation forwardB [word (-1)]
         otherAssembly = left {P.implementation = P.ImplementationId "another-assembly"}
+        otherInput = left {P.input = P.Input "Other prompt." 17 1 0.8}
+    P.judge (claim P.SameWords) left otherInput === P.Insufficient (P.InputDiffer input (P.input otherInput))
+    assert (isLeft (P.measure left otherInput))
     P.judge (claim P.SameWords) left otherPath === P.Insufficient (P.PathDiffer (P.path left) (P.path otherPath))
     P.judge (claim P.SameWords) left otherRule === P.Insufficient (P.RuleDiffer rule (P.Rule 0.7 "processed" "none"))
     P.judge (claim P.SameWords) left otherWeights === P.Insufficient (P.ForwardDiffer forwardA forwardB)
@@ -280,3 +284,10 @@ executionIdentity = do
     assert (P.scope (P.scoped firstLearner firstEngine) /= P.scope (P.scoped secondLearner secondEngine))
     let movedEngine = secondEngine {P.execution = P.Execution 9 9 9 (replicate 64 '7')}
     assert (P.scope (P.scoped secondLearner secondEngine) /= P.scope (P.scoped secondLearner movedEngine))
+
+missingExecution :: PropertyT IO ()
+missingExecution = do
+    (_, events) <- setup
+    report <- evalEither (Report.admit 7 (wire events))
+    let states = [(0, name, startPolicy) | name <- ["s0", "s1"]]
+    assert (isLeft (P.fromUpdate learnerSide engineSide report (Lazy.toStrict (encode (fixture events))) Map.empty states))
