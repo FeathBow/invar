@@ -51,6 +51,7 @@ import Invar.Infer.Result qualified as Result
 import Invar.Infer.Session qualified as Session
 import Invar.Infer.Trajectory qualified as Trajectory
 import Invar.Numerical.Distribution qualified as KL
+import Invar.Paths qualified as Paths
 import Invar.Policy qualified as Policy
 import Invar.Score qualified as Score
 import Invar.Score.Output qualified as ScoreOutput
@@ -336,5 +337,6 @@ describeFinding (Finding (N.Claim selected relation) result) =
   where
     N.ScopeId identity = scopeId selected
     witnessValue (Evidence.NumericalWitness observed) = describe observed
+    witnessValue (Evidence.PathWitness observed) = Paths.describeObserved observed
     witnessValue (Evidence.OutputWitness _ _) = object ["kind" .= ("output_bytes" :: String)]
     witnessValue (Evidence.TaskLossWitness _) = object ["kind" .= ("task_loss" :: String)]

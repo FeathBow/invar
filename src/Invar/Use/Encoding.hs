@@ -4,6 +4,7 @@ module Invar.Use.Encoding (decodeContract, describeContract, criterionValue, sta
 
 import Control.Monad (unless, (>=>))
 import Data.Aeson (Value (..), encode, object, parseJSON, withObject, (.:), (.=))
+import Data.Aeson.KeyMap qualified as Fields
 import Data.Aeson.Types (Parser, parseEither)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as Bytes
@@ -12,6 +13,7 @@ import Data.ByteString.Lazy qualified as Lazy
 import Data.Char (digitToInt)
 import Data.List.NonEmpty qualified as NonEmpty
 import Data.Map.Strict qualified as Map
+import Data.Maybe (isJust)
 import Data.Ratio (denominator, numerator, (%))
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as Text
@@ -34,7 +36,11 @@ decodeContract bytes = Json.decode bytes >>= parseEither parseContract
 parseContract :: Value -> Parser C.UseContract
 parseContract = withObject "use contract" $ \fields -> do
     format <- fields .: "format"
-    let common = ["format", "purpose", "domain", "measurement", "reference", "candidate", "maximum_context", "criterion", "protocols", "reliance"]
+    learner <- case Fields.lookup "learner" fields of
+        Just Null -> pure Nothing
+        Just value -> Just <$> parsePolicy value
+        Nothing -> pure Nothing
+    let common = ["format", "purpose", "domain", "measurement", "reference", "candidate", "maximum_context", "criterion", "protocols", "reliance"] ++ ["learner" | isJust (Fields.lookup "learner" fields)]
     declaredTransfers <- case format :: String of
         "invar-use-contract" -> Json.fields common fields >> pure []
         "invar-use-contract/v2" -> Json.fields (common ++ ["transfers"]) fields >> fields .: "transfers" >>= traverse parseTransfer
@@ -49,6 +55,7 @@ parseContract = withObject "use contract" $ \fields -> do
         <*> (fields .: "measurement" >>= traverse parseMethod)
         <*> pure reference
         <*> pure candidate
+        <*> pure learner
         <*> fields .: "maximum_context"
         <*> (fields .: "criterion" >>= parseCriterion)
         <*> protocols .: "freeze"
@@ -122,10 +129,16 @@ parseRelation = withObject "numerical relation" $ \fields -> do
             side <- fields .: "path" >>= named [("reference", N.Reference), ("candidate", N.Candidate)]
             direction <- fields .: "direction" >>= named [("reference-candidate", N.ReferenceToCandidate), ("candidate-reference", N.CandidateToReference)]
             N.FullVocabularyKLWithin side direction <$> (fields .: "budget" >>= parseRational)
+        "training-path-words" -> pathExact N.SamePathWords fields
+        "training-path-token-log-gap" -> pathBounded N.PerTokenLogGapWithin fields
+        "training-path-log-ratio" -> pathBounded N.TrainingPathLogRatioWithin fields
         _ -> fail "Unknown numerical relation"
   where
     exact relation fields = Json.fields ["kind"] fields >> pure relation
     bounded relation fields = Json.fields ["kind", "budget"] fields >> relation <$> (fields .: "budget" >>= parseRational)
+    pathExact relation fields = Json.fields ["kind", "learner"] fields >> relation <$> learnerValue fields
+    pathBounded relation fields = Json.fields ["kind", "learner", "budget"] fields >> relation <$> learnerValue fields <*> (fields .: "budget" >>= parseRational)
+    learnerValue fields = fields .: "learner" >>= named [("reference", N.Reference), ("candidate", N.Candidate)]
 
 parseStandard :: Value -> Parser C.Standard
 parseStandard = withObject "evidence standard" $ \fields -> do
@@ -194,6 +207,7 @@ describeContract contract =
         , "measurement" .= fmap methodValue (C.declaredMeasurement contract)
         , "reference" .= policyValue (C.referenceImplementation contract)
         , "candidate" .= policyValue (C.candidateImplementation contract)
+        , "learner" .= maybe Null policyValue (C.learnerImplementation contract)
         , "maximum_context" .= C.maximumContext contract
         , "criterion" .= criterionValue (C.criterion contract)
         , "protocols" .= object ["freeze" .= C.freezeProtocol contract, "isolation" .= C.isolationProtocol contract, "selection" .= C.selectionProtocol contract]
@@ -244,9 +258,14 @@ relationValue relation = case relation of
             , "path" .= String (case side of N.Reference -> "reference"; N.Candidate -> "candidate")
             , "direction" .= String (case direction of N.ReferenceToCandidate -> "reference-candidate"; N.CandidateToReference -> "candidate-reference")
             ]
+    N.SamePathWords side -> object ["kind" .= String "training-path-words", "learner" .= sideName side]
+    N.PerTokenLogGapWithin side bound -> object ["kind" .= String "training-path-token-log-gap", "learner" .= sideName side, "budget" .= rational bound]
+    N.TrainingPathLogRatioWithin side bound -> object ["kind" .= String "training-path-log-ratio", "learner" .= sideName side, "budget" .= rational bound]
   where
     exact kind = object ["kind" .= String kind]
     bounded kind bound = object ["kind" .= String kind, "budget" .= rational bound]
+    sideName N.Reference = String "reference"
+    sideName N.Candidate = String "candidate"
 
 standardValue :: C.Standard -> Value
 standardValue C.FiniteDomain = object ["kind" .= String "finite_domain"]

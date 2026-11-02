@@ -32,11 +32,12 @@ An external obligation records something the core cannot check from the bytes it
 
 ## Use contracts
 
-A use contract is a JSON document with format `invar-use-contract/v2`. It has seven parts.
+A use contract is a JSON document with format `invar-use-contract/v2`. It has eight parts.
 
 - The domain declares the input population before anything runs: for each input, its cohort and key, its aggregation unit, the prompt, token limit, temperature, seed and named parameters, plus the provenance of the inputs.
 - The measurement is a semantic program whose sources are bound to observed result fields (such as `Response` or `Truncated`) or to input parameters. It emits one number in a declared range, which the orientation maps onto a loss in `[0, 1]`.
 - The reference and candidate are policy descriptions naming model, revision, adapter, tokenizer, frozen base and model assembly.
+- The optional learner names the implementation that produced a training path's learner words; a contract whose criterion has a training-path relation must include it. The path check compares it, and the implementation declared for the other side, by model, revision, tokenizer, base and assembly for every attached path observation.
 - The criterion holds numerical requirements (relations between reference and candidate), a loss requirement (ceilings on the mean reference loss and the mean loss increase under a standard of evidence), and invariance requirements (relations between repeated candidate executions of one input, with the number of executions).
 - The protocols describe how the contract was frozen, acceptance data isolated and selection controlled.
 - The reliance list names, for each premise kind, an authority and the SHA-256 digest of its basis.

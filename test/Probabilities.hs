@@ -135,7 +135,7 @@ ambiguous :: PropertyT IO ()
 ambiguous = do
     configured@(_, events) <- matched
     let encoded = Lazy.toStrict (encode (fixture events))
-    reject configured ("{\"format\":\"invar-probabilities-v5\"," <> Bytes.drop 1 encoded)
+    reject configured ("{\"format\":\"invar-probabilities-v6\"," <> Bytes.drop 1 encoded)
     reject configured (encoded <> " null")
     reject configured (replaceBytes "\"dtype\":\"F32\"" "\"dtype\":\"F32\",\"dtype\":\"F32\"" encoded)
 

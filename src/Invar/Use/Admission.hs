@@ -24,12 +24,13 @@ import Data.Maybe (isJust, isNothing)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as Text
 import Invar.Infer qualified as Infer
+import Invar.Paths qualified as Paths
 import Invar.Policy.Description qualified as Policy
 import Invar.Spec.Evidence qualified as Evidence
 import Invar.Spec.Numerical qualified as Numerical
 import Invar.Spec.Use qualified as U
 import Invar.Use.Contract qualified as C
-import Invar.Use.Finding (Finding (..), goal)
+import Invar.Use.Finding (Finding (..), goalClaim)
 import Numeric.Natural (Natural)
 
 data Decision = Admitted Admission | Rejected Evidence.Counterexample | Undetermined [AdmissionProblem]
@@ -60,22 +61,22 @@ data AdmissionProblem
     deriving (Eq, Show)
 
 admit :: C.UseContract -> Finding -> Decision
-admit contract (Finding target result)
+admit contract (Finding target _ result observed)
     | not (null problems) = Undetermined problems
     | otherwise = case result of
         Evidence.Unknown reason -> Undetermined [FindingUnknown reason]
         Evidence.Refute counterexample
-            | transferred contract target -> Undetermined [TransferredViolation]
+            | transferred contract target observed -> Undetermined [TransferredViolation]
             | otherwise -> Rejected counterexample
         Evidence.Accept certificate
-            | Evidence.conclusion certificate /= goal target -> Undetermined [FindingConclusionMismatch]
+            | Evidence.conclusion certificate /= goalClaim target observed -> Undetermined [FindingConclusionMismatch]
             | Evidence.Hypothesis `elem` Evidence.methods certificate -> Undetermined [AssumedEvidence]
             | otherwise ->
                 let (unresolved, remaining) = partitionEithers (map (supported contract) (Evidence.assumptions certificate ++ map Evidence.External (contractPremises contract selected)))
                  in if null unresolved then Admitted (Admission contract selected certificate remaining) else Undetermined unresolved
   where
     selected = U.claimScope target
-    problems = validate contract ++ matches contract target
+    problems = validate contract ++ matches contract target observed
 
 admissionContract :: Admission -> C.UseContract
 admissionContract (Admission contract _ _ _) = contract
@@ -93,7 +94,7 @@ meaningful :: String -> Bool
 meaningful = not . all isSpace
 
 validate :: C.UseContract -> [AdmissionProblem]
-validate contract = fields ++ budgets ++ numerical ++ invariance ++ standard ++ reliance ++ transfers
+validate contract = fields ++ budgets ++ numerical ++ invariance ++ standard ++ reliance ++ transfers ++ learner
   where
     criterion = C.criterion contract
     fields =
@@ -117,6 +118,7 @@ validate contract = fields ++ budgets ++ numerical ++ invariance ++ standard ++ 
     transfers =
         [InvalidContract "one transfer per side" | length (nub (map C.transferSide (C.transfers contract))) /= length (C.transfers contract)]
             ++ concatMap (validTransfer contract) (C.transfers contract)
+    learner = [InvalidContract "path requirements need a learner implementation" | any (isJust . Numerical.pathSide . C.relation) (C.numericalRequirements criterion), isNothing (C.learnerImplementation contract)]
 
 validTransfer :: C.UseContract -> C.Transfer -> [AdmissionProblem]
 validTransfer contract transfer =
@@ -128,12 +130,16 @@ validTransfer contract transfer =
     current = C.implementation contract (C.transferSide transfer)
 
 validNumerical :: C.NumericalRequirement -> [AdmissionProblem]
-validNumerical requirement = [InvalidContract "numerical requirement rationale" | not (meaningful (C.numericalRationale requirement))] ++ steps
+validNumerical requirement = [InvalidContract "numerical requirement rationale" | not (meaningful (C.numericalRationale requirement))] ++ steps ++ budgets
   where
     selected = C.probeSteps requirement
     steps = case C.relation requirement of
         Numerical.FullVocabularyKLWithin {} -> [InvalidContract "frozen probe steps" | null selected || not (and (zipWith (<) selected (drop 1 selected)))]
         _ -> [InvalidContract "probe steps on a non-distribution requirement" | not (null selected)]
+    budgets = case C.relation requirement of
+        Numerical.PerTokenLogGapWithin _ value -> [InvalidContract "negative path budget" | value < 0]
+        Numerical.TrainingPathLogRatioWithin _ value -> [InvalidContract "negative path budget" | value < 0]
+        _ -> []
 
 validInvariance :: C.InvarianceRequirement -> [AdmissionProblem]
 validInvariance requirement =
@@ -141,8 +147,8 @@ validInvariance requirement =
         ++ [InvalidContract "invariance executions" | C.executions requirement < 2]
         ++ [InvalidContract "invariance relation" | C.invariant requirement `notElem` [Numerical.SameBehaviorBits, Numerical.SameTokens, Numerical.SameTermination]]
 
-matches :: C.UseContract -> U.Claim -> [AdmissionProblem]
-matches contract target = requested ++ domain ++ method ++ implementations ++ repeated ++ executions ++ contexts ++ probes
+matches :: C.UseContract -> U.Claim -> U.Observed -> [AdmissionProblem]
+matches contract target supplied = requested ++ domain ++ method ++ implementations ++ repeated ++ executions ++ contexts ++ probes ++ trainingPaths
   where
     U.Scope _ declared measured samples = U.claimScope target
     requested = case target of U.Required _ criterion | criterion == C.criterion contract -> []; _ -> [RequirementsMismatch]
@@ -183,6 +189,31 @@ matches contract target = requested ++ domain ++ method ++ implementations ++ re
         , Just distributions <- [lookup side (Numerical.distributions (U.numerical sample))]
         , map Numerical.step distributions /= C.probeSteps requirement
         ]
+    U.Observed _ _ attachments = supplied
+    trainingPaths =
+        [ ImplementationMismatch learnerSide key
+        | (key, observations) <- attachments
+        , actual <- observations
+        , requirement <- toList (C.numericalRequirements (C.criterion contract))
+        , Just learnerSide <- [Numerical.pathSide (C.relation requirement)]
+        , not (learnerPath (Paths.learner actual) && enginePath learnerSide (Paths.engine actual))
+        ]
+    learnerPath observation = case C.learnerImplementation contract of
+        Just expected -> maybe False (samePathImplementation expected) (Paths.implementationPolicy observation)
+        Nothing -> False
+    enginePath learnerSide observation = maybe False (admissiblePathFor contract (otherSide learnerSide)) (Paths.implementationPolicy observation)
+
+otherSide :: Numerical.Side -> Numerical.Side
+otherSide Numerical.Reference = Numerical.Candidate
+otherSide Numerical.Candidate = Numerical.Reference
+
+samePathImplementation :: Policy.Description -> Policy.Description -> Bool
+samePathImplementation expected actual = and [Policy.model expected == Policy.model actual, Policy.revision expected == Policy.revision actual, Policy.tokenizer expected == Policy.tokenizer actual, Policy.base expected == Policy.base actual, Policy.assembly expected == Policy.assembly actual]
+
+admissiblePathFor :: C.UseContract -> Numerical.Side -> Policy.Description -> Bool
+admissiblePathFor contract side actual = samePathImplementation (C.implementation contract side) actual || any preserved (C.transfers contract)
+  where
+    preserved transfer = C.transferSide transfer == side && samePathImplementation (C.previous transfer) actual
 
 supported :: C.UseContract -> Evidence.Claim -> Either AdmissionProblem ReliedOn
 supported contract (Evidence.External premise) = case C.premiseKind premise of
@@ -192,17 +223,30 @@ supported contract (Evidence.External premise) = case C.premiseKind premise of
         Just justification -> Right (ReliedOn premise justification)
 supported _ premise = Left (UnresolvedClaim premise)
 
-transferred :: C.UseContract -> U.Claim -> Bool
-transferred contract target =
-    or
-        [ Numerical.sourcePolicy source /= C.implementation contract side
-        | sample <- toList samples
-        , (side, source) <-
-            [(Numerical.Reference, U.source Numerical.Reference sample), (Numerical.Candidate, U.source Numerical.Candidate sample)]
-                ++ [(Numerical.Candidate, source) | observed <- U.invariance sample, let Numerical.Scope _ previous next _ _ _ = Numerical.scope observed, source <- [previous, next]]
-        ]
+transferred :: C.UseContract -> U.Claim -> U.Observed -> Bool
+transferred contract target supplied = generated || paths
   where
     U.Scope _ _ _ samples = U.claimScope target
+    U.Observed _ _ attachments = supplied
+    generated =
+        or
+            [ Numerical.sourcePolicy source /= C.implementation contract side
+            | sample <- toList samples
+            , (side, source) <-
+                [(Numerical.Reference, U.source Numerical.Reference sample), (Numerical.Candidate, U.source Numerical.Candidate sample)]
+                    ++ [(Numerical.Candidate, source) | observed <- U.invariance sample, let Numerical.Scope _ previous next _ _ _ = Numerical.scope observed, source <- [previous, next]]
+            ]
+    paths =
+        or
+            [ learnerChanged || engineChanged
+            | (_, observations) <- attachments
+            , actual <- observations
+            , Paths.forward (Paths.learner actual) == Paths.forward (Paths.engine actual)
+            , requirement <- toList (C.numericalRequirements (C.criterion contract))
+            , Just learnerSide <- [Numerical.pathSide (C.relation requirement)]
+            , let learnerChanged = maybe False (\expected -> maybe True (not . samePathImplementation expected) (Paths.implementationPolicy (Paths.learner actual))) (C.learnerImplementation contract)
+                  engineChanged = maybe False (not . samePathImplementation (C.implementation contract (otherSide learnerSide))) (Paths.implementationPolicy (Paths.engine actual))
+            ]
 
 admissible :: C.UseContract -> Numerical.Side -> Policy.Description -> Bool
 admissible contract side actual = actual == C.implementation contract side || any declared (C.transfers contract)

@@ -15,6 +15,7 @@ data UseContract = UseContract
     , declaredMeasurement :: Maybe Method
     , referenceImplementation :: Policy.Description
     , candidateImplementation :: Policy.Description
+    , learnerImplementation :: Maybe Policy.Description
     , maximumContext :: Natural
     , criterion :: Criterion
     , freezeProtocol :: String

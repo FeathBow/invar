@@ -11,18 +11,22 @@ import Data.Text (Text)
 import Invar.History.Cohort qualified as Cohort
 import Invar.History.Generation qualified as Generation
 import Invar.History.Publication qualified as Publication
+import Invar.Infer.Observation qualified as Inference
+import Invar.Infer.Trajectory qualified as Trajectory
 import Invar.Json qualified as Json
 import Invar.Learn qualified as Learn
 import Invar.Learn.Adapter qualified as Adapter
 import Invar.Learn.Checkpoint qualified as Checkpoint
 import Invar.Learn.Codec qualified as Codec
 import Invar.Learn.Gradient qualified as Gradient
-import Invar.Learn.Mismatch qualified as Mismatch
 import Invar.Learn.Observation qualified as Observation
 import Invar.Learn.Probability qualified as Probability
 import Invar.Learn.State qualified as State
 import Invar.Learn.Step qualified as Step
 import Invar.Learn.Stream qualified as S
+import Invar.Paths qualified as Paths
+import Invar.Policy qualified as Policy
+import Invar.Spec.Invocation qualified as V
 import System.FilePath ((</>))
 import System.Posix.Files qualified as Posix
 
@@ -34,7 +38,7 @@ initial decoder (settings, path) = do
     summary <- stateSummary (State.initialChecked observed) (State.initialSteps observed)
     pure (State.initialSchema observed, object ["checkpoint" .= path, "policy" .= Learn.policy settings, "learner" .= Learn.learner settings, "tokenizer" .= Learn.tokenizer settings, "base" .= Learn.base settings, "assembly" .= Learn.assembly settings, "state" .= summary], observed)
 
-successor :: (Codec.Decoder, Map Text [Integer]) -> (Integer, Generation.Generation) -> Publication.Observed -> IO (Value, State.Observed, Gradient.Observed)
+successor :: (Codec.Decoder, Map Text [Integer]) -> (Integer, Generation.Generation) -> Publication.Observed -> IO (Value, State.Observed, Gradient.Observed, Paths.UpdateObservations)
 successor (decoder, schema) (expected, generation) published = do
     let path = Publication.directory published
         report = Cohort.update (Generation.cohort generation)
@@ -46,12 +50,34 @@ successor (decoder, schema) (expected, generation) published = do
     (gradients, gradient) <- Gradient.observe parameters (report, path </> "gradients.safetensors")
     probabilities <- Observation.probability report (path </> "probabilities.json")
     either invalid pure (reported generation probabilities)
-    mismatch <- either invalid pure (Mismatch.summarize [(Probability.behavior sample, Probability.proximal sample) | sample <- probabilities])
-    compared <- case [(Probability.engineReference sample, learned) | sample <- probabilities, Just learned <- [Probability.reference sample]] of
+    inference <- case Cohort.inferences (Generation.cohort generation) of
+        first : _ -> pure first
+        [] -> invalid "A generation has no admitted inference for its model identity"
+    description <- either invalid pure (Inference.policyDescription inference)
+    learnerSide <- either invalid pure (Generation.learner generation)
+    currentStates <- either invalid pure (Generation.currents generation)
+    let engineSide = Paths.Side (Policy.model description) (Policy.revision description) (Policy.tokenizer description) (Policy.base description) (Policy.assembly description)
+    engineExecutions <- either invalid pure (executions probabilities (Cohort.inferences (Generation.cohort generation)))
+    observations <- either invalid pure (Paths.fromSamples learnerSide engineSide report probabilities engineExecutions currentStates)
+    learnerGap <- either (invalid . show) pure (Paths.measureAll (Paths.proximal observations))
+    referenceGap <- case Paths.references observations of
         [] -> pure Nothing
-        pairs -> Just <$> either invalid pure (Mismatch.summarize pairs)
-    let diagnostics = ["reference_engine" .= Mismatch.describe value | Just value <- [compared]]
-    pure (object (["publication" .= Publication.describe published, "state" .= observed, "gradients" .= gradients, "probabilities" .= map Probability.sampleObject probabilities, "learner_engine" .= Mismatch.describe mismatch] ++ diagnostics), state', gradient)
+        pairs -> Just <$> either (invalid . show) pure (Paths.measureAll pairs)
+    let diagnostics = ["reference_engine" .= Paths.describeGap value | Just value <- [referenceGap]]
+    pure (object (["publication" .= Publication.describe published, "state" .= observed, "gradients" .= gradients, "probabilities" .= map Probability.sampleObject probabilities, "learner_engine" .= Paths.describeGap learnerGap] ++ diagnostics), state', gradient, observations)
+
+executions :: [Probability.Sample] -> [Inference.Report] -> Either String (Map Text Paths.Execution)
+executions samples reports = do
+    unless (length samples == length reports) (Left "A generation's path samples and admitted inferences differ")
+    Map.fromList <$> traverse pair (zip samples reports)
+  where
+    pair (sample, inferenceReport) = do
+        unless (Probability.behavior sample == Trajectory.behaviorBits (Inference.trajectory inferenceReport)) (Left "A path sample's behavior words differ from its admitted inference")
+        pure (Probability.sampleName sample, execution inferenceReport)
+
+execution :: Inference.Report -> Paths.Execution
+execution report = case Inference.binding report of
+    V.Binding (V.CallId call) (V.AttemptId attempt) (V.Instance instance') -> Paths.Execution call attempt instance' (Inference.logDigest report)
 
 stateSummary :: Checkpoint.Checked -> [Integer] -> IO Value
 stateSummary checked steps = pure (object ("steps" .= steps : Checkpoint.rngSummary checked))

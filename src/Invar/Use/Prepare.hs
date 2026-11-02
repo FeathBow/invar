@@ -8,10 +8,12 @@ import Data.Char (ord)
 import Data.Foldable (toList)
 import Data.List (intercalate, nub, sort, sortOn)
 import Data.Map.Strict qualified as Map
+import Data.Maybe (isJust)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as Text
 import Invar.Spec.Domain qualified as Domain
 import Invar.Spec.Measurement qualified as Measurement
+import Invar.Spec.Numerical qualified as N
 import Invar.Use.Contract qualified as C
 import Numeric (showHex)
 import Numeric.Natural (Natural)
@@ -22,7 +24,7 @@ data UnitReport = UnitReport {inputCount :: Natural, unitCount :: Natural, seeds
 data Sampling = Finite | Hoeffding | Bernstein | Conditional
     deriving (Eq, Show)
 
-data Shape = Shape {measuredLoss :: Maybe Measurement.Method, sampling :: Maybe Sampling, numerical :: Bool, invariant :: Bool}
+data Shape = Shape {measuredLoss :: Maybe Measurement.Method, sampling :: Maybe Sampling, numerical :: Bool, invariant :: Bool, paths :: Bool}
 
 shape :: C.UseContract -> Shape
 shape contract =
@@ -31,6 +33,7 @@ shape contract =
         (kind . C.standard <$> C.lossRequirement criterion)
         (not (null (C.numericalRequirements criterion)))
         (not (null (C.invarianceRequirements criterion)))
+        (any (isJust . N.pathSide . C.relation) (C.numericalRequirements criterion))
   where
     criterion = C.criterion contract
     kind C.FiniteDomain = Finite
@@ -42,7 +45,7 @@ expectedPremises :: C.UseContract -> [C.Premise]
 expectedPremises = premisesFor . shape
 
 premisesFor :: Shape -> [C.Premise]
-premisesFor declared = sort (nub (admission ++ measured ++ generated ++ scheduled ++ sampled))
+premisesFor declared = sort (nub (admission ++ measured ++ generated ++ path ++ scheduled ++ sampled))
   where
     admission = [C.RequirementsJustified, C.ContractFrozen, C.AcceptanceIsolation, C.SelectionControl]
     measured = case measuredLoss declared of
@@ -53,6 +56,7 @@ premisesFor declared = sort (nub (admission ++ measured ++ generated ++ schedule
                     ++ [C.ParameterMeaning | any parameter bindings]
         Nothing -> []
     generated = [premise | numerical declared || invariant declared, premise <- [C.ExecutionAuthenticity, C.SelectedBehavior, C.OwnCacheExecution]]
+    path = [premise | paths declared, premise <- [C.PathAuthenticity, C.PathBehavior]]
     scheduled = [C.ScheduleVariation | invariant declared]
     sampled = case sampling declared of
         Just Hoeffding -> [C.IndependentUnits, C.ReplicateSamplingLaw]

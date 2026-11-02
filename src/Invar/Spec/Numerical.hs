@@ -15,6 +15,8 @@ module Invar.Spec.Numerical (
     Distribution (..),
     Direction (..),
     Relation (..),
+    pathSide,
+    pathRelation,
     Claim (..),
     Problem (..),
     Judgement (..),
@@ -25,6 +27,7 @@ module Invar.Spec.Numerical (
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as Bytes
 import Invar.Numerical.Distribution qualified as KL
+import Invar.Paths qualified as Paths
 import Invar.Spec.Obligation (Obligation)
 import Invar.Spec.Obligation qualified as Obligation
 import Invar.Spec.Score (Source (..))
@@ -85,8 +88,23 @@ data Relation
     | PathLogRatioWithin Rational
     | ScoredPathLogRatioWithin Side Rational
     | FullVocabularyKLWithin Side Direction Rational
+    | SamePathWords Side
+    | PerTokenLogGapWithin Side Rational
+    | TrainingPathLogRatioWithin Side Rational
     | ModelSubstitution
     deriving (Eq, Show)
+
+pathSide :: Relation -> Maybe Side
+pathSide (SamePathWords side) = Just side
+pathSide (PerTokenLogGapWithin side _) = Just side
+pathSide (TrainingPathLogRatioWithin side _) = Just side
+pathSide _ = Nothing
+
+pathRelation :: Relation -> Maybe Paths.Relation
+pathRelation (SamePathWords _) = Just Paths.SameWords
+pathRelation (PerTokenLogGapWithin _ budget) = Just (Paths.PerTokenLogGapWithin budget)
+pathRelation (TrainingPathLogRatioWithin _ budget) = Just (Paths.PathLogRatioWithin budget)
+pathRelation _ = Nothing
 
 data Claim = Claim Scope Relation
     deriving (Eq, Show)
@@ -97,6 +115,7 @@ data Problem
     | MissingCrossScoring
     | MissingScoredPath Side
     | MissingFullVocabulary
+    | MissingPathObservations
     | KLReductionUncertain Side Direction [Natural]
     | UnsupportedModelDerivation
     deriving (Eq, Show)
@@ -119,6 +138,9 @@ judgeRelation relation observed = case relation of
     ScoredPathLogRatioWithin side budget ->
         budgeted budget (maybe (Insufficient (MissingScoredPath side)) (bounded budget . Score.logRatio) (lookup side (scores observed)))
     FullVocabularyKLWithin side direction budget -> budgeted budget (distributionBound (side, direction) budget observed)
+    SamePathWords _ -> Insufficient MissingPathObservations
+    PerTokenLogGapWithin _ _ -> Insufficient MissingPathObservations
+    TrainingPathLogRatioWithin _ _ -> Insufficient MissingPathObservations
     ModelSubstitution -> Insufficient UnsupportedModelDerivation
   where
     measured = path observed
