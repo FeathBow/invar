@@ -139,6 +139,8 @@ validNumerical requirement = [InvalidContract "numerical requirement rationale" 
     budgets = case C.relation requirement of
         Numerical.PerTokenLogGapWithin _ value -> [InvalidContract "negative path budget" | value < 0]
         Numerical.TrainingPathLogRatioWithin _ value -> [InvalidContract "negative path budget" | value < 0]
+        Numerical.ScoredPathLogRatioWithin _ value -> [InvalidContract "negative path budget" | value < 0]
+        Numerical.FullVocabularyKLWithin _ _ value -> [InvalidContract "negative path budget" | value < 0]
         _ -> []
 
 validInvariance :: C.InvarianceRequirement -> [AdmissionProblem]

@@ -24,7 +24,7 @@ data UnitReport = UnitReport {inputCount :: Natural, unitCount :: Natural, seeds
 data Sampling = Finite | Hoeffding | Bernstein | Conditional
     deriving (Eq, Show)
 
-data Shape = Shape {measuredLoss :: Maybe Measurement.Method, sampling :: Maybe Sampling, numerical :: Bool, invariant :: Bool, paths :: Bool}
+data Shape = Shape {measuredLoss :: Maybe Measurement.Method, sampling :: Maybe Sampling, numerical :: Bool, invariant :: Bool, paths :: Bool, scores :: Bool, probes :: Bool}
 
 shape :: C.UseContract -> Shape
 shape contract =
@@ -34,6 +34,8 @@ shape contract =
         (not (null (C.numericalRequirements criterion)))
         (not (null (C.invarianceRequirements criterion)))
         (any (isJust . N.pathSide . C.relation) (C.numericalRequirements criterion))
+        (any scoredRelation (C.numericalRequirements criterion))
+        (any probedRelation (C.numericalRequirements criterion))
   where
     criterion = C.criterion contract
     kind C.FiniteDomain = Finite
@@ -45,7 +47,7 @@ expectedPremises :: C.UseContract -> [C.Premise]
 expectedPremises = premisesFor . shape
 
 premisesFor :: Shape -> [C.Premise]
-premisesFor declared = sort (nub (admission ++ measured ++ generated ++ path ++ scheduled ++ sampled))
+premisesFor declared = sort (nub (admission ++ measured ++ generated ++ path ++ scores' ++ probes' ++ scheduled ++ sampled))
   where
     admission = [C.RequirementsJustified, C.ContractFrozen, C.AcceptanceIsolation, C.SelectionControl]
     measured = case measuredLoss declared of
@@ -57,6 +59,8 @@ premisesFor declared = sort (nub (admission ++ measured ++ generated ++ path ++ 
         Nothing -> []
     generated = [premise | numerical declared || invariant declared, premise <- [C.ExecutionAuthenticity, C.SelectedBehavior, C.OwnCacheExecution]]
     path = [premise | paths declared, premise <- [C.PathAuthenticity, C.PathBehavior]]
+    scores' = [premise | scores declared, premise <- [C.ScoreAuthenticity, C.ScoredBehavior, C.OwnCacheScoring, C.ScoringCorrespondence]]
+    probes' = [premise | probes declared, premise <- [C.ProbeAuthenticity, C.FullVocabularyBehavior, C.OwnCacheProbing, C.ProbingCorrespondence, C.VocabularyCorrespondence]]
     scheduled = [C.ScheduleVariation | invariant declared]
     sampled = case sampling declared of
         Just Hoeffding -> [C.IndependentUnits, C.ReplicateSamplingLaw]
@@ -66,6 +70,16 @@ premisesFor declared = sort (nub (admission ++ measured ++ generated ++ path ++ 
     observed _ = False
     parameter (Measurement.Parameter _) = True
     parameter _ = False
+
+scoredRelation :: C.NumericalRequirement -> Bool
+scoredRelation requirement = case C.relation requirement of
+    N.ScoredPathLogRatioWithin _ _ -> True
+    _ -> False
+
+probedRelation :: C.NumericalRequirement -> Bool
+probedRelation requirement = case C.relation requirement of
+    N.FullVocabularyKLWithin {} -> True
+    _ -> False
 
 units :: C.UseContract -> UnitReport
 units contract = UnitReport (count inputs) (count grouped) (Map.toList sizes) executions

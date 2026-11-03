@@ -6,15 +6,18 @@ import Check qualified
 import Control.Exception (SomeException, displayException, try)
 import Control.Monad (unless)
 import Crypto.Hash.SHA256 qualified as SHA256
-import Data.Aeson (Value, encode, object, toJSON, (.=))
+import Data.Aeson (Value (..), encode, object, toJSON, (.=))
 import Data.Bifunctor (first)
 import Data.ByteString qualified as Bytes
 import Data.ByteString.Lazy qualified as Lazy
 import Data.Foldable (toList)
 import Data.List (genericLength, mapAccumL)
 import Data.Map.Strict qualified as Map
+import Data.Text qualified as Text
+import Data.Text.Encoding qualified as TextBytes
 import Envelope (Problem (..), command, refuse, succeed)
 import Envelope qualified
+import GHC.Clock (getMonotonicTime)
 import InferenceInput qualified
 import Invar.Artifact qualified as Artifact
 import Invar.Infer.Observation qualified as Inference
@@ -23,14 +26,18 @@ import Invar.Infer.Session qualified as Session
 import Invar.Infer.Trajectory qualified as Trajectory
 import Invar.Numerical qualified as N
 import Invar.Policy qualified as Policy
+import Invar.Score qualified as Score
+import Invar.Score.Worker qualified as ScoreWorker
 import Invar.Spec.Invocation qualified as V
+import Invar.Transcript qualified as Transcript
 import Invar.Use qualified as U
 import Invar.Use.Execution qualified as E
 import Invar.Use.Prepare qualified as Prepare
+import Invar.Worker qualified as Worker
 import Numeric.Natural (Natural)
 import Options qualified as O
 import System.Console.GetOpt (OptDescr)
-import System.Directory (createDirectory, doesDirectoryExist, doesFileExist, makeAbsolute)
+import System.Directory (createDirectory, doesDirectoryExist, doesFileExist, getFileSize, listDirectory, makeAbsolute)
 import System.Environment (getExecutablePath)
 import System.Exit (ExitCode (..))
 import System.FilePath (takeDirectory, (</>))
@@ -60,8 +67,8 @@ execution supplied = do
         invalid = [Problem "artifact-invalid" ("artifact:" ++ contractPath) ("The contract is not valid: " ++ reason) | U.InvalidContract reason <- U.validate contract]
         relied = map U.premise (U.reliance contract)
         missing = [Problem "missing-reliance" ("artifact:" ++ contractPath ++ ":reliance") ("No reliance is declared for " ++ show kind ++ ", which this contract and execution plan raise") | kind <- Prepare.expectedPremises contract, kind `notElem` relied]
-        decoded = Execution.decode executionValue `Check.andThen` \plan -> plan <$ Execution.schedules (Prepare.inputCount report) (Prepare.candidateExecutions report) plan
-        refused = invalid ++ missing ++ unsupported contractPath contract
+        decoded = Execution.decode executionValue `Check.andThen` \plan -> Execution.schedules (Prepare.inputCount report) (Prepare.candidateExecutions report) plan `Check.andThen` \() -> Execution.collectionCheck contract plan `Check.andThen` \() -> Check.value plan
+        refused = invalid ++ missing
     declared <- either (refuse format . (refused ++)) pure (Check.run decoded)
     unless (null refused) (refuse format refused)
     plan <- resolved (takeDirectory executionPath) declared
@@ -70,10 +77,15 @@ execution supplied = do
     createDirectory output
     createDirectory (output </> "logs")
     Bytes.writeFile (output </> "contract.json") contractBytes
-    Lazy.writeFile (output </> "plan.json") (encode (object ["format" .= ("invar-use-run-plan-v1" :: String), "execution_sha256" .= digest executionBytes, "groups" .= map describe planned]))
+    Lazy.writeFile (output </> "plan.json") (encode (object ["format" .= ("invar-use-run-plan-v1" :: String), "execution_sha256" .= digest executionBytes, "collection" .= describeCollection (Execution.collection plan), "groups" .= map describe planned]))
     executable <- getExecutablePath
-    records <- execute executable output plan planned
-    Lazy.writeFile (output </> "runs.json") (encode (rows contract plan planned))
+    started <- getMonotonicTime
+    (records, reports) <- execute executable output plan planned
+    collected <- collect output contract plan reports records >>= either (\problem -> refuse format [problem {message = message problem ++ "; every record so far is kept in " ++ (output </> "records.json")}]) pure
+    finished <- getMonotonicTime
+    Lazy.writeFile (output </> "runs.json") (encode (rows contract plan planned collected))
+    cost <- costOf (realToFrac (finished - started)) output planned collected
+    Lazy.writeFile (output </> "cost.json") (encode cost)
     succeed
         format
         "recorded"
@@ -83,23 +95,12 @@ execution supplied = do
         , "contract_sha256" .= digest contractBytes
         , "execution_sha256" .= digest executionBytes
         , "groups" .= length records
-        , "files" .= (["contract.json", "plan.json", "records.json", "runs.json"] :: [String])
+        , "cost" .= cost
+        , "files" .= (["contract.json", "plan.json", "records.json", "runs.json", "cost.json"] :: [String])
         , "next" .= ("cd " ++ output ++ " && invar use admit --contract contract.json --runs runs.json")
         ]
   where
     required fields name = maybe (refuse format [Problem "missing-argument" ("argv:--" ++ name) ("--" ++ name ++ " is required")]) pure (O.optional fields name)
-
-unsupported :: FilePath -> U.UseContract -> [Problem]
-unsupported path contract =
-    [ Problem "unsupported" ("artifact:" ++ path ++ ":criterion.numerical[" ++ show index ++ "]") "This requirement needs scored paths or full-vocabulary probes, which a run does not collect"
-    | (index, requirement) <- zip [0 :: Int ..] (U.numericalRequirements (U.criterion contract))
-    , scored (U.relation requirement) || not (null (U.probeSteps requirement))
-    ]
-  where
-    scored relation = case relation of
-        N.ScoredPathLogRatioWithin _ _ -> True
-        N.FullVocabularyKLWithin {} -> True
-        _ -> False
 
 resolved :: FilePath -> Execution.Execution -> IO Execution.Execution
 resolved base plan = do
@@ -107,10 +108,23 @@ resolved base plan = do
     cache <- absolute (Execution.cache plan)
     reference <- side (Execution.reference plan)
     candidate <- side (Execution.candidate plan)
-    pure plan {Execution.python = python, Execution.cache = cache, Execution.reference = reference, Execution.candidate = candidate}
+    scorers <- traverse scorer (E.scorers (Execution.collection plan))
+    pure
+        plan
+            { Execution.python = python
+            , Execution.cache = cache
+            , Execution.reference = reference
+            , Execution.candidate = candidate
+            , Execution.collection = (Execution.collection plan) {E.scorers = scorers}
+            }
   where
     absolute path = makeAbsolute (base </> path)
     side selected = Execution.Side <$> absolute (Execution.worker selected) <*> absolute (Execution.configuration selected) <*> absolute (Execution.adapter selected)
+    scorer selected = do
+        worker <- absolute (E.scorerWorker selected)
+        configuration <- absolute (E.scorerConfiguration selected)
+        adapter <- absolute (E.scorerAdapter selected)
+        pure selected {E.scorerWorker = worker, E.scorerConfiguration = configuration, E.scorerAdapter = adapter}
 
 artifacts :: U.UseContract -> Execution.Execution -> IO [Problem]
 artifacts contract plan = do
@@ -118,8 +132,24 @@ artifacts contract plan = do
     cache <- directory "execution:cache" (Execution.cache plan)
     reference <- side "reference" (Execution.reference plan) (U.referenceImplementation contract)
     candidate <- side "candidate" (Execution.candidate plan) (U.candidateImplementation contract)
-    pure (python ++ cache ++ reference ++ candidate)
+    scorers <- concat <$> traverse scorer (Map.toList (E.scorers (Execution.collection plan)))
+    pure (python ++ cache ++ reference ++ candidate ++ scorers)
   where
+    scorer (name, selected) = do
+        let at field = "execution:collection.scorers." ++ pathName name ++ "." ++ field
+            described = case name of N.Reference -> U.referenceImplementation contract; N.Candidate -> U.candidateImplementation contract
+        worker <- file (at "worker") (E.scorerWorker selected)
+        configuration <- file (at "configuration") (E.scorerConfiguration selected)
+        adapter <- file (at "adapter") (E.scorerAdapter selected)
+        identity <- first displayException <$> (try (Policy.identity (E.scorerAdapter selected)) :: IO (Either SomeException String))
+        pure
+            ( worker
+                ++ configuration
+                ++ adapter
+                ++ case identity of
+                    Left found -> [Problem "artifact-invalid" (at "adapter") ("The adapter could not be read: " ++ found)]
+                    Right actual -> [Problem "artifact-invalid" (at "adapter") ("The adapter's identity " ++ actual ++ " differs from the " ++ pathName name ++ " policy's adapter " ++ Policy.adapter described) | actual /= Policy.adapter described]
+            )
     file at path = (\found -> [Problem "artifact-missing" at (path ++ " does not exist") | not found]) <$> doesFileExist path
     directory at path = (\found -> [Problem "artifact-missing" at (path ++ " is not a directory") | not found]) <$> doesDirectoryExist path
     side name selected described = do
@@ -178,15 +208,29 @@ logPath group = "logs" </> (label group ++ ".jsonl")
 callsPath :: Group -> FilePath
 callsPath group = "logs" </> (label group ++ "-calls.json")
 
-execute :: FilePath -> FilePath -> Execution.Execution -> [Group] -> IO [Value]
-execute executable output plan = go []
+data Collected = Collected
+    { collectedKind :: String
+    , collectedInput :: U.Input
+    , collectedPath :: N.Side
+    , collectedTarget :: N.Side
+    , collectedSteps :: [Natural]
+    , collectedBinding :: V.Binding
+    , collectedLog :: FilePath
+    , collectedExit :: Int
+    }
+
+execute :: FilePath -> FilePath -> Execution.Execution -> [Group] -> IO ([Value], Map.Map (U.Key, N.Side) Inference.Report)
+execute executable output plan = go [] Map.empty
   where
-    go done [] = pure done
-    go done (group : rest) = do
+    go done reports [] = pure (done, reports)
+    go done reports (group : rest) = do
         (outcome, record) <- once group
         let kept = done ++ [record]
+            reports' = case outcome of
+                Right admitted | schedule group == "paired" -> foldr (\((input, _), report) -> Map.insert (U.inputKey input, groupSide group) report) reports (zip (members group) admitted)
+                _ -> reports
         Lazy.writeFile (output </> "records.json") (encode kept)
-        either (\found -> refuse format [found {message = message found ++ "; every record so far is kept in " ++ (output </> "records.json")}]) (const (go kept rest)) outcome
+        either (\found -> refuse format [found {message = message found ++ "; every record so far is kept in " ++ (output </> "records.json")}]) (const (go kept reports' rest)) outcome
     once group = do
         let calls = callsPath group
             errors = "logs" </> (label group ++ ".stderr")
@@ -235,13 +279,15 @@ execute executable output plan = go []
         Left found -> "Group " ++ label group ++ " could not start: " ++ found
         Right code -> "Group " ++ label group ++ " exited with " ++ show code ++ " on inputs " ++ keys group ++ "; see " ++ (output </> errors)
     readIfPresent path = doesFileExist path >>= \found -> if found then Bytes.readFile path else pure Bytes.empty
+    groupSide group = case sideName group of
+        "reference" -> N.Reference
+        _ -> N.Candidate
 
-checked :: Group -> (Bytes.ByteString, Bytes.ByteString) -> Int -> Either Problem Int
+checked :: Group -> (Bytes.ByteString, Bytes.ByteString) -> Int -> Either Problem [Inference.Report]
 checked group (callBytes, logBytes) status = do
     declared <- first (Problem "internal-error" (located group) . ("The group's calls could not be read back: " ++)) (InferenceInput.calls callBytes)
     admitted <- first (Problem "execution-failed" (located group) . (("The log of group " ++ label group ++ " does not carry its declared batch: ") ++) . show) (Replay.standalone Session.Batched (Session.Declaration declared Nothing) (Replay.declared status) logBytes)
-    mapM_ (member admitted) (members group)
-    pure status
+    traverse (member admitted) (members group)
   where
     member admitted (input, call) = do
         let binding = V.Binding (V.CallId call) (V.AttemptId call) (V.Instance call)
@@ -251,6 +297,116 @@ checked group (callBytes, logBytes) status = do
             _ -> Left (Problem "execution-failed" (located group) ("The log does not carry the declared observation for " ++ named))
         reported <- first (Problem "identity-mismatch" (located group) . (("The worker's report for " ++ named ++ " names no policy: ") ++)) (Inference.policyDescription report)
         unless (reported == policy group) (Left (Problem "identity-mismatch" (located group) ("The worker reported " ++ show reported ++ " for " ++ named ++ ", not the contract's " ++ sideName group ++ " policy")))
+        pure report
+
+pathName :: N.Side -> String
+pathName N.Reference = "reference"
+pathName N.Candidate = "candidate"
+
+data CollectionSpec = CollectionSpec
+    { specKind :: String
+    , specInput :: U.Input
+    , specPath :: N.Side
+    , specTarget :: N.Side
+    , specSteps :: [Natural]
+    , specCall :: Natural
+    }
+
+collectionSpecs :: U.UseContract -> Execution.Execution -> Natural -> [CollectionSpec]
+collectionSpecs contract plan firstCall = zipWith assign [firstCall ..] specs
+  where
+    inputs = toList (U.declaredInputs (U.declaredDomain contract))
+    specs =
+        [CollectionSpec "score" input path (otherSide path) [] 0 | path <- E.scorePaths (Execution.collection plan), input <- inputs]
+            ++ [CollectionSpec "probe" input (E.probePath probe) target (E.probeSteps probe) 0 | probe <- E.probes (Execution.collection plan), input <- inputs, target <- [N.Reference, N.Candidate]]
+    assign call spec = spec {specCall = call}
+    otherSide N.Reference = N.Candidate
+    otherSide N.Candidate = N.Reference
+
+collectionStart :: [Group] -> Natural
+collectionStart planned = case concatMap members planned of
+    [] -> 0
+    values -> maximum (map snd values) + 1
+
+collect :: FilePath -> U.UseContract -> Execution.Execution -> Map.Map (U.Key, N.Side) Inference.Report -> [Value] -> IO (Either Problem [Collected])
+collect output contract plan reports records = loop [] records specs
+  where
+    planned = groups contract plan
+    specs = collectionSpecs contract plan (collectionStart planned)
+    loop :: [Collected] -> [Value] -> [CollectionSpec] -> IO (Either Problem [Collected])
+    loop done _ [] = pure (Right (reverse done))
+    loop done kept (spec : rest) = do
+        (outcome, record) <- once spec
+        let kept' = kept ++ [record]
+        Lazy.writeFile (output </> "records.json") (encode kept')
+        case outcome of
+            Left problem -> pure (Left problem)
+            Right collected -> loop (collected : done) kept' rest
+    once spec = do
+        case Map.lookup (U.inputKey (specInput spec), specPath spec) reports of
+            Nothing -> pure (Left (Problem "execution-failed" "execution:collection" ("No admitted inference for " ++ show (U.inputKey (specInput spec)) ++ " and the " ++ pathName (specPath spec) ++ " path")), collectionRecord spec Nothing)
+            Just admitted -> do
+                let targetPolicy = case specTarget spec of N.Reference -> U.referenceImplementation contract; N.Candidate -> U.candidateImplementation contract
+                    target = Score.Target (Policy.bindings targetPolicy) (Just targetPolicy)
+                    scorer = Map.lookup (specTarget spec) (E.scorers (Execution.collection plan))
+                case scorer of
+                    Nothing -> pure (Left (Problem "execution-failed" "execution:collection" ("No scorer for the " ++ pathName (specTarget spec) ++ " implementation")), collectionRecord spec Nothing)
+                    Just selected -> case Score.prepare (Inference.source admitted) target of
+                        Left problem -> pure (Left (Problem "execution-failed" "execution:collection" (show problem)), collectionRecord spec Nothing)
+                        Right basePlan -> case if specKind spec == "probe" then Score.withProbe (specSteps spec) basePlan else Right basePlan of
+                            Left problem -> pure (Left (Problem "execution-failed" "execution:collection" (show problem)), collectionRecord spec Nothing)
+                            Right plannedScore -> case Score.bind (V.ordinal (specCall spec)) plannedScore of
+                                Left problem -> pure (Left (Problem "execution-failed" "execution:collection" (show problem)), collectionRecord spec Nothing)
+                                Right call -> do
+                                    let worker = Worker.Worker (Execution.python plan) (E.scorerWorker selected) (Execution.cache plan) (E.scorerAdapter selected) [] (Just (E.scorerConfiguration selected))
+                                        scoreLog = collectionLog spec
+                                    returned <- withBinaryFile (output </> scoreLog) WriteMode $ \handle -> ScoreWorker.run worker (Transcript.file handle) call
+                                    case returned of
+                                        Left failure -> pure (Left (Problem "execution-failed" (collectionAt spec) (show failure ++ "; see " ++ (output </> scoreLog))), collectionRecord spec (Just (exitCode failure)))
+                                        Right _ -> pure (Right (Collected (specKind spec) (specInput spec) (specPath spec) (specTarget spec) (specSteps spec) (V.ordinal (specCall spec)) scoreLog 0), collectionRecord spec (Just 0))
+    collectionLog spec = "logs/collection-" ++ show (specCall spec) ++ ".jsonl"
+    collectionAt spec = "execution:collection." ++ specKind spec ++ "(" ++ show (U.inputKey (specInput spec)) ++ ")"
+    exitCode (ScoreWorker.WorkerExit (ExitFailure code)) = code
+    exitCode (ScoreWorker.WorkerExit ExitSuccess) = 0
+    exitCode _ = 1
+
+collectionRecord :: CollectionSpec -> Maybe Int -> Value
+collectionRecord spec status =
+    object
+        [ "kind" .= specKind spec
+        , "input" .= object ["cohort" .= U.cohort (U.inputKey (specInput spec)), "task" .= U.task (U.inputKey (specInput spec))]
+        , "path" .= pathName (specPath spec)
+        , "target" .= pathName (specTarget spec)
+        , "steps" .= specSteps spec
+        , "call" .= specCall spec
+        , "log" .= ("logs/collection-" ++ show (specCall spec) ++ ".jsonl")
+        , "exit_code" .= fmap show status
+        ]
+
+costOf :: Double -> FilePath -> [Group] -> [Collected] -> IO Value
+costOf wall output planned collected = do
+    records <- Bytes.readFile (output </> "records.json")
+    logs <- listDirectory (output </> "logs")
+    logBytes <- sum <$> traverse (\name -> getFileSize (output </> "logs" </> name)) logs
+    pure
+        ( object
+            [ "inference_calls" .= sum [length (members group) | group <- planned]
+            , "score_calls" .= length [value | value <- collected, collectedKind value == "score"]
+            , "probe_calls" .= length [value | value <- collected, collectedKind value == "probe"]
+            , "wall_seconds" .= wall
+            , "records_bytes" .= Bytes.length records
+            , "logs_bytes" .= logBytes
+            , "peak_rss_bytes" .= Null
+            , "memory_status" .= ("unmeasured" :: String)
+            ]
+        )
+
+describeCollection :: E.Collection -> Value
+describeCollection collection =
+    object
+        [ "scores" .= map pathName (E.scorePaths collection)
+        , "probes" .= [object ["path" .= pathName (E.probePath probe), "steps" .= E.probeSteps probe] | probe <- E.probes collection]
+        ]
 
 located :: Group -> String
 located group = "execution:" ++ schedule group
@@ -278,8 +434,8 @@ describe group =
         , "log" .= logPath group
         ]
 
-rows :: U.UseContract -> Execution.Execution -> [Group] -> [Value]
-rows contract plan planned =
+rows :: U.UseContract -> Execution.Execution -> [Group] -> [Collected] -> [Value]
+rows contract plan planned collected =
     [ encodeRow (U.inputKey input) (paired input) [executed ("repeats[" ++ show index ++ "]") input | index <- [0 .. length (Execution.repeats plan) - 1]]
     | input <- toList (U.declaredInputs (U.declaredDomain contract))
     ]
@@ -287,9 +443,36 @@ rows contract plan planned =
     placed = Map.fromList [((schedule group, sideName group, U.inputKey input), (group, call)) | group <- planned, (input, call) <- members group]
     lookupRun scheduled owner input = placed Map.! (scheduled, owner, U.inputKey input)
     record (group, call) input = request (policy group) input call ++ [("log", logPath group), ("calls", callsPath group), ("exit-code", "0")]
-    paired input = flags ([("reference-" ++ name, entry) | (name, entry) <- record (lookupRun "paired" "reference" input) input] ++ [("candidate-" ++ name, entry) | (name, entry) <- record (lookupRun "paired" "candidate" input) input])
+    paired input = flags ([("reference-" ++ name, entry) | (name, entry) <- record (lookupRun "paired" "reference" input) input] ++ [("candidate-" ++ name, entry) | (name, entry) <- record (lookupRun "paired" "candidate" input) input] ++ scoreFlags input ++ probeFlags input)
     executed scheduled input = flags (record (lookupRun scheduled "candidate" input) input)
     encodeRow key pairedFlags repeats = toJSON (U.cohort key, U.task key, pairedFlags, repeats)
+    collectedFor input = [value | value <- collected, U.inputKey (collectedInput value) == U.inputKey input]
+    scoreFlags input = concat [scoreFlag value | value <- collectedFor input, collectedKind value == "score"]
+    scoreFlag value =
+        let prefix = case collectedPath value of
+                N.Reference -> "reference-score-"
+                N.Candidate -> "candidate-score-"
+            V.Binding (V.CallId call) (V.AttemptId attempt) (V.Instance instance') = collectedBinding value
+         in [ (prefix ++ "log", collectedLog value)
+            , (prefix ++ "exit-code", show (collectedExit value))
+            , (prefix ++ "call", show call)
+            , (prefix ++ "attempt", show attempt)
+            , (prefix ++ "instance", show instance')
+            ]
+    probeFlags input = case [value | value <- collectedFor input, collectedKind value == "probe"] of
+        [] -> []
+        values -> [("probe-set", Text.unpack (TextBytes.decodeUtf8 (Lazy.toStrict (encode (probeValue values)))))]
+    probeValue values =
+        [ object ["path" .= pathName path, "steps" .= collectedSteps value, "reference" .= endpoint N.Reference, "candidate" .= endpoint N.Candidate]
+        | let endpoint target = maybe Null endpointValue (findTarget target values)
+        , (path, value) <- Map.toList (Map.fromList [(collectedPath value, value) | value <- values])
+        ]
+    endpointValue value =
+        let V.Binding (V.CallId call) (V.AttemptId attempt) (V.Instance instance') = collectedBinding value
+         in object ["log" .= collectedLog value, "exit-code" .= show (collectedExit value), "call" .= call, "attempt" .= attempt, "instance" .= instance']
+    findTarget target values = case [value | value <- values, collectedTarget value == target] of
+        [value] -> Just value
+        _ -> Nothing
 
 digest :: Bytes.ByteString -> String
 digest = Artifact.hex . SHA256.hash

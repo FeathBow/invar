@@ -5,6 +5,7 @@ module UsePrepare (usePrepare) where
 import Data.ByteString.Char8 qualified as Bytes
 import Data.Either (isLeft)
 import Data.List (nub, sort)
+import Data.Ratio ((%))
 import Hedgehog
 import Invar.Numerical qualified as N
 import Invar.Use qualified as U
@@ -21,6 +22,7 @@ usePrepare =
         , ("the basis digest follows the fixed serialization", once basis)
         , ("units follow the domain's aggregation, not the input count", once counted)
         , ("a training path relation declares path premises", once pathPremises)
+        , ("scored and probed relations declare their own premises", once scorePremises)
         ]
   where
     once = withTests 1 . property
@@ -69,3 +71,12 @@ pathPremises = do
     base <- contractFor supplied
     let requested = base {U.criterion = (U.criterion base) {U.numericalRequirements = [U.NumericalRequirement (N.PerTokenLogGapWithin N.Candidate 1) [] "Training path only"]}}
     assert (all (`elem` Prepare.expectedPremises requested) [U.PathAuthenticity, U.PathBehavior])
+
+scorePremises :: PropertyT IO ()
+scorePremises = do
+    supplied <- F.fixture F.trials
+    base <- contractFor supplied
+    let scored = base {U.criterion = (U.criterion base) {U.numericalRequirements = [U.NumericalRequirement (N.ScoredPathLogRatioWithin N.Candidate (1 % 2)) [] "Score only"]}}
+        probed = base {U.criterion = (U.criterion base) {U.numericalRequirements = [U.NumericalRequirement (N.FullVocabularyKLWithin N.Candidate N.ReferenceToCandidate (1 % 2)) [0, 1] "Probe only"]}}
+    assert (all (`elem` Prepare.expectedPremises scored) [U.ScoreAuthenticity, U.ScoredBehavior, U.OwnCacheScoring, U.ScoringCorrespondence])
+    assert (all (`elem` Prepare.expectedPremises probed) [U.ProbeAuthenticity, U.FullVocabularyBehavior, U.OwnCacheProbing, U.ProbingCorrespondence, U.VocabularyCorrespondence])

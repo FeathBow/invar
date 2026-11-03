@@ -22,7 +22,7 @@ A worker writes JSON lines. `Invar.Infer.Session` is a pure state machine that t
 
 `Invar.Numerical.observe` compares a reference run and a candidate run that consumed the same tokenizer, prompt, token limit, temperature and seed. It records the first divergent step, the log probability ratio over the shared prefix, both lengths and truncation flags, and whether tokens and behavior words are equal. Scores (`invar score`) and full vocabulary probes add path ratios and KL bounds.
 
-A relation names what must hold between the sides: `tokens`, `behavior-bits`, `termination`, a bounded `prefix-log-ratio` or `path-log-ratio`, a bounded scored path ratio for either side, or `full-vocabulary-kl` in a chosen direction.
+A relation names what must hold between the sides: `tokens`, `behavior-bits`, `termination`, a bounded `prefix-log-ratio` or `path-log-ratio`, a bounded scored path ratio for either side, or `full-vocabulary-kl` in a chosen direction. A contract that needs a scored path or a probe needs a `use run` execution plan that declares the path, the frozen probe steps, and the scorer endpoints; `use prepare` predicts the score/probe premises and `use run` collects and admits the records it declares.
 
 ## Evidence
 
