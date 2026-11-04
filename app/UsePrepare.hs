@@ -80,12 +80,15 @@ prepare supplied = do
         contractBytes = Lazy.toStrict (encode document)
     contract <- either (\found -> refuse format [Problem "invalid-value" "declaration:decisions" ("The declared decisions do not form a valid contract: " ++ found)]) pure (U.decodeContract contractBytes)
     let invalid = [Problem "invalid-value" "declaration:decisions" (show reason) | U.InvalidContract reason <- U.validate contract]
+        collection = case Check.run (Execution.collectionCheck contract plan) of
+            Left problems -> problems
+            Right () -> []
         expected = Prepare.expectedPremises contract
         declaredPremises = map fst reliedOn
         missing = [Problem "missing-reliance" "declaration:decisions.reliance" ("No reliance is declared for " ++ show kind ++ ", which this contract and execution plan raise") | kind <- expected, show kind `notElem` declaredPremises]
         report = Prepare.units contract
         scheduled = Execution.schedules (Prepare.inputCount report) (Prepare.candidateExecutions report) plan
-    unless (null invalid && null missing) (refuse format (invalid ++ missing))
+    unless (null invalid && null collection && null missing) (refuse format (invalid ++ collection ++ missing))
     either (refuse format) pure (Check.run scheduled)
     Bytes.writeFile output contractBytes
     succeed
@@ -117,7 +120,7 @@ prepare supplied = do
 uncovered :: Measurement.Method -> Value -> [Problem]
 uncovered method document =
     [ Problem "missing-reliance" "declaration:decisions.reliance" ("No reliance is declared for " ++ show kind ++ ", which this contract and execution plan raise")
-    | kind <- Prepare.premisesFor (Prepare.Shape (method <$ quality) (quality >>= standard) (nonempty "numerical") (nonempty "invariance") pathsDeclared)
+    | kind <- Prepare.premisesFor (Prepare.Shape (method <$ quality) (quality >>= standard) (nonempty "numerical") (nonempty "invariance") pathsDeclared scoredDeclared probedDeclared)
     , show kind `notElem` declared
     ]
   where
@@ -133,15 +136,18 @@ uncovered method document =
     nonempty name = case at ["decisions", "requirements", name] of
         Just (Array values) -> not (null values)
         _ -> False
-    pathsDeclared = case at ["decisions", "requirements", "numerical"] of
-        Just (Array values) -> any pathRelation values
+    pathsDeclared = anyRelation (Text.isPrefixOf "training-path-")
+    scoredDeclared = anyRelation (`elem` ["reference-path-log-ratio", "candidate-path-log-ratio"])
+    probedDeclared = anyRelation (== "full-vocabulary-kl")
+    anyRelation selected = case at ["decisions", "requirements", "numerical"] of
+        Just (Array values) -> any (relationKind selected) values
         _ -> False
-    pathRelation (Object fields) = case Fields.lookup "relation" fields of
+    relationKind selected (Object fields) = case Fields.lookup "relation" fields of
         Just (Object relation) -> case Fields.lookup "kind" relation of
-            Just (String kind) -> Text.isPrefixOf "training-path-" kind
+            Just (String kind) -> selected kind
             _ -> False
         _ -> False
-    pathRelation _ = False
+    relationKind _ _ = False
     declared = case at ["decisions", "reliance"] of
         Just (Array entries) -> [Text.unpack premise | Object entry <- toList entries, Just (String premise) <- [Fields.lookup "premise" entry]]
         _ -> []

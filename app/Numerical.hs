@@ -3,7 +3,8 @@
 module Numerical (run, readPair, readRun, pairReferences, runReferences, consistent, batches) where
 
 import Control.Monad (unless, when)
-import Data.Aeson (Value (..), eitherDecodeStrict, encode, object, (.=))
+import Data.Aeson (FromJSON (..), Value (..), eitherDecodeStrict, encode, object, withObject, (.:), (.:?), (.=))
+import Data.Aeson.Types (Parser)
 import Data.ByteString qualified as Bytes
 import Data.ByteString.Char8 qualified as TextBytes
 import Data.ByteString.Lazy.Char8 qualified as Lazy
@@ -41,6 +42,39 @@ readRun shared supplied = either die pure (O.parse runOptions supplied) >>= \fie
 
 runOptions :: [OptDescr (String, String)]
 runOptions = inferenceRun ""
+
+data ProbeEndpoint = ProbeEndpoint
+    { endpointLog :: FilePath
+    , endpointExit :: String
+    , endpointCall :: Maybe Natural
+    , endpointAttempt :: Maybe Natural
+    , endpointInstance :: Maybe Natural
+    }
+
+instance FromJSON ProbeEndpoint where
+    parseJSON = withObject "probe endpoint" $ \fields ->
+        ProbeEndpoint
+            <$> fields .: "log"
+            <*> (fields .: "exit-code" :: Parser String)
+            <*> fields .:? "call"
+            <*> fields .:? "attempt"
+            <*> fields .:? "instance"
+
+data ProbeSet = ProbeSet
+    { setPath :: N.Side
+    , setSteps :: [Natural]
+    , setReference :: ProbeEndpoint
+    , setCandidate :: ProbeEndpoint
+    }
+
+instance FromJSON ProbeSet where
+    parseJSON = withObject "probe set" $ \fields -> do
+        path <- fields .: "path"
+        selected <- case (path :: String) of
+            "reference" -> pure N.Reference
+            "candidate" -> pure N.Candidate
+            _ -> fail "Probe path must be reference or candidate"
+        ProbeSet selected <$> fields .: "steps" <*> fields .: "reference" <*> fields .: "candidate"
 
 type Reference = (FilePath, (Maybe FilePath, Int))
 
@@ -125,6 +159,10 @@ scoreInput fields prefix ((_, original), target, probes) = case O.optional field
 
 probeInputs :: O.Fields -> ((N.Run, Inference.Report), (N.Run, Inference.Report)) -> IO [N.Probe]
 probeInputs fields (left, right)
+    | Just encoded <- O.optional fields "probe-set" = do
+        when (present || isJust (O.optional fields "probe-path") || isJust (O.optional fields "probe-steps")) (die "Probe logs cannot be supplied both as a probe set and with the single-probe options")
+        sets <- either die pure (eitherDecodeStrict (TextBytes.pack encoded) :: Either String [ProbeSet])
+        concat <$> traverse select sets
     | not present = do
         unless (isNothing (O.optional fields "probe-steps")) (die "Probe steps require probe execution inputs")
         pure []
@@ -132,12 +170,27 @@ probeInputs fields (left, right)
         side <- either die pure (probeSide fields)
         encoded <- either die pure (O.required fields "probe-steps")
         steps <- either die pure (eitherDecodeStrict (TextBytes.pack encoded))
+        probe side steps
+  where
+    present = any (isJust . O.optional fields) [prefix ++ suffix | prefix <- ["reference-probe-", "candidate-probe-"], suffix <- ["log", "exit-code", "call", "attempt", "instance"]]
+    probe side steps = do
         let source = case side of N.Reference -> left; N.Candidate -> right
         before <- scoreInput fields "reference-probe-" (source, fst left, Just steps)
         after <- scoreInput fields "candidate-probe-" (source, fst right, Just steps)
         pure ([N.Probe side N.Reference report | Just report <- [before]] ++ [N.Probe side N.Candidate report | Just report <- [after]])
-  where
-    present = any (isJust . O.optional fields) [prefix ++ suffix | prefix <- ["reference-probe-", "candidate-probe-"], suffix <- ["log", "exit-code", "call", "attempt", "instance"]]
+    select set = probeWith (setPath set) (setSteps set) (endpointFields "reference-probe-" (setReference set)) (endpointFields "candidate-probe-" (setCandidate set))
+    probeWith side steps referenceFields candidateFields = do
+        let source = case side of N.Reference -> left; N.Candidate -> right
+        before <- scoreInput referenceFields "reference-probe-" (source, fst left, Just steps)
+        after <- scoreInput candidateFields "candidate-probe-" (source, fst right, Just steps)
+        pure ([N.Probe side N.Reference report | Just report <- [before]] ++ [N.Probe side N.Candidate report | Just report <- [after]])
+    endpointFields prefix selected =
+        Map.fromList
+            ( [(prefix ++ "log", endpointLog selected), (prefix ++ "exit-code", endpointExit selected)]
+                ++ maybe [] (\value -> [(prefix ++ "call", show value)]) (endpointCall selected)
+                ++ maybe [] (\value -> [(prefix ++ "attempt", show value)]) (endpointAttempt selected)
+                ++ maybe [] (\value -> [(prefix ++ "instance", show value)]) (endpointInstance selected)
+            )
 
 probeSide :: O.Fields -> Either String N.Side
 probeSide fields = do
@@ -189,6 +242,7 @@ pairOptions =
         ++ O.descriptions
             [ ("probe-path", "reference | candidate: source path for both full-vocabulary probes and the KL claim")
             , ("probe-steps", "Frozen increasing JSON array of response steps, required when supplying probe logs")
+            , ("probe-set", "JSON list of {path, steps, reference, candidate} probe attachments")
             ]
   where
     scored prefix =
@@ -217,4 +271,4 @@ inferenceRun prefix =
             ]
 
 usage :: String
-usage = usageInfo "Usage: invar compare numerical OPTIONS\nCompare finite paired inference observations using declared calls and actual log snapshots.\nOptional reference-score-* and candidate-score-* inputs admit full-path cross-scores.\nDeclare each full-vocabulary score's own steps with its score-probe-steps option; omission declares a plain score.\nEach selected-path ratio is source minus opposite target on that source's path.\nKL requires --probe-path; reference-probe-* and candidate-probe-* bind full vectors at --probe-steps.\nScore attachments and KL probes are supplied independently; neither supplies the other implicitly.\nEvery selected-step KL upper bound must meet the budget; an unresolved interval is unknown.\nUse run argument arrays accept these paired-observation options without --relation or --budget.\nA successful command reports accept, refute or unknown; it does not grant use admission.\nModel substitution remains unknown." options
+usage = usageInfo "Usage: invar compare numerical OPTIONS\nCompare finite paired inference observations using declared calls and actual log snapshots.\nOptional reference-score-* and candidate-score-* inputs admit full-path cross-scores.\nDeclare each full-vocabulary score's own steps with its score-probe-steps option; omission declares a plain score.\nEach selected-path ratio is source minus opposite target on that source's path.\nKL requires --probe-path or --probe-set; reference-probe-* and candidate-probe-* bind full vectors at --probe-steps.\nScore attachments and KL probes are supplied independently; neither supplies the other implicitly.\nEvery selected-step KL upper bound must meet the budget; an unresolved interval is unknown.\nUse run argument arrays accept these paired-observation options without --relation or --budget.\nA successful command reports accept, refute or unknown; it does not grant use admission.\nModel substitution remains unknown." options

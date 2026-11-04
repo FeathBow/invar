@@ -35,7 +35,7 @@ import Invar.Spec.Score qualified as Score
 import Numeric.Natural (Natural)
 
 data Side = Reference | Candidate
-    deriving (Eq, Show)
+    deriving (Eq, Ord, Show)
 
 newtype ScopeId = ScopeId ByteString
     deriving (Eq, Show)

@@ -487,6 +487,14 @@ trainingPaths = do
     case U.admit negative (established negative observed) of
         U.Undetermined problems -> assert (U.InvalidContract "negative path budget" `elem` problems)
         unexpected -> annotateShow unexpected >> failure
+    let negativeScored = within {U.criterion = (U.criterion within) {U.numericalRequirements = [U.NumericalRequirement (N.ScoredPathLogRatioWithin N.Candidate (-1)) [] "Scored path only"]}}
+    case U.admit negativeScored (established negativeScored observed) of
+        U.Undetermined problems -> assert (U.InvalidContract "negative path budget" `elem` problems)
+        unexpected -> annotateShow unexpected >> failure
+    let negativeProbe = within {U.criterion = (U.criterion within) {U.numericalRequirements = [U.NumericalRequirement (N.FullVocabularyKLWithin N.Candidate N.ReferenceToCandidate (-1)) [0] "Probe only"]}}
+    case U.admit negativeProbe (established negativeProbe observed) of
+        U.Undetermined problems -> assert (U.InvalidContract "negative path budget" `elem` problems)
+        unexpected -> annotateShow unexpected >> failure
     assert (isLeft (U.withPaths [(U.Key 9 "unknown", [])] baseObserved))
 
 isImplementationMismatch :: U.AdmissionProblem -> Bool
