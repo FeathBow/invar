@@ -53,10 +53,13 @@ collectionCoverage = do
         complete = E.Collection [N.Candidate] [] (Map.fromList [(N.Reference, scorer), (N.Candidate, scorer)])
     E.collectionProblems scored E.emptyCollection /== []
     E.collectionProblems scored complete === []
+    E.collectionProblems scored (E.Collection [N.Candidate] [] Map.empty) /== []
+    E.collectionProblems scored (E.Collection [N.Reference, N.Candidate] [] (Map.fromList [(N.Reference, scorer), (N.Candidate, scorer)])) /== []
     let probed = base {U.criterion = (U.criterion base) {U.numericalRequirements = [U.NumericalRequirement (N.FullVocabularyKLWithin N.Candidate N.ReferenceToCandidate (1 % 2)) [0, 1] "probe only"]}}
         probedCollection = E.Collection [] [E.ProbePlan N.Candidate [0, 1]] (Map.fromList [(N.Reference, scorer), (N.Candidate, scorer)])
     E.collectionProblems probed probedCollection === []
     E.collectionProblems probed (probedCollection {E.probes = []}) /== []
+    E.collectionProblems probed (probedCollection {E.probes = [E.ProbePlan N.Candidate [0, 1], E.ProbePlan N.Candidate [0, 1]]}) /== []
 
 probeRules :: PropertyT IO ()
 probeRules = do

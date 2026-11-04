@@ -6,13 +6,15 @@ import Check qualified
 import Control.Exception (SomeException, displayException, try)
 import Control.Monad (unless)
 import Crypto.Hash.SHA256 qualified as SHA256
-import Data.Aeson (Value (..), encode, object, toJSON, (.=))
+import Data.Aeson (Result (..), Value (..), encode, fromJSON, object, toJSON, (.=))
+import Data.Aeson.KeyMap qualified as Fields
 import Data.Bifunctor (first)
 import Data.ByteString qualified as Bytes
 import Data.ByteString.Lazy qualified as Lazy
 import Data.Foldable (toList)
 import Data.List (genericLength, mapAccumL)
 import Data.Map.Strict qualified as Map
+import Data.Maybe (fromMaybe, mapMaybe)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextBytes
 import Envelope (Problem (..), command, refuse, succeed)
@@ -77,7 +79,7 @@ execution supplied = do
     createDirectory output
     createDirectory (output </> "logs")
     Bytes.writeFile (output </> "contract.json") contractBytes
-    Lazy.writeFile (output </> "plan.json") (encode (object ["format" .= ("invar-use-run-plan-v1" :: String), "execution_sha256" .= digest executionBytes, "collection" .= describeCollection (Execution.collection plan), "groups" .= map describe planned]))
+    Lazy.writeFile (output </> "plan.json") (encode (object ["format" .= ("invar-use-run-plan-v1" :: String), "execution_sha256" .= digest executionBytes, "collection" .= describeCollection contract plan planned, "groups" .= map describe planned]))
     executable <- getExecutablePath
     started <- getMonotonicTime
     (records, reports) <- execute executable output plan planned
@@ -217,6 +219,11 @@ data Collected = Collected
     , collectedBinding :: V.Binding
     , collectedLog :: FilePath
     , collectedExit :: Int
+    , collectedSourceLog :: String
+    , collectedTargetPolicy :: Policy.Description
+    , collectedLogDigest :: String
+    , collectedSeconds :: Double
+    , collectedPeakMemory :: Maybe Integer
     }
 
 execute :: FilePath -> FilePath -> Execution.Execution -> [Group] -> IO ([Value], Map.Map (U.Key, N.Side) Inference.Report)
@@ -344,34 +351,58 @@ collect output contract plan reports records = loop [] records specs
             Right collected -> loop (collected : done) kept' rest
     once spec = do
         case Map.lookup (U.inputKey (specInput spec), specPath spec) reports of
-            Nothing -> pure (Left (Problem "execution-failed" "execution:collection" ("No admitted inference for " ++ show (U.inputKey (specInput spec)) ++ " and the " ++ pathName (specPath spec) ++ " path")), collectionRecord spec Nothing)
+            Nothing -> pure (Left (Problem "execution-failed" "execution:collection" ("No admitted inference for " ++ show (U.inputKey (specInput spec)) ++ " and the " ++ pathName (specPath spec) ++ " path")), collectionRecord spec Nothing Nothing Nothing Nothing Nothing)
             Just admitted -> do
-                let targetPolicy = case specTarget spec of N.Reference -> U.referenceImplementation contract; N.Candidate -> U.candidateImplementation contract
+                let sourceLog = Inference.logDigest admitted
+                    targetPolicy = case specTarget spec of N.Reference -> U.referenceImplementation contract; N.Candidate -> U.candidateImplementation contract
                     target = Score.Target (Policy.bindings targetPolicy) (Just targetPolicy)
                     scorer = Map.lookup (specTarget spec) (E.scorers (Execution.collection plan))
                 case scorer of
-                    Nothing -> pure (Left (Problem "execution-failed" "execution:collection" ("No scorer for the " ++ pathName (specTarget spec) ++ " implementation")), collectionRecord spec Nothing)
+                    Nothing -> pure (Left (Problem "execution-failed" "execution:collection" ("No scorer for the " ++ pathName (specTarget spec) ++ " implementation")), collectionRecord spec Nothing (Just sourceLog) (Just targetPolicy) Nothing Nothing)
                     Just selected -> case Score.prepare (Inference.source admitted) target of
-                        Left problem -> pure (Left (Problem "execution-failed" "execution:collection" (show problem)), collectionRecord spec Nothing)
+                        Left problem -> pure (Left (Problem "execution-failed" "execution:collection" (show problem)), collectionRecord spec Nothing (Just sourceLog) (Just targetPolicy) Nothing Nothing)
                         Right basePlan -> case if specKind spec == "probe" then Score.withProbe (specSteps spec) basePlan else Right basePlan of
-                            Left problem -> pure (Left (Problem "execution-failed" "execution:collection" (show problem)), collectionRecord spec Nothing)
+                            Left problem -> pure (Left (Problem "execution-failed" "execution:collection" (show problem)), collectionRecord spec Nothing (Just sourceLog) (Just targetPolicy) Nothing Nothing)
                             Right plannedScore -> case Score.bind (V.ordinal (specCall spec)) plannedScore of
-                                Left problem -> pure (Left (Problem "execution-failed" "execution:collection" (show problem)), collectionRecord spec Nothing)
+                                Left problem -> pure (Left (Problem "execution-failed" "execution:collection" (show problem)), collectionRecord spec Nothing (Just sourceLog) (Just targetPolicy) Nothing Nothing)
                                 Right call -> do
                                     let worker = Worker.Worker (Execution.python plan) (E.scorerWorker selected) (Execution.cache plan) (E.scorerAdapter selected) [] (Just (E.scorerConfiguration selected))
                                         scoreLog = collectionLog spec
+                                    started <- getMonotonicTime
                                     returned <- withBinaryFile (output </> scoreLog) WriteMode $ \handle -> ScoreWorker.run worker (Transcript.file handle) call
+                                    finished <- getMonotonicTime
+                                    logDigest <- readLog (output </> scoreLog)
+                                    let seconds = realToFrac (finished - started)
+                                        logRecord = collectionRecord spec (either (Just . exitCode) (const (Just 0)) returned) (Just sourceLog) (Just targetPolicy) logDigest (Just seconds)
                                     case returned of
-                                        Left failure -> pure (Left (Problem "execution-failed" (collectionAt spec) (show failure ++ "; see " ++ (output </> scoreLog))), collectionRecord spec (Just (exitCode failure)))
-                                        Right _ -> pure (Right (Collected (specKind spec) (specInput spec) (specPath spec) (specTarget spec) (specSteps spec) (V.ordinal (specCall spec)) scoreLog 0), collectionRecord spec (Just 0))
+                                        Left failure -> pure (Left (Problem "execution-failed" (collectionAt spec) (show failure ++ "; see " ++ (output </> scoreLog))), logRecord)
+                                        Right report ->
+                                            let collected =
+                                                    Collected
+                                                        { collectedKind = specKind spec
+                                                        , collectedInput = specInput spec
+                                                        , collectedPath = specPath spec
+                                                        , collectedTarget = specTarget spec
+                                                        , collectedSteps = specSteps spec
+                                                        , collectedBinding = V.ordinal (specCall spec)
+                                                        , collectedLog = scoreLog
+                                                        , collectedExit = 0
+                                                        , collectedSourceLog = sourceLog
+                                                        , collectedTargetPolicy = targetPolicy
+                                                        , collectedLogDigest = fromMaybe "" logDigest
+                                                        , collectedSeconds = seconds
+                                                        , collectedPeakMemory = peakMemory report
+                                                        }
+                                             in pure (Right collected, logRecord)
     collectionLog spec = "logs/collection-" ++ show (specCall spec) ++ ".jsonl"
     collectionAt spec = "execution:collection." ++ specKind spec ++ "(" ++ show (U.inputKey (specInput spec)) ++ ")"
+    readLog path = doesFileExist path >>= \found -> if found then Just . digest <$> Bytes.readFile path else pure Nothing
     exitCode (ScoreWorker.WorkerExit (ExitFailure code)) = code
     exitCode (ScoreWorker.WorkerExit ExitSuccess) = 0
     exitCode _ = 1
 
-collectionRecord :: CollectionSpec -> Maybe Int -> Value
-collectionRecord spec status =
+collectionRecord :: CollectionSpec -> Maybe Int -> Maybe String -> Maybe Policy.Description -> Maybe String -> Maybe Double -> Value
+collectionRecord spec status sourceLog targetPolicy logDigest seconds =
     object
         [ "kind" .= specKind spec
         , "input" .= object ["cohort" .= U.cohort (U.inputKey (specInput spec)), "task" .= U.task (U.inputKey (specInput spec))]
@@ -380,14 +411,56 @@ collectionRecord spec status =
         , "steps" .= specSteps spec
         , "call" .= specCall spec
         , "log" .= ("logs/collection-" ++ show (specCall spec) ++ ".jsonl")
+        , "source_log" .= sourceLog
+        , "target_policy" .= fmap policyValue targetPolicy
+        , "log_sha256" .= logDigest
+        , "seconds" .= seconds
         , "exit_code" .= fmap show status
         ]
+
+policyValue :: Policy.Description -> Value
+policyValue described =
+    object
+        [ "model" .= Policy.model described
+        , "revision" .= Policy.revision described
+        , "adapter" .= Policy.adapter described
+        , "tokenizer" .= Policy.tokenizer described
+        , "base" .= Policy.base described
+        , "assembly" .= Policy.assembly described
+        ]
+
+peakMemory :: Score.Report -> Maybe Integer
+peakMemory report = case Score.describe report of
+    Object top -> case Fields.lookup "observation" top of
+        Just (Object observation) -> case Fields.lookup "measurements" observation of
+            Just (Array measurements) -> maximumMaybe (mapMaybe measured (toList measurements))
+            _ -> Nothing
+        _ -> Nothing
+    _ -> Nothing
+  where
+    measured (Object fields) = case Fields.lookup "peak_active" fields >>= number of
+        Just value -> Just value
+        Nothing -> case Fields.lookup "workers" fields of
+            Just (Array workers) -> maximumMaybe (mapMaybe worker (toList workers))
+            _ -> Nothing
+    measured _ = Nothing
+    worker (Object fields) = max <$> numberField "peak_allocated" fields <*> numberField "peak_reserved" fields
+    worker _ = Nothing
+    numberField name fields = Fields.lookup name fields >>= number
+    number value = case (fromJSON value :: Result Integer) of
+        Success found -> Just found
+        _ -> Nothing
+    maximumMaybe [] = Nothing
+    maximumMaybe values = Just (maximum values)
 
 costOf :: Double -> FilePath -> [Group] -> [Collected] -> IO Value
 costOf wall output planned collected = do
     records <- Bytes.readFile (output </> "records.json")
     logs <- listDirectory (output </> "logs")
     logBytes <- sum <$> traverse (\name -> getFileSize (output </> "logs" </> name)) logs
+    let peaks = mapMaybe collectedPeakMemory collected
+        peak = case peaks of [] -> Null; values -> toJSON (maximum values)
+        memoryStatus = if null peaks then ("unmeasured" :: String) else "score-probe-peak"
     pure
         ( object
             [ "inference_calls" .= sum [length (members group) | group <- planned]
@@ -396,17 +469,30 @@ costOf wall output planned collected = do
             , "wall_seconds" .= wall
             , "records_bytes" .= Bytes.length records
             , "logs_bytes" .= logBytes
-            , "peak_rss_bytes" .= Null
-            , "memory_status" .= ("unmeasured" :: String)
+            , "peak_rss_bytes" .= peak
+            , "memory_status" .= memoryStatus
+            , "calls" .= [object ["kind" .= collectedKind value, "call" .= callOf (collectedBinding value), "seconds" .= collectedSeconds value] | value <- collected]
             ]
         )
+  where
+    callOf (V.Binding (V.CallId call) _ _) = call
 
-describeCollection :: E.Collection -> Value
-describeCollection collection =
+describeCollection :: U.UseContract -> Execution.Execution -> [Group] -> Value
+describeCollection contract plan planned =
     object
         [ "scores" .= map pathName (E.scorePaths collection)
         , "probes" .= [object ["path" .= pathName (E.probePath probe), "steps" .= E.probeSteps probe] | probe <- E.probes collection]
+        , "calls" .= [object ["kind" .= specKind spec, "input" .= object ["cohort" .= U.cohort (U.inputKey (specInput spec)), "task" .= U.task (U.inputKey (specInput spec))], "path" .= pathName (specPath spec), "target" .= pathName (specTarget spec), "steps" .= specSteps spec, "call" .= specCall spec, "scorer" .= fmap scorerValue (Map.lookup (specTarget spec) (E.scorers collection))] | spec <- collectionSpecs contract plan (collectionStart planned)]
         ]
+  where
+    collection = Execution.collection plan
+    scorerValue selected =
+        object
+            [ "backend" .= E.scorerBackend selected
+            , "worker" .= E.scorerWorker selected
+            , "configuration" .= E.scorerConfiguration selected
+            , "adapter" .= E.scorerAdapter selected
+            ]
 
 located :: Group -> String
 located group = "execution:" ++ schedule group

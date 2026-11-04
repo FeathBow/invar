@@ -110,7 +110,7 @@ It answers `"standard": "finite_domain"` with no bound: a finite domain is decid
 invar use run --contract contract.json --execution execution.json --output run
 ```
 
-It checks the adapters against the two policies, then runs six finite batches, two per side and two for the repeat. Each batch loads the model once, and the whole run took 293 seconds. The output is `"status": "recorded"`, and `run` holds `contract.json`, `plan.json`, `records.json`, `runs.json`, `cost.json` and every batch log under `logs`.
+It checks the adapters against the two policies, then runs six finite batches, two per side and two for the repeat. Each batch loads the model once, and the whole run took 293 seconds. The output is `"status": "recorded"`, and `run` holds `contract.json`, `plan.json`, `records.json`, `runs.json`, `cost.json` and every batch log under `logs`. The cost reports inference, score and probe call counts, total and per-call wall time, and record/log sizes. A score or probe worker that reports a resource measurement also contributes its peak memory; otherwise `peak_rss_bytes` is `null` and `memory_status` says it was unmeasured.
 
 ## Admit
 

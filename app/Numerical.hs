@@ -160,7 +160,7 @@ scoreInput fields prefix ((_, original), target, probes) = case O.optional field
 probeInputs :: O.Fields -> ((N.Run, Inference.Report), (N.Run, Inference.Report)) -> IO [N.Probe]
 probeInputs fields (left, right)
     | Just encoded <- O.optional fields "probe-set" = do
-        when present (die "Probe logs cannot be supplied both as a probe set and with the single-probe options")
+        when (present || isJust (O.optional fields "probe-path") || isJust (O.optional fields "probe-steps")) (die "Probe logs cannot be supplied both as a probe set and with the single-probe options")
         sets <- either die pure (eitherDecodeStrict (TextBytes.pack encoded) :: Either String [ProbeSet])
         concat <$> traverse select sets
     | not present = do
